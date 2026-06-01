@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag.StartsWith("v")) {
+            throw "Release tag must start with v: $tag"
+          }
+          $tagVersion = $tag.Substring(1)
+          $pyproject = Get-Content -Raw -Encoding UTF8 pyproject.toml
+          if ($pyproject -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+            throw "Could not read version from pyproject.toml"
+          }
+          $projectVersion = $Matches[1]
+          if ($projectVersion -ne $tagVersion) {
+            throw "Tag version $tagVersion does not match pyproject.toml version $projectVersion"
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Run tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\tools\build_release.ps1 -BuildInstaller
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/GEOGetter-Setup-v*.exe
+            dist/GEOGetter-Setup-v*.exe.sha256
+            dist/GEOGetter-v*-win-x64-portable.zip
+            dist/GEOGetter-v*-win-x64-portable.zip.sha256

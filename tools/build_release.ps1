@@ -1,0 +1,271 @@
+[CmdletBinding()]
+param(
+    [string]$PythonVersion = "3.14.5",
+    [ValidateSet("x64")]
+    [string]$Architecture = "x64",
+    [switch]$SkipDownload,
+    [switch]$BuildInstaller
+)
+
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$DistRoot = Join-Path $RepoRoot "dist"
+$BuildRoot = Join-Path $RepoRoot "build"
+$PythonCacheRoot = Join-Path $BuildRoot "python"
+$InstallerScript = Join-Path $RepoRoot "installer\GEOGetter.iss"
+
+function Get-AppVersion {
+    $pyproject = Join-Path $RepoRoot "pyproject.toml"
+    $match = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if (-not $match) {
+        throw "Could not read project version from pyproject.toml."
+    }
+    return $match.Matches[0].Groups[1].Value
+}
+
+function Assert-Inside {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Base
+    )
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullBase = [System.IO.Path]::GetFullPath($Base)
+    if (-not $fullPath.StartsWith($fullBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to operate outside $fullBase`: $fullPath"
+    }
+}
+
+function Reset-Directory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    Assert-Inside -Path $Path -Base $RepoRoot
+    if (Test-Path $Path) {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+}
+
+function Copy-FileToPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$PayloadDir
+    )
+    $source = Join-Path $RepoRoot $RelativePath
+    $dest = Join-Path $PayloadDir $RelativePath
+    New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+    Copy-Item -LiteralPath $source -Destination $dest -Force
+}
+
+function Copy-DirectoryToPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$PayloadDir
+    )
+    $source = Join-Path $RepoRoot $RelativePath
+    $dest = Join-Path $PayloadDir $RelativePath
+    if (Test-Path $dest) {
+        Remove-Item -LiteralPath $dest -Recurse -Force
+    }
+    Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
+    Get-ChildItem -Path $dest -Directory -Recurse -Force -Filter "__pycache__" | Remove-Item -Recurse -Force
+    Get-ChildItem -Path $dest -File -Recurse -Force -Include "*.pyc", "*.pyo" | Remove-Item -Force
+}
+
+function Remove-PythonCaches {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    Get-ChildItem -Path $Path -Directory -Recurse -Force -Filter "__pycache__" | Remove-Item -Recurse -Force
+    Get-ChildItem -Path $Path -File -Recurse -Force -Include "*.pyc", "*.pyo" | Remove-Item -Force
+}
+
+function New-LicenseBundle {
+    param([Parameter(Mandatory = $true)][string]$PayloadDir)
+
+    $bundlePath = Join-Path $PayloadDir "LICENSE-BUNDLE.txt"
+    $licensePath = Join-Path $PayloadDir "LICENSE"
+    $noticePath = Join-Path $PayloadDir "THIRD_PARTY_NOTICES.txt"
+    $pythonLicensePath = Join-Path $PayloadDir "licenses\PYTHON-LICENSE.txt"
+
+    foreach ($requiredPath in @($licensePath, $noticePath, $pythonLicensePath)) {
+        if (-not (Test-Path $requiredPath)) {
+            throw "License bundle input not found: $requiredPath"
+        }
+    }
+
+    $content = @(
+        "GEOGetter bundled release license notices",
+        "",
+        "== GEOGetter MIT License ==",
+        "",
+        (Get-Content -Raw -Encoding UTF8 $licensePath).TrimEnd(),
+        "",
+        "== Third-party notices ==",
+        "",
+        (Get-Content -Raw -Encoding UTF8 $noticePath).TrimEnd(),
+        "",
+        "== CPython license ==",
+        "",
+        (Get-Content -Raw -Encoding UTF8 $pythonLicensePath).TrimEnd(),
+        ""
+    ) -join [Environment]::NewLine
+
+    Set-Content -Encoding UTF8 -Path $bundlePath -Value $content
+}
+
+function Get-PythonEmbedArchiveName {
+    param([string]$Version, [string]$Arch)
+    if ($Arch -ne "x64") {
+        throw "Only x64 is supported for this release script."
+    }
+    return "python-$Version-embed-amd64.zip"
+}
+
+function Ensure-PythonRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Arch,
+        [Parameter(Mandatory = $true)][string]$PayloadDir
+    )
+
+    $archiveName = Get-PythonEmbedArchiveName -Version $Version -Arch $Arch
+    $archivePath = Join-Path $PythonCacheRoot $archiveName
+    $runtimeDir = Join-Path $PayloadDir "runtime\python"
+    New-Item -ItemType Directory -Path $PythonCacheRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+
+    if (-not (Test-Path $archivePath)) {
+        if ($SkipDownload) {
+            throw "Python embeddable archive not found: $archivePath"
+        }
+        $uri = "https://www.python.org/ftp/python/$Version/$archiveName"
+        Write-Host "Downloading $uri"
+        Invoke-WebRequest -Uri $uri -OutFile $archivePath
+    }
+
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $runtimeDir -Force
+
+    $majorMinor = ($Version -split "\.")[0..1] -join ""
+    $pthPath = Join-Path $runtimeDir "python$majorMinor._pth"
+    if (-not (Test-Path $pthPath)) {
+        $pthPath = Get-ChildItem -Path $runtimeDir -Filter "python*._pth" | Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $pthPath) {
+        throw "Could not find Python ._pth file in $runtimeDir."
+    }
+
+    $pthLines = Get-Content -Encoding UTF8 $pthPath
+    if ($pthLines -notcontains "..\..") {
+        $pthLines = @($pthLines + "..\..")
+        Set-Content -Encoding ASCII -Path $pthPath -Value $pthLines
+    }
+
+    $runtimeLicense = Join-Path $runtimeDir "LICENSE.txt"
+    if (Test-Path $runtimeLicense) {
+        $licenseDest = Join-Path $PayloadDir "licenses\PYTHON-LICENSE.txt"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $licenseDest) -Force | Out-Null
+        Copy-Item -LiteralPath $runtimeLicense -Destination $licenseDest -Force
+    }
+}
+
+function Get-IsccPath {
+    $candidates = @()
+    $command = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+    if ($command) {
+        $candidates += $command.Source
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe")
+    }
+    if ($env:ProgramFiles) {
+        $candidates += (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+    }
+    return $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+
+function Write-Sha256File {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ShaPath
+    )
+    if (-not (Test-Path $Path)) {
+        throw "Cannot create checksum because file was not found: $Path"
+    }
+    $hash = Get-FileHash -Algorithm SHA256 -Path $Path
+    Set-Content -Encoding ASCII -Path $ShaPath -Value ("{0}  {1}" -f $hash.Hash.ToLowerInvariant(), (Split-Path -Leaf $Path))
+}
+
+$version = Get-AppVersion
+$packageName = "GEOGetter-v$version-win-$Architecture-portable"
+$payloadDir = Join-Path $DistRoot $packageName
+$zipPath = Join-Path $DistRoot "$packageName.zip"
+$zipShaPath = "$zipPath.sha256"
+$installerPath = Join-Path $DistRoot "GEOGetter-Setup-v$version.exe"
+$installerShaPath = "$installerPath.sha256"
+
+New-Item -ItemType Directory -Path $DistRoot -Force | Out-Null
+Reset-Directory -Path $payloadDir
+
+foreach ($file in @(
+    "GEOGetter.ps1",
+    "start_geo_getter.vbs",
+    "start_geo_getter.bat",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.txt",
+    "pyproject.toml"
+)) {
+    Copy-FileToPayload -RelativePath $file -PayloadDir $payloadDir
+}
+
+foreach ($dir in @("geo_getter", "docs", "licenses")) {
+    Copy-DirectoryToPayload -RelativePath $dir -PayloadDir $payloadDir
+}
+
+Ensure-PythonRuntime -Version $PythonVersion -Arch $Architecture -PayloadDir $payloadDir
+New-LicenseBundle -PayloadDir $payloadDir
+
+$payloadPython = Join-Path $payloadDir "runtime\python\python.exe"
+& $payloadPython -m geo_getter.cli --help | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "Bundled Python CLI smoke test failed."
+}
+
+$payloadScript = Join-Path $payloadDir "GEOGetter.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File $payloadScript -SelfTest
+if ($LASTEXITCODE -ne 0) {
+    throw "Portable payload self-test failed."
+}
+Remove-PythonCaches -Path $payloadDir
+
+if (Test-Path $zipPath) {
+    Remove-Item -LiteralPath $zipPath -Force
+}
+Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -Force
+Write-Sha256File -Path $zipPath -ShaPath $zipShaPath
+
+Write-Host "Created portable zip: $zipPath"
+Write-Host "Created checksum: $zipShaPath"
+
+if ($BuildInstaller) {
+    $iscc = Get-IsccPath
+    if (-not $iscc) {
+        throw "ISCC.exe was not found. Install Inno Setup 6 or add ISCC.exe to PATH, then rerun with -BuildInstaller."
+    }
+    if (-not (Test-Path $InstallerScript)) {
+        throw "Installer script not found: $InstallerScript"
+    }
+    foreach ($path in @($installerPath, $installerShaPath)) {
+        if (Test-Path $path) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    & $iscc "/DAppVersion=$version" "/DSourceDir=$payloadDir" "/DOutputDir=$DistRoot" $InstallerScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup build failed."
+    }
+    if (-not (Test-Path $installerPath)) {
+        throw "Expected installer was not created: $installerPath"
+    }
+    Write-Sha256File -Path $installerPath -ShaPath $installerShaPath
+    Write-Host "Created installer: $installerPath"
+    Write-Host "Created checksum: $installerShaPath"
+}

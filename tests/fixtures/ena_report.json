@@ -1,0 +1,21 @@
+[
+  {
+    "run_accession": "SRR000001",
+    "experiment_accession": "SRX000001",
+    "sample_accession": "SAMN000001",
+    "secondary_sample_accession": "SRS000001",
+    "study_accession": "PRJNA000001",
+    "secondary_study_accession": "SRP000001",
+    "scientific_name": "Homo sapiens",
+    "instrument_platform": "ILLUMINA",
+    "library_layout": "PAIRED",
+    "library_strategy": "RNA-Seq",
+    "fastq_ftp": "ftp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000001/SRR000001_1.fastq.gz;ftp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000001/SRR000001_2.fastq.gz",
+    "fastq_md5": "11111111111111111111111111111111;22222222222222222222222222222222",
+    "fastq_bytes": "12;34",
+    "submitted_ftp": "",
+    "submitted_md5": "",
+    "submitted_bytes": ""
+  }
+]
+

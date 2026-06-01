@@ -1,0 +1,15 @@
+GEOGetter third-party notices
+
+GEOGetter source code is Copyright (c) 2026 K81ta and licensed under the MIT
+License. See LICENSE.
+
+Portable and installer releases may include the official CPython Windows
+embeddable package under runtime/python/. CPython is redistributed under the
+Python Software Foundation License and related notices. The release build copies
+the bundled runtime's LICENSE.txt to licenses/PYTHON-LICENSE.txt.
+
+CPython project:
+https://www.python.org/
+
+Python license:
+https://docs.python.org/3/license.html

@@ -1,0 +1,8 @@
+This source tree does not include CPython itself.
+
+When tools/build_release.ps1 creates a portable or installer release with the
+official CPython Windows embeddable package, it copies the bundled runtime's
+LICENSE.txt to this path inside the release payload.
+
+Python license:
+https://docs.python.org/3/license.html
