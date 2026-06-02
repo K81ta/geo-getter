@@ -248,7 +248,7 @@ FASTQ 候補生成に使う field:
 
 ```json
 {
-  "app_version": "0.1.0",
+  "app_version": "0.1.1",
   "input_text": "GSE30567",
   "primary_accession": "GSE30567",
   "query_accessions": ["SRP007461"],
