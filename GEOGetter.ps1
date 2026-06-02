@@ -110,6 +110,7 @@ $script:DownloadBridge = $null
 $script:DownloadCanceled = $false
 $script:DownloadStdoutText = ""
 $script:DownloadStderrText = ""
+$script:DiagnosticProcessOutputLimitBytes = 1048576
 $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
 $script:LastInputText = ""
@@ -674,6 +675,31 @@ function Write-DiagnosticTextFile {
     [System.IO.File]::WriteAllText($path, [string]$Content, $script:Utf8NoBom)
 }
 
+function Add-DiagnosticProcessOutput {
+    param(
+        [ValidateSet("stdout", "stderr")]
+        [string]$Stream,
+        [string]$Line
+    )
+    $value = $Line + [Environment]::NewLine
+    if ($Stream -eq "stdout") {
+        $script:DownloadStdoutText = Limit-DiagnosticText ($script:DownloadStdoutText + $value)
+        return
+    }
+    $script:DownloadStderrText = Limit-DiagnosticText ($script:DownloadStderrText + $value)
+}
+
+function Limit-DiagnosticText {
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $limit = [int]$script:DiagnosticProcessOutputLimitBytes
+    if ($Text.Length -le $limit) { return $Text }
+    $marker = "[GEOGetter diagnostics: earlier process output was truncated]" + [Environment]::NewLine
+    $keep = [Math]::Max(0, $limit - $marker.Length)
+    if ($Text.Length -le $keep) { return $Text }
+    return $marker + $Text.Substring($Text.Length - $keep)
+}
+
 function Copy-DiagnosticFile {
     param(
         [string]$Source,
@@ -1107,7 +1133,7 @@ function Start-DownloadProcess {
         $form,
         ([System.Action[string]]{
             param($line)
-            $script:DownloadStdoutText += $line + [Environment]::NewLine
+            Add-DiagnosticProcessOutput "stdout" $line
             try {
                 Handle-DownloadLine $line
             }
@@ -1117,7 +1143,7 @@ function Start-DownloadProcess {
         }),
         ([System.Action[string]]{
             param($line)
-            $script:DownloadStderrText += $line + [Environment]::NewLine
+            Add-DiagnosticProcessOutput "stderr" $line
             try {
                 Append-Log $line
             }
@@ -1845,6 +1871,13 @@ if ($SelfTest) {
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
     Assert-Equal (Format-Bytes ([Int64]-1)) "0 B" "Format-Bytes negative"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
+    $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
+    $script:DiagnosticProcessOutputLimitBytes = 80
+    $script:DownloadStdoutText = ""
+    Add-DiagnosticProcessOutput "stdout" ("a" * 100)
+    Assert-Contains $script:DownloadStdoutText "earlier process output was truncated" "diagnostic stdout cap marker"
+    Assert-Equal ($script:DownloadStdoutText.Length -le 80) $true "diagnostic stdout cap"
+    $script:DiagnosticProcessOutputLimitBytes = $originalDiagnosticLimit
     $encodingResult = Invoke-PythonCli -Arguments @("-m", "geo_getter.cli", "resolve-json", "")
     Assert-Equal $encodingResult.ExitCode 1 "empty input error exit code"
     Assert-Contains $encodingResult.Stderr "input_text or --input-file" "CLI stderr stays English"
@@ -1968,8 +2001,8 @@ if ($SelfTest) {
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
 
     $downloadResult = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
-    $script:DownloadStdoutText = $downloadResult.Stdout
-    $script:DownloadStderrText = $downloadResult.Stderr
+    $script:DownloadStdoutText = Limit-DiagnosticText $downloadResult.Stdout
+    $script:DownloadStderrText = Limit-DiagnosticText $downloadResult.Stderr
     $script:LastDownloadExitCode = $downloadResult.ExitCode
     $doneLine = @($downloadResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"event"\s*:\s*"done"' } | Select-Object -Last 1)
     if ($doneLine.Count -gt 0) {

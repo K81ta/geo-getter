@@ -6,7 +6,7 @@ GEOGetter は、GEO accession、GEO ページ URL、SRA / ENA / Project / BioSam
 
 最新版は [GitHub Releases](https://github.com/K81ta/geo-getter/releases/latest) からダウンロードします。
 
-`GEOGetter-Setup-v0.1.0.exe` をダウンロードして実行してください。インストール後は、スタートメニューの `GEOGetter` から起動できます。
+`GEOGetter-Setup-v<version>.exe` をダウンロードして実行してください。インストール後は、スタートメニューの `GEOGetter` から起動できます。
 
 このインストーラーは未署名です。Windows SmartScreen の警告が出る場合があります。
 
