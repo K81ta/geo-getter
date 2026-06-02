@@ -6,7 +6,14 @@ from pathlib import Path
 from geo_getter.downloader import download_plan, verify_md5
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DownloadPlan, FastqFile
-from geo_getter.planner import build_download_plan, download_log_path, ensure_capacity, fastq_manifest_path, write_fastq_outputs
+from geo_getter.planner import (
+    build_download_plan,
+    download_log_path,
+    ensure_capacity,
+    fastq_manifest_path,
+    verify_fastq_manifest,
+    write_fastq_outputs,
+)
 
 
 class PlannerDownloaderTest(unittest.TestCase):
@@ -276,6 +283,47 @@ class PlannerDownloaderTest(unittest.TestCase):
             plan = build_download_plan("GSE", "GSE", [fastq1, fastq2], temp)
             self.assertEqual(plan.files[0].local_path.name, "same.fastq.gz")
             self.assertEqual(plan.files[1].local_path.name, "same.2.fastq.gz")
+
+    def test_verify_fastq_manifest_writes_report_with_expected_statuses(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            verified_data = b"verified\n"
+            verified_path = output_dir / "verified.fastq.gz"
+            verified_path.write_bytes(verified_data)
+            no_md5_data = b"no-md5\n"
+            no_md5_path = output_dir / "no-md5.fastq.gz"
+            no_md5_path.write_bytes(no_md5_data)
+            size_mismatch_data = b"size-mismatch\n"
+            size_mismatch_path = output_dir / "size.fastq.gz"
+            size_mismatch_path.write_bytes(size_mismatch_data)
+            md5_mismatch_data = b"md5-mismatch\n"
+            md5_mismatch_path = output_dir / "md5.fastq.gz"
+            md5_mismatch_path.write_bytes(md5_mismatch_data)
+
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(verified_data).hexdigest()}\t{len(verified_data)}\t{verified_path}\tplanned",
+                        f"GSE\tSRP\tRUN2\t1\tno-md5.fastq.gz\thttps://example.invalid/no-md5\t\t{len(no_md5_data)}\t{no_md5_path}\tplanned",
+                        f"GSE\tSRP\tRUN3\t1\tmissing.fastq.gz\thttps://example.invalid/missing\t{'1' * 32}\t10\t{output_dir / 'missing.fastq.gz'}\tplanned",
+                        f"GSE\tSRP\tRUN4\t1\tsize.fastq.gz\thttps://example.invalid/size\t{hashlib.md5(size_mismatch_data).hexdigest()}\t{len(size_mismatch_data) + 1}\t{size_mismatch_path}\tplanned",
+                        f"GSE\tSRP\tRUN5\t1\tmd5.fastq.gz\thttps://example.invalid/md5\t{'0' * 32}\t{len(md5_mismatch_data)}\t{md5_mismatch_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            report_path = verify_fastq_manifest(manifest)
+            self.assertEqual(report_path, output_dir / "verification_report.tsv")
+            report_text = report_path.read_text(encoding="utf-8-sig")
+            self.assertIn("md5_verified", report_text)
+            self.assertIn("md5_unavailable", report_text)
+            self.assertIn("missing", report_text)
+            self.assertIn("size_mismatch", report_text)
+            self.assertIn("md5_mismatch", report_text)
 
 
 if __name__ == "__main__":

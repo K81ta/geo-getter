@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from .models import DownloadPlan, FastqFile, PlannedFile
 FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
 SUPPLEMENTARY_MANIFEST_SUFFIX = "supplementary_manifest.tsv"
 DOWNLOAD_LOG_SUFFIX = "download_log.tsv"
+VERIFICATION_REPORT_NAME = "verification_report.tsv"
 
 
 def build_download_plan(
@@ -166,6 +168,58 @@ def download_log_path(output_dir: str | Path) -> Path:
     return _artifact_path(output_dir, DOWNLOAD_LOG_SUFFIX)
 
 
+def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> Path:
+    manifest = Path(manifest_path)
+    output = Path(report_path) if report_path else manifest.parent / VERIFICATION_REPORT_NAME
+    with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        rows = list(reader)
+
+    with output.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow(
+            [
+                "source_accession",
+                "query_accession",
+                "run_accession",
+                "file_index",
+                "file_name",
+                "local_path",
+                "exists",
+                "expected_size_bytes",
+                "actual_size_bytes",
+                "expected_md5",
+                "actual_md5",
+                "status",
+            ]
+        )
+        for row in rows:
+            local_path = _resolve_manifest_local_path(manifest, row.get("local_path", ""))
+            exists = local_path.exists()
+            expected_size = _parse_int(row.get("size_bytes", "0"))
+            expected_md5 = (row.get("expected_md5", "") or "").strip()
+            actual_size = _existing_size(local_path)
+            actual_md5 = _calculate_md5(local_path) if exists else ""
+            status = _verification_status(exists, expected_size, actual_size, expected_md5, actual_md5)
+            writer.writerow(
+                [
+                    row.get("source_accession", ""),
+                    row.get("query_accession", ""),
+                    row.get("run_accession", ""),
+                    row.get("file_index", ""),
+                    row.get("file_name", ""),
+                    str(local_path),
+                    "yes" if exists else "no",
+                    expected_size,
+                    actual_size,
+                    expected_md5,
+                    actual_md5,
+                    status,
+                ]
+            )
+    return output
+
+
 def _artifact_path(output_dir: str | Path, suffix: str) -> Path:
     out_dir = Path(output_dir)
     prefix = _artifact_prefix(out_dir.name)
@@ -196,3 +250,50 @@ def _split_name(file_name: str) -> tuple[str, str]:
         return file_name[:-9], ".fastq.gz"
     path = Path(file_name)
     return path.stem, path.suffix
+
+
+def _resolve_manifest_local_path(manifest_path: Path, local_path: str) -> Path:
+    candidate = Path(local_path)
+    if candidate.is_absolute():
+        return candidate
+    return (manifest_path.parent / candidate).resolve()
+
+
+def _parse_int(value: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _existing_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _calculate_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verification_status(
+    exists: bool,
+    expected_size: int,
+    actual_size: int,
+    expected_md5: str,
+    actual_md5: str,
+) -> str:
+    if not exists:
+        return "missing"
+    if expected_size > 0 and actual_size != expected_size:
+        return "size_mismatch"
+    if not expected_md5:
+        return "md5_unavailable"
+    if actual_md5.lower() == expected_md5.lower():
+        return "md5_verified"
+    return "md5_mismatch"
