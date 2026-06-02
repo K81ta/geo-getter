@@ -158,6 +158,23 @@ Downloads/GEOGetter/
 
 キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。ただし、次回の GUI 実行では新しい accession suffix フォルダが選ばれることがあるため、同じ `.part` が自動で再利用されるとは限らない。同じ実保存フォルダと同じ local path を使う場合だけ、downloader 側で `.part` を再利用できる。
 
+## 診断情報
+
+GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の zip をローカルに作成できる。自動送信はしない。
+
+診断 zip の標準ファイル:
+
+| ファイル | 内容 |
+| --- | --- |
+| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、最後の download done event |
+| `resolved.json` | 最後に成功した `resolve-json` の結果 |
+| `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
+| `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |
+| `gui_log.txt` | GUI 下部ログの内容 |
+| `artifacts/*` | 最後の download done event が返した manifest と download log |
+
+診断 zip にはローカルパス、入力 accession、保存先、ファイル名が含まれる可能性があるため、ユーザーが必要時に手動で共有する。
+
 ## 外部データソース
 
 ### NCBI GEO SOFT

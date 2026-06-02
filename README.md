@@ -46,6 +46,12 @@ Downloads/GEOGetter/
     SRR1039508_1.fastq.gz
 ```
 
+## 問題が起きた場合
+
+検索やダウンロードが失敗した場合は、画面下部の `診断情報を保存` から診断 zip を保存してください。
+
+診断 zip には、入力 accession、解決結果、warnings、GUI ログ、Python stdout / stderr、manifest、download log、保存先情報が含まれます。ローカルパスや accession が含まれるため、自動送信はしません。必要な場合だけ共有してください。
+
 ## ライセンス
 
 GEOGetter は MIT License で公開しています。ライセンス本文は `LICENSE` を確認してください。
