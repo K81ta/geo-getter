@@ -114,6 +114,7 @@ $script:DiagnosticProcessOutputLimitBytes = 1048576
 $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
 $script:LastInputText = ""
+$script:LastResolvedInputText = ""
 $script:Language = $UiLanguage
 $script:Translations = @{
     ja = @{
@@ -240,6 +241,8 @@ $script:Translations = @{
         colScope = "区分"
         colGeoUrl = "GEO URL"
         metadataFailed = "metadata取得に失敗しました。"
+        searchRequiredBeforeDownload = "現在の入力に対する検索結果がありません。もう一度ファイルを検索してください。"
+        inputChangedAfterResolve = "入力内容が変更されています。現在の入力で再度ファイルを検索してください。"
         noFastqSelected = "FASTQが選択されていません。"
         noFilesSelected = "FASTQまたはGEO supplementary/processed fileを選択してください。"
         resolveAlreadyRunning = "metadata取得が既に実行中です。"
@@ -382,6 +385,8 @@ $script:Translations = @{
         colScope = "Type"
         colGeoUrl = "GEO URL"
         metadataFailed = "Metadata retrieval failed."
+        searchRequiredBeforeDownload = "No search result is available for the current input. Search files again."
+        inputChangedAfterResolve = "The input has changed. Search files again for the current input."
         noFastqSelected = "No FASTQ files are selected."
         noFilesSelected = "Select at least one FASTQ or GEO supplementary/processed file."
         resolveAlreadyRunning = "Metadata retrieval is already running."
@@ -818,9 +823,49 @@ function New-ResolveInputFile {
     return $inputPath
 }
 
+function Normalize-InputText {
+    param([string]$Value)
+    if ($null -eq $Value) { return "" }
+    return $Value.Trim()
+}
+
+function Clear-ResolvedState {
+    param([switch]$DeleteResolvedJson)
+    $script:Resolved = $null
+    $script:LastResolvedInputText = ""
+    $script:LastDownloadDoneEvent = $null
+    $script:LastDownloadExitCode = $null
+    if ($fastqGrid) { $fastqGrid.Rows.Clear() }
+    if ($suppGrid) { $suppGrid.Rows.Clear() }
+    if ($DeleteResolvedJson -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
+        Remove-Item -LiteralPath $script:ResolvedJsonPath -Force -ErrorAction SilentlyContinue
+    }
+    Update-ResultTitles
+    Update-DatasetInfo
+    Update-Capacity
+}
+
+function Assert-ResolvedMatchesCurrentInput {
+    if ($null -eq $script:Resolved) {
+        throw (T "searchRequiredBeforeDownload")
+    }
+    if (-not (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
+        throw (T "searchRequiredBeforeDownload")
+    }
+    $currentInput = Normalize-InputText (if ($inputBox) { [string]$inputBox.Text } else { $script:LastInputText })
+    $resolvedInput = Normalize-InputText $script:LastResolvedInputText
+    if ([string]::IsNullOrWhiteSpace($currentInput) -or [string]::IsNullOrWhiteSpace($resolvedInput)) {
+        throw (T "searchRequiredBeforeDownload")
+    }
+    if (-not [string]::Equals($resolvedInput, $currentInput, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw (T "inputChangedAfterResolve")
+    }
+}
+
 function Apply-ResolvedResult {
     param([object]$Resolved)
     $script:Resolved = $Resolved
+    $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
     $items = @($script:Resolved.fastq_files)
     Add-FastqRowsFromResolved
     Add-SupplementaryRowsFromResolved
@@ -848,6 +893,7 @@ function Complete-ResolveProcess {
             Apply-ResolvedResult (Get-Content -Raw -Encoding UTF8 $script:ResolvedJsonPath | ConvertFrom-Json)
         }
         else {
+            Clear-ResolvedState -DeleteResolvedJson
             $message = (($script:ResolveStdoutText + $script:ResolveStderrText).Trim())
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = T "metadataFailed"
@@ -1118,6 +1164,7 @@ function Start-ResolveProcess {
 }
 
 function Start-DownloadProcess {
+    Assert-ResolvedMatchesCurrentInput
     Assert-AnySelection
     $psi = New-DownloadProcessStartInfo (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
 
@@ -1782,6 +1829,7 @@ function New-MainForm {
 
     $fetchButton.Add_Click({
         try {
+            Clear-ResolvedState -DeleteResolvedJson
             Set-Busy $true
             $statusLabel.Text = T "fetching"
             $progressBar.Style = "Marquee"
@@ -1890,7 +1938,7 @@ if ($SelfTest) {
     $sourceUri = (New-Object System.Uri((Resolve-Path -LiteralPath $sourcePath).Path)).AbsoluteUri
     $outputBox.Text = Join-Path $selfTestRoot "out folder"
 
-    $script:Resolved = [pscustomobject]@{
+    $resolvedFixture = [pscustomobject]@{
         input_text = "SELFTEST"
         primary_accession = "SELFTEST"
         query_accessions = @("SELFTEST")
@@ -1949,8 +1997,10 @@ if ($SelfTest) {
             }
         )
     }
+    $script:Resolved = $resolvedFixture
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($script:Resolved | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
     Add-FastqRowsFromResolved
     Add-SupplementaryRowsFromResolved
     Update-ResultTitles
@@ -1991,6 +2041,45 @@ if ($SelfTest) {
     Assert-Contains $selectionSummaryLabel.Text "GEO supplementary 1 件" "selection summary selected supplementary"
     Set-GridSelection $suppGrid "supp_selected" $false
     Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "" "bulk clear supplementary selection"
+    $inputBox.Text = "SELFTEST"
+    Assert-ResolvedMatchesCurrentInput
+    $inputBox.Text = "DIFFERENT_INPUT"
+    $inputChangedMessage = ""
+    try {
+        Assert-ResolvedMatchesCurrentInput
+    }
+    catch {
+        $inputChangedMessage = $_.Exception.Message
+    }
+    Assert-Equal $inputChangedMessage (T "inputChangedAfterResolve") "download blocked when input changed"
+    $inputBox.Text = "SELFTEST"
+    Set-GridSelection $fastqGrid "selected" $true
+    Set-GridSelection $suppGrid "supp_selected" $true
+    Clear-ResolvedState -DeleteResolvedJson
+    Assert-Equal $script:Resolved $null "clear resolved removes cached result"
+    Assert-Equal $fastqGrid.Rows.Count 0 "clear resolved removes fastq rows"
+    Assert-Equal $suppGrid.Rows.Count 0 "clear resolved removes supplementary rows"
+    Assert-Contains $fastqTitle.Text "0件" "clear resolved resets fastq title count"
+    Assert-Contains $suppTitle.Text "0件" "clear resolved resets supplementary title count"
+    Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "" "clear resolved removes fastq selections"
+    Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "" "clear resolved removes supplementary selections"
+    Assert-Equal (Test-Path -LiteralPath $script:ResolvedJsonPath) $false "clear resolved removes resolved json"
+    $noResultMessage = ""
+    try {
+        Assert-ResolvedMatchesCurrentInput
+    }
+    catch {
+        $noResultMessage = $_.Exception.Message
+    }
+    Assert-Equal $noResultMessage (T "searchRequiredBeforeDownload") "download blocked when no resolved state"
+    $script:Resolved = $resolvedFixture
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($script:Resolved | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
+    Add-FastqRowsFromResolved
+    Add-SupplementaryRowsFromResolved
+    Update-ResultTitles
+    Update-DatasetInfo
+    Update-Capacity
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress label remains process state"
 
