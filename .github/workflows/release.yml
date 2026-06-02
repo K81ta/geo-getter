@@ -10,11 +10,11 @@ permissions:
 
 jobs:
   build-release:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate tag version
         shell: pwsh
@@ -31,6 +31,14 @@ jobs:
           $projectVersion = $Matches[1]
           if ($projectVersion -ne $tagVersion) {
             throw "Tag version $tagVersion does not match pyproject.toml version $projectVersion"
+          }
+          $init = Get-Content -Raw -Encoding UTF8 geo_getter/__init__.py
+          if ($init -notmatch '(?m)^__version__\s*=\s*"([^"]+)"') {
+            throw "Could not read version from geo_getter/__init__.py"
+          }
+          $packageVersion = $Matches[1]
+          if ($packageVersion -ne $tagVersion) {
+            throw "Tag version $tagVersion does not match geo_getter.__version__ $packageVersion"
           }
 
       - name: Install Inno Setup

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Run Python tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
+      - name: Run PowerShell GUI self-test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\GEOGetter.ps1 -SelfTest

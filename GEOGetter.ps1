@@ -108,6 +108,12 @@ $script:ResolveStderrText = ""
 $script:DownloadProcess = $null
 $script:DownloadBridge = $null
 $script:DownloadCanceled = $false
+$script:DownloadStdoutText = ""
+$script:DownloadStderrText = ""
+$script:DiagnosticProcessOutputLimitBytes = 1048576
+$script:LastDownloadDoneEvent = $null
+$script:LastDownloadExitCode = $null
+$script:LastInputText = ""
 $script:Language = $UiLanguage
 $script:Translations = @{
     ja = @{
@@ -140,6 +146,7 @@ $script:Translations = @{
         supplementaryTitle = "GEO supplementary / processed file（raw FASTQ以外）: {0}件"
         downloadButton = "選択ファイルをダウンロード"
         cancelButton = "キャンセル"
+        diagnosticsButton = "診断情報を保存"
         selectAllButton = "すべて選択"
         clearSelectionButton = "選択解除"
         idle = "待機中"
@@ -246,6 +253,10 @@ $script:Translations = @{
         processEnvError = "ProcessStartInfoの環境変数を設定できません。"
         cancelRequestLog = "キャンセル要求: 実行中のダウンロードを停止します。途中ファイルは .part として残ります。"
         cancelFailedLog = "キャンセル失敗: {0}"
+        diagnosticsSavedLog = "診断情報を保存しました: {0}"
+        diagnosticsFailedLog = "診断情報の保存に失敗しました: {0}"
+        diagnosticsDialogTitle = "診断情報を保存"
+        diagnosticsFilter = "ZIPファイル (*.zip)|*.zip"
     }
     en = @{
         appTitle = "GEOGetter"
@@ -277,6 +288,7 @@ $script:Translations = @{
         supplementaryTitle = "GEO supplementary / processed files (not raw FASTQ): {0} files"
         downloadButton = "Download selected files"
         cancelButton = "Cancel"
+        diagnosticsButton = "Save diagnostics"
         selectAllButton = "Select all"
         clearSelectionButton = "Clear selection"
         idle = "Idle"
@@ -383,6 +395,10 @@ $script:Translations = @{
         processEnvError = "Could not set ProcessStartInfo environment variables."
         cancelRequestLog = "Cancel requested: stopping the running download. Partial files may remain as .part files."
         cancelFailedLog = "Cancel failed: {0}"
+        diagnosticsSavedLog = "Saved diagnostics: {0}"
+        diagnosticsFailedLog = "Failed to save diagnostics: {0}"
+        diagnosticsDialogTitle = "Save diagnostics"
+        diagnosticsFilter = "ZIP file (*.zip)|*.zip"
     }
 }
 
@@ -538,6 +554,7 @@ function Update-StaticTexts {
     Update-ResultTitles
     if ($downloadButton) { $downloadButton.Text = T "downloadButton" }
     if ($cancelButton) { $cancelButton.Text = T "cancelButton" }
+    if ($diagnosticsButton) { $diagnosticsButton.Text = T "diagnosticsButton" }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Text = T "selectAllButton" }
     if ($fastqClearSelectionButton) { $fastqClearSelectionButton.Text = T "clearSelectionButton" }
     if ($suppSelectAllButton) { $suppSelectAllButton.Text = T "selectAllButton" }
@@ -624,6 +641,158 @@ function Show-AppError {
     param([string]$Message)
     Append-Log $Message
     [System.Windows.Forms.MessageBox]::Show($Message, (T "appTitle"), "OK", "Error") | Out-Null
+}
+
+function Get-AppVersionForDiagnostics {
+    $initPath = Join-Path $AppRoot "geo_getter\__init__.py"
+    if (-not (Test-Path -LiteralPath $initPath)) { return "" }
+    $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $initPath
+    if ($content -match '(?m)^__version__\s*=\s*"([^"]+)"') {
+        return $Matches[1]
+    }
+    return ""
+}
+
+function Get-OutputFreeSpaceOrNull {
+    try {
+        $outDir = [System.IO.Path]::GetFullPath($outputBox.Text)
+        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+        $drive = New-Object System.IO.DriveInfo([System.IO.Path]::GetPathRoot($outDir))
+        return [Int64]$drive.AvailableFreeSpace
+    }
+    catch {
+        return $null
+    }
+}
+
+function Write-DiagnosticTextFile {
+    param(
+        [string]$Directory,
+        [string]$Name,
+        [string]$Content
+    )
+    $path = Join-Path $Directory $Name
+    [System.IO.File]::WriteAllText($path, [string]$Content, $script:Utf8NoBom)
+}
+
+function Add-DiagnosticProcessOutput {
+    param(
+        [ValidateSet("stdout", "stderr")]
+        [string]$Stream,
+        [string]$Line
+    )
+    $value = $Line + [Environment]::NewLine
+    if ($Stream -eq "stdout") {
+        $script:DownloadStdoutText = Limit-DiagnosticText ($script:DownloadStdoutText + $value)
+        return
+    }
+    $script:DownloadStderrText = Limit-DiagnosticText ($script:DownloadStderrText + $value)
+}
+
+function Limit-DiagnosticText {
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $limit = [int]$script:DiagnosticProcessOutputLimitBytes
+    if ($Text.Length -le $limit) { return $Text }
+    $marker = "[GEOGetter diagnostics: earlier process output was truncated]" + [Environment]::NewLine
+    $keep = [Math]::Max(0, $limit - $marker.Length)
+    if ($Text.Length -le $keep) { return $Text }
+    return $marker + $Text.Substring($Text.Length - $keep)
+}
+
+function Copy-DiagnosticFile {
+    param(
+        [string]$Source,
+        [string]$DestinationDirectory
+    )
+    if ([string]::IsNullOrWhiteSpace($Source)) { return }
+    if (-not (Test-Path -LiteralPath $Source)) { return }
+    New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination (Join-Path $DestinationDirectory ([System.IO.Path]::GetFileName($Source))) -Force
+}
+
+function Copy-DiagnosticArtifacts {
+    param([string]$ArtifactsDirectory)
+    if ($null -eq $script:LastDownloadDoneEvent) { return }
+    Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.fastq_manifest) $ArtifactsDirectory
+    Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.supplementary_manifest) $ArtifactsDirectory
+    Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.download_log) $ArtifactsDirectory
+}
+
+function Save-DiagnosticsZip {
+    param([string]$OutputPath)
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        throw "OutputPath is required."
+    }
+    $stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("geo_getter_diagnostics_" + [System.Guid]::NewGuid().ToString("N"))
+    try {
+        New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+        $diagnostics = [pscustomobject]@{
+            app_version = Get-AppVersionForDiagnostics
+            created_at_utc = [DateTime]::UtcNow.ToString("o")
+            app_root = $AppRoot
+            python_exe = $PythonExe
+            bundled_python = (Test-Path -LiteralPath $BundledPythonExe)
+            ui_language = $script:Language
+            input_text = if ($inputBox) { [string]$inputBox.Text } else { $script:LastInputText }
+            last_input_text = $script:LastInputText
+            resolved_json_path = $script:ResolvedJsonPath
+            resolved_present = ($null -ne $script:Resolved)
+            primary_accession = if ($script:Resolved) { [string]$script:Resolved.primary_accession } else { "" }
+            query_accessions = if ($script:Resolved) { @($script:Resolved.query_accessions) } else { @() }
+            warnings = if ($script:Resolved) { @($script:Resolved.warnings) } else { @() }
+            fastq_count = if ($script:Resolved) { @($script:Resolved.fastq_files).Count } else { 0 }
+            supplementary_count = if ($script:Resolved) { @($script:Resolved.supplementary_files).Count } else { 0 }
+            selected_fastq_indices = Get-SelectedFastqIndicesOrEmpty
+            selected_supplementary_indices = Get-SelectedSuppIndicesOrEmpty
+            output_parent = if ($outputBox) { [string]$outputBox.Text } else { "" }
+            output_free_bytes = Get-OutputFreeSpaceOrNull
+            last_download_exit_code = $script:LastDownloadExitCode
+            last_download_done = $script:LastDownloadDoneEvent
+        }
+        Write-DiagnosticTextFile $stagingRoot "diagnostics.json" ($diagnostics | ConvertTo-Json -Depth 12)
+        Write-DiagnosticTextFile $stagingRoot "resolve_stdout.txt" $script:ResolveStdoutText
+        Write-DiagnosticTextFile $stagingRoot "resolve_stderr.txt" $script:ResolveStderrText
+        Write-DiagnosticTextFile $stagingRoot "download_stdout.jsonl" $script:DownloadStdoutText
+        Write-DiagnosticTextFile $stagingRoot "download_stderr.txt" $script:DownloadStderrText
+        $guiLogText = ""
+        if ($logBox) { $guiLogText = $logBox.Text }
+        Write-DiagnosticTextFile $stagingRoot "gui_log.txt" $guiLogText
+        if (Test-Path -LiteralPath $script:ResolvedJsonPath) {
+            Copy-Item -LiteralPath $script:ResolvedJsonPath -Destination (Join-Path $stagingRoot "resolved.json") -Force
+        }
+        elseif ($null -ne $script:Resolved) {
+            Write-DiagnosticTextFile $stagingRoot "resolved.json" ($script:Resolved | ConvertTo-Json -Depth 12)
+        }
+        Copy-DiagnosticArtifacts (Join-Path $stagingRoot "artifacts")
+        if (Test-Path -LiteralPath $OutputPath) {
+            Remove-Item -LiteralPath $OutputPath -Force
+        }
+        Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $OutputPath -Force
+        return $OutputPath
+    }
+    finally {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Show-DiagnosticsSaveDialog {
+    $dialog = New-Object System.Windows.Forms.SaveFileDialog
+    $dialog.Title = T "diagnosticsDialogTitle"
+    $dialog.Filter = T "diagnosticsFilter"
+    $dialog.FileName = ("GEOGetter-diagnostics-{0}.zip" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $dialog.InitialDirectory = if ($outputBox -and (Test-Path -LiteralPath $outputBox.Text)) { $outputBox.Text } else { Get-DefaultOutputFolder }
+    if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    try {
+        $path = Save-DiagnosticsZip $dialog.FileName
+        Append-Log ((T "diagnosticsSavedLog") -f $path)
+        [System.Windows.Forms.MessageBox]::Show(((T "diagnosticsSavedLog") -f $path), (T "diagnosticsDialogTitle"), "OK", "Information") | Out-Null
+    }
+    catch {
+        $message = (T "diagnosticsFailedLog") -f $_.Exception.Message
+        Append-Log $message
+        [System.Windows.Forms.MessageBox]::Show($message, (T "diagnosticsDialogTitle"), "OK", "Error") | Out-Null
+    }
 }
 
 function Invoke-ResolveJson {
@@ -846,6 +1015,7 @@ function Set-Busy {
     $fetchButton.Enabled = -not $Busy
     $downloadButton.Enabled = -not $Busy
     $browseButton.Enabled = -not $Busy
+    if ($diagnosticsButton) { $diagnosticsButton.Enabled = -not $Busy }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Enabled = -not $Busy }
     if ($fastqClearSelectionButton) { $fastqClearSelectionButton.Enabled = -not $Busy }
     if ($suppSelectAllButton) { $suppSelectAllButton.Enabled = -not $Busy }
@@ -876,6 +1046,7 @@ function Handle-DownloadLine {
             Append-Log $event.message
         }
         elseif ($event.event -eq "done") {
+            $script:LastDownloadDoneEvent = $event
             $progressBar.Value = 100
             $statusLabel.Text = T "complete"
             if ($event.fastq_manifest) { Append-Log ((T "fastqManifestLog") -f $event.fastq_manifest) }
@@ -896,6 +1067,7 @@ function Start-ResolveProcess {
     if ($null -ne $script:ResolveProcess -and -not $script:ResolveProcess.HasExited) {
         throw (T "resolveAlreadyRunning")
     }
+    $script:LastInputText = $InputText
     $script:ResolveInputPath = New-ResolveInputFile $InputText
     $script:ResolveStdoutText = ""
     $script:ResolveStderrText = ""
@@ -950,6 +1122,10 @@ function Start-DownloadProcess {
     $psi = New-DownloadProcessStartInfo (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
 
     $script:DownloadCanceled = $false
+    $script:DownloadStdoutText = ""
+    $script:DownloadStderrText = ""
+    $script:LastDownloadDoneEvent = $null
+    $script:LastDownloadExitCode = $null
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     $process.EnableRaisingEvents = $true
@@ -957,6 +1133,7 @@ function Start-DownloadProcess {
         $form,
         ([System.Action[string]]{
             param($line)
+            Add-DiagnosticProcessOutput "stdout" $line
             try {
                 Handle-DownloadLine $line
             }
@@ -966,6 +1143,7 @@ function Start-DownloadProcess {
         }),
         ([System.Action[string]]{
             param($line)
+            Add-DiagnosticProcessOutput "stderr" $line
             try {
                 Append-Log $line
             }
@@ -974,6 +1152,7 @@ function Start-DownloadProcess {
         ([System.Action[int]]{
             param($code)
             try {
+                $script:LastDownloadExitCode = $code
                 Set-Busy $false
                 $script:DownloadProcess = $null
                 Update-CancelButton
@@ -1496,10 +1675,16 @@ function New-MainForm {
     $cancelButton.Enabled = $false
     $bottom.Controls.Add($cancelButton)
 
+    $script:diagnosticsButton = New-Object System.Windows.Forms.Button
+    $diagnosticsButton.Text = "Save diagnostics"
+    $diagnosticsButton.Location = New-Object System.Drawing.Point(315, 8)
+    $diagnosticsButton.Size = New-Object System.Drawing.Size(145, 30)
+    $bottom.Controls.Add($diagnosticsButton)
+
     $script:statusLabel = New-Object System.Windows.Forms.Label
     $statusLabel.Text = "Idle"
-    $statusLabel.Location = New-Object System.Drawing.Point(315, 14)
-    $statusLabel.Size = New-Object System.Drawing.Size(470, 22)
+    $statusLabel.Location = New-Object System.Drawing.Point(470, 14)
+    $statusLabel.Size = New-Object System.Drawing.Size(315, 22)
     $statusLabel.Anchor = $anchorTopLeftRight
     $bottom.Controls.Add($statusLabel)
 
@@ -1626,6 +1811,8 @@ function New-MainForm {
         }
     })
 
+    $diagnosticsButton.Add_Click({ Show-DiagnosticsSaveDialog })
+
     $cancelButton.Add_Click({
         if ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) {
             $script:DownloadCanceled = $true
@@ -1665,12 +1852,14 @@ if ($SelfTest) {
     Assert-Equal $helpMenuItem.DropDownItems.Count 3 "Help menu uses single help entry plus separator and about"
     Assert-Equal $fetchButton.Text "Find files" "English find files button"
     Assert-Equal $browseButton.Text "Browse" "English browse button"
+    Assert-Equal $diagnosticsButton.Text "Save diagnostics" "English diagnostics button"
     Assert-Equal $fastqGrid.Columns["geo_title"].HeaderText "Sample title" "English FASTQ header"
     Set-Language "ja"
     Assert-Equal $helpOpenMenuItem.Text "ヘルプを開く" "Japanese open help menu"
     Assert-Equal ((Get-Variable -Name inputHelpMenuItem -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "individual input help menu removed"
     Assert-Equal $fetchButton.Text "ファイルを検索" "Japanese find files button"
     Assert-Equal $browseButton.Text "参照..." "Japanese browse button"
+    Assert-Equal $diagnosticsButton.Text "診断情報を保存" "Japanese diagnostics button"
     Assert-Equal $suppTitle.Text "GEO supplementary / processed file（raw FASTQ以外）: 0件" "Japanese supplementary title"
     Assert-Equal $outputBox.ReadOnly $true "output folder is browse-only"
     Assert-Equal $outputBox.Text (Get-DefaultOutputFolder) "default output folder"
@@ -1682,6 +1871,13 @@ if ($SelfTest) {
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
     Assert-Equal (Format-Bytes ([Int64]-1)) "0 B" "Format-Bytes negative"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
+    $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
+    $script:DiagnosticProcessOutputLimitBytes = 80
+    $script:DownloadStdoutText = ""
+    Add-DiagnosticProcessOutput "stdout" ("a" * 100)
+    Assert-Contains $script:DownloadStdoutText "earlier process output was truncated" "diagnostic stdout cap marker"
+    Assert-Equal ($script:DownloadStdoutText.Length -le 80) $true "diagnostic stdout cap"
+    $script:DiagnosticProcessOutputLimitBytes = $originalDiagnosticLimit
     $encodingResult = Invoke-PythonCli -Arguments @("-m", "geo_getter.cli", "resolve-json", "")
     Assert-Equal $encodingResult.ExitCode 1 "empty input error exit code"
     Assert-Contains $encodingResult.Stderr "input_text or --input-file" "CLI stderr stays English"
@@ -1805,6 +2001,13 @@ if ($SelfTest) {
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
 
     $downloadResult = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
+    $script:DownloadStdoutText = Limit-DiagnosticText $downloadResult.Stdout
+    $script:DownloadStderrText = Limit-DiagnosticText $downloadResult.Stderr
+    $script:LastDownloadExitCode = $downloadResult.ExitCode
+    $doneLine = @($downloadResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"event"\s*:\s*"done"' } | Select-Object -Last 1)
+    if ($doneLine.Count -gt 0) {
+        $script:LastDownloadDoneEvent = $doneLine[0] | ConvertFrom-Json
+    }
     Assert-Equal $downloadResult.ExitCode 0 "selected-download-json exit code"
     Assert-Contains $downloadResult.Stdout '"event": "done"' "selected-download-json done event"
     Assert-Contains $downloadResult.Stdout '"md5_verified"' "selected-download-json md5 success"
@@ -1817,6 +2020,15 @@ if ($SelfTest) {
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "download_log.tsv")) $false "old download log removed"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "md5_verified" "download log md5 success"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "download_complete" "download log supplementary success"
+    $diagnosticsZip = Join-Path $selfTestRoot "diagnostics.zip"
+    Save-DiagnosticsZip $diagnosticsZip | Out-Null
+    Assert-Equal (Test-Path -LiteralPath $diagnosticsZip) $true "diagnostics zip exists"
+    $diagnosticsExtract = Join-Path $selfTestRoot "diagnostics extract"
+    Expand-Archive -LiteralPath $diagnosticsZip -DestinationPath $diagnosticsExtract -Force
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "diagnostics.json")) $true "diagnostics metadata exists"
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "gui_log.txt")) $true "diagnostics GUI log exists"
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "resolved.json")) $true "diagnostics resolved JSON exists"
+    Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "diagnostics includes download log"
 
     $outputBox.Text = Join-Path $selfTestRoot "async out folder"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
