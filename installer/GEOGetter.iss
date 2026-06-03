@@ -1,9 +1,9 @@
 #define MyAppName "GEOGetter"
 #ifndef AppVersion
-#define AppVersion "0.1.1"
+#define AppVersion "0.1.2"
 #endif
 #ifndef SourceDir
-#define SourceDir "..\dist\GEOGetter-v0.1.1-win-x64-portable"
+#define SourceDir "..\dist\GEOGetter-v0.1.2-win-x64-portable"
 #endif
 #ifndef OutputDir
 #define OutputDir "..\dist"
