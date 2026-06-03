@@ -142,6 +142,43 @@ class CliTest(unittest.TestCase):
             event = json.loads(stdout.getvalue())
             self.assertEqual(event["status_counts"], {"md5_mismatch": 1})
 
+    def test_selected_download_without_md5_emits_done_and_returns_nonzero(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000002",
+                "primary_accession": "GSE000002",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000002",
+                        "query_accession": "SRP000002",
+                        "run_accession": "SRR000002",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": "",
+                        "size_bytes": len(data),
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = _selected_download_json(input_json, "0", "", out_dir)
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 1)
+            self.assertIn('"event": "done"', output)
+            self.assertIn('"md5_unavailable"', output)
+            self.assertTrue((out_dir / "GSE000002" / "source.fastq.gz").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
