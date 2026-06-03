@@ -18,6 +18,7 @@ from .planner import (
     fastq_manifest_path,
     initialize_log,
     supplementary_manifest_path,
+    verify_fastq_manifest,
 )
 from .providers.resolver import MetadataResolver
 
@@ -37,11 +38,18 @@ def main(argv: list[str] | None = None) -> int:
     selected_download_parser.add_argument("--supp-indices", default="")
     selected_download_parser.add_argument("--out", required=True)
 
+    verify_manifest_parser = subparsers.add_parser("verify-fastq-manifest", help="verify saved FASTQ files from a manifest")
+    verify_manifest_parser.add_argument("--manifest", required=True)
+    verify_manifest_parser.add_argument("--report")
+
     args = parser.parse_args(argv)
     if args.command == "resolve-json":
         return _resolve_json(args.input_text, args.input_file, args.out_json)
     if args.command == "selected-download-json":
         return _selected_download_json(Path(args.input_json), args.fastq_indices, args.supp_indices, Path(args.out))
+    if args.command == "verify-fastq-manifest":
+        report_path = Path(args.report) if args.report else None
+        return _verify_fastq_manifest(Path(args.manifest), report_path)
     return 2
 
 
@@ -118,6 +126,12 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
     )
     ok_statuses = {MD5_VERIFIED, DOWNLOAD_COMPLETE}
     return 0 if statuses and all(status in ok_statuses for status in statuses) else 1
+
+
+def _verify_fastq_manifest(manifest_path: Path, report_path: Path | None = None) -> int:
+    report = verify_fastq_manifest(manifest_path, report_path)
+    print(json.dumps({"event": "verification_report", "report": str(report)}, ensure_ascii=False), flush=True)
+    return 0
 
 
 def _new_accession_output_dir(output_root: Path, primary_accession: str) -> Path:

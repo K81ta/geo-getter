@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import hashlib
 from pathlib import Path
+from unittest import mock
 
 from geo_getter.downloader import download_plan, verify_md5
 from geo_getter.errors import GeoGetterError
@@ -324,6 +325,29 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("missing", report_text)
             self.assertIn("size_mismatch", report_text)
             self.assertIn("md5_mismatch", report_text)
+
+    def test_verify_fastq_manifest_skips_md5_when_size_mismatched(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            data = b"size-mismatch\n"
+            fastq_path = output_dir / "size.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tsize.fastq.gz\thttps://example.invalid/size\t{hashlib.md5(data).hexdigest()}\t{len(data) + 1}\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            with mock.patch("geo_getter.planner._calculate_md5") as calculate_md5:
+                report_path = verify_fastq_manifest(manifest)
+            calculate_md5.assert_not_called()
+            self.assertIn("size_mismatch", report_path.read_text(encoding="utf-8-sig"))
 
 
 if __name__ == "__main__":

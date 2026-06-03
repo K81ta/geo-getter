@@ -199,7 +199,11 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
             expected_size = _parse_int(row.get("size_bytes", "0"))
             expected_md5 = (row.get("expected_md5", "") or "").strip()
             actual_size = _existing_size(local_path)
-            actual_md5 = _calculate_md5(local_path) if exists else ""
+            actual_md5 = (
+                _calculate_md5(local_path)
+                if _should_calculate_md5(exists, expected_size, actual_size, expected_md5)
+                else ""
+            )
             status = _verification_status(exists, expected_size, actual_size, expected_md5, actual_md5)
             writer.writerow(
                 [
@@ -279,6 +283,10 @@ def _calculate_md5(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _should_calculate_md5(exists: bool, expected_size: int, actual_size: int, expected_md5: str) -> bool:
+    return exists and bool(expected_md5) and (expected_size <= 0 or actual_size == expected_size)
 
 
 def _verification_status(

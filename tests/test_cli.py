@@ -1,3 +1,4 @@
+import hashlib
 import json
 import contextlib
 import io
@@ -19,6 +20,7 @@ class CliTest(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("resolve-json", output)
         self.assertIn("selected-download-json", output)
+        self.assertIn("verify-fastq-manifest", output)
         self.assertNotIn("plan-json", output)
         self.assertNotIn("verify-fixture", output)
         self.assertNotIn("\n    resolve ", output)
@@ -89,6 +91,32 @@ class CliTest(unittest.TestCase):
             second_run_dir = out_dir / "GSE000001_2"
             self.assertEqual((second_run_dir / "supplementary.txt").read_bytes(), data)
             self.assertTrue(download_log_path(second_run_dir).exists())
+
+    def test_verify_fastq_manifest_cli_writes_report_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = b"verified\n"
+            fastq_path = root / "verified.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = root / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(data).hexdigest()}\t{len(data)}\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["verify-fastq-manifest", "--manifest", str(manifest)]), 0)
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["event"], "verification_report")
+            report = Path(event["report"])
+            self.assertEqual(report, root / "verification_report.tsv")
+            self.assertIn("md5_verified", report.read_text(encoding="utf-8-sig"))
 
 
 if __name__ == "__main__":
