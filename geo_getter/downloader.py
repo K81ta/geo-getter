@@ -142,7 +142,7 @@ def download_plan(
             )
             _emit(message_callback, f"{status}: {planned.fastq.file_name}")
             results.append((planned, status, str(exc)))
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, ValueError) as exc:
             status = NETWORK_FAILED
             message = ERROR_MESSAGES[status]
             append_download_log(

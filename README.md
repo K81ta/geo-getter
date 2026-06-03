@@ -8,6 +8,8 @@ GEOGetter は、GEO accession、GEO ページ URL、SRA / ENA / Project / BioSam
 
 `GEOGetter-Setup-v<version>.exe` をダウンロードして実行してください。インストール後は、スタートメニューの `GEOGetter` から起動できます。
 
+通常はインストーラー版を使います。インストールせずに試す場合や、管理者権限なしで展開して使いたい場合は、`GEOGetter-v<version>-win-x64-portable.zip` を展開して `start_geo_getter.vbs` を実行してください。
+
 このインストーラーは未署名です。Windows SmartScreen の警告が出る場合があります。
 
 ## 動作環境

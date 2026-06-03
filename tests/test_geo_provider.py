@@ -1,6 +1,7 @@
 import unittest
 
-from geo_getter.providers.geo import _merge_parse_results, parse_soft
+from geo_getter.errors import GeoGetterError
+from geo_getter.providers.geo import GeoProvider, _merge_parse_results, parse_soft
 
 
 SOFT = """
@@ -84,6 +85,21 @@ class GeoProviderTest(unittest.TestCase):
             "GSM000001",
         )
         self.assertEqual(parsed.dataset_metadata.status, "Public on Jan 02 2026")
+
+    def test_gse_sample_soft_failure_is_reported_as_warning(self):
+        class FailingSampleGeoProvider(GeoProvider):
+            def fetch_soft(self, accession):
+                return """
+^SERIES = GSE000001
+!Series_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
+"""
+
+            def fetch_gsm_soft(self, accession):
+                raise GeoGetterError("network_failed", "fixture")
+
+        parsed = FailingSampleGeoProvider().get_related("GSE000001")
+        self.assertEqual(parsed.related_accessions, ["SRP000001"])
+        self.assertIn("sample metadata retrieval failed", parsed.warnings[0])
 
 
 if __name__ == "__main__":

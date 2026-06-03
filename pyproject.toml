@@ -22,8 +22,5 @@ classifiers = [
 ]
 dependencies = []
 
-[project.scripts]
-geo-getter = "geo_getter.app:main"
-
 [tool.setuptools.packages.find]
 include = ["geo_getter*"]

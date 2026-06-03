@@ -28,6 +28,7 @@ class MetadataResolver:
             supplementary_files = geo_result.supplementary_files
             dataset_metadata = geo_result.dataset_metadata
             sample_metadata_by_accession = geo_result.sample_metadata_by_accession
+            warnings.extend(geo_result.warnings)
             if not query_accessions:
                 warnings.append("No SRA, BioProject, or BioSample accessions were found in the GEO record.")
         elif parsed.is_ena_query:
@@ -43,6 +44,8 @@ class MetadataResolver:
         fastq_files = _deduplicate_fastq(fastq_files)
         if query_accessions and not fastq_files:
             warnings.append("No ENA direct FASTQ files were found.")
+        if any(item.size_bytes <= 0 for item in fastq_files):
+            warnings.append("One or more ENA FASTQ file sizes were unavailable or invalid; capacity checks may be incomplete.")
 
         return ResolveResult(
             input_text=input_text.strip(),

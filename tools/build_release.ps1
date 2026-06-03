@@ -119,6 +119,33 @@ function Get-PythonEmbedArchiveName {
     return "python-$Version-embed-amd64.zip"
 }
 
+function Get-PythonEmbedArchiveSha256 {
+    param([string]$Version, [string]$Arch)
+    $knownHashes = @{
+        "3.14.5|x64" = "ba6bd811c4eedb19195cf275770ef127e893d63701e24152606e2cb76f6d876a"
+    }
+    $key = "$Version|$Arch"
+    if (-not $knownHashes.ContainsKey($key)) {
+        throw "No trusted SHA256 is configured for CPython embeddable package $Version ($Arch)."
+    }
+    return $knownHashes[$key]
+}
+
+function Assert-FileSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    if (-not (Test-Path $Path)) {
+        throw "Cannot verify checksum because file was not found: $Path"
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    $expected = $ExpectedSha256.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "SHA256 mismatch for $Path. Expected $expected, got $actual."
+    }
+}
+
 function Ensure-PythonRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$Version,
@@ -141,6 +168,8 @@ function Ensure-PythonRuntime {
         Invoke-WebRequest -Uri $uri -OutFile $archivePath
     }
 
+    $expectedSha256 = Get-PythonEmbedArchiveSha256 -Version $Version -Arch $Arch
+    Assert-FileSha256 -Path $archivePath -ExpectedSha256 $expectedSha256
     Expand-Archive -LiteralPath $archivePath -DestinationPath $runtimeDir -Force
 
     $majorMinor = ($Version -split "\.")[0..1] -join ""

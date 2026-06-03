@@ -7,6 +7,7 @@ from typing import Any
 from ..errors import GeoGetterError
 from ..http_client import fetch_json
 from ..models import FastqFile
+from ..path_safety import safe_file_name
 
 
 ENA_FILE_REPORT_ENDPOINT = "https://www.ebi.ac.uk/ena/portal/api/filereport"
@@ -58,10 +59,10 @@ def parse_file_report(
 ) -> list[FastqFile]:
     fastq_files: list[FastqFile] = []
     for row in rows:
-        urls = _split_semicolon(row.get("fastq_ftp", ""))
-        md5s = _split_semicolon(row.get("fastq_md5", ""))
-        sizes = _split_semicolon(row.get("fastq_bytes", ""))
-        for index, raw_url in enumerate(urls, start=1):
+        urls = _split_url_values(row.get("fastq_ftp", ""))
+        md5s = _split_positional_values(row.get("fastq_md5", ""))
+        sizes = _split_positional_values(row.get("fastq_bytes", ""))
+        for file_index, raw_url in urls:
             if not raw_url:
                 continue
             fastq_files.append(
@@ -69,11 +70,11 @@ def parse_file_report(
                     source_accession=source_accession,
                     query_accession=query_accession,
                     run_accession=str(row.get("run_accession", "")),
-                    file_index=index,
+                    file_index=file_index + 1,
                     file_name=_file_name_from_url(raw_url),
                     url=_download_url(raw_url),
-                    expected_md5=_value_at(md5s, index - 1),
-                    size_bytes=_int_at(sizes, index - 1),
+                    expected_md5=_value_at(md5s, file_index),
+                    size_bytes=_int_at(sizes, file_index),
                     experiment_accession=str(row.get("experiment_accession", "")),
                     sample_accession=str(row.get("sample_accession", "")),
                     secondary_sample_accession=str(row.get("secondary_sample_accession", "")),
@@ -88,10 +89,14 @@ def parse_file_report(
     return fastq_files
 
 
-def _split_semicolon(value: Any) -> list[str]:
+def _split_url_values(value: Any) -> list[tuple[int, str]]:
+    return [(index, item) for index, item in enumerate(_split_positional_values(value)) if item]
+
+
+def _split_positional_values(value: Any) -> list[str]:
     if value is None:
         return []
-    return [item.strip() for item in str(value).split(";") if item.strip()]
+    return [item.strip() for item in str(value).split(";")]
 
 
 def _value_at(values: list[str], index: int) -> str:
@@ -123,4 +128,4 @@ def _download_url(raw_url: str) -> str:
 def _file_name_from_url(url: str) -> str:
     parsed = urllib.parse.urlparse(_download_url(url))
     basename = posixpath.basename(parsed.path)
-    return urllib.parse.unquote(basename or "download.fastq.gz")
+    return safe_file_name(urllib.parse.unquote(basename or "download.fastq.gz"), "download.fastq.gz")

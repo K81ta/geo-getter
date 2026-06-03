@@ -279,6 +279,23 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(plan.files[0].local_path.name, "same.fastq.gz")
             self.assertEqual(plan.files[1].local_path.name, "same.2.fastq.gz")
 
+    def test_unsafe_fastq_file_name_stays_inside_output_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR1",
+                file_index=1,
+                file_name="../escape.fastq.gz",
+                url="https://example.invalid/escape.fastq.gz",
+                expected_md5="",
+                size_bytes=0,
+            )
+            plan = build_download_plan("GSE", "GSE", [fastq], output_dir)
+            self.assertEqual(plan.files[0].local_path.name, "_escape.fastq.gz")
+            plan.files[0].local_path.resolve().relative_to(output_dir.resolve())
+
     def test_verify_fastq_manifest_writes_report_with_expected_statuses(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
