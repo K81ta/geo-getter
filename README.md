@@ -25,6 +25,8 @@ GEOGetter は、GEO accession、GEO ページ URL、SRA / ENA / Project / BioSam
 
 初期保存先は `Downloads\GEOGetter` です。
 
+保存済みFASTQをあとから確認したい場合は、`ツール > 保存済みFASTQを確認` から保存フォルダ内の `*_fastq_manifest.tsv` を選びます。同じフォルダに `verification_report.tsv` が作成されます。
+
 ## 入力例
 
 - `GSE30567`
@@ -50,7 +52,7 @@ Downloads/GEOGetter/
 
 検索やダウンロードが失敗した場合は、画面下部の `診断情報を保存` から診断 zip を保存してください。
 
-診断 zip には、入力 accession、解決結果、warnings、GUI ログ、Python stdout / stderr、manifest、download log、保存先情報が含まれます。ローカルパスや accession が含まれるため、自動送信はしません。必要な場合だけ共有してください。
+診断 zip には、入力 accession、解決結果、warnings、GUI ログ、Python stdout / stderr、manifest、download log、保存先情報が含まれます。保存済みFASTQの確認を実行した場合は、確認ログや `verification_report.tsv` も含まれることがあります。ローカルパスや accession が含まれるため、自動送信はしません。必要な場合だけ共有してください。
 
 ## ライセンス
 
