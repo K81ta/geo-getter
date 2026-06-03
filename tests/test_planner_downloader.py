@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 import hashlib
@@ -348,6 +349,82 @@ class PlannerDownloaderTest(unittest.TestCase):
                 report_path = verify_fastq_manifest(manifest)
             calculate_md5.assert_not_called()
             self.assertIn("size_mismatch", report_path.read_text(encoding="utf-8-sig"))
+
+    def test_verify_fastq_manifest_falls_back_to_manifest_folder_when_absolute_path_is_stale(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            data = b"verified after folder move\n"
+            fastq_path = output_dir / "verified.fastq.gz"
+            fastq_path.write_bytes(data)
+            stale_path = Path(temp) / "old_location" / "verified.fastq.gz"
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(data).hexdigest()}\t{len(data)}\t{stale_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            report_path = verify_fastq_manifest(manifest)
+            with report_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(row["local_path"], str(fastq_path.resolve()))
+            self.assertEqual(row["exists"], "yes")
+            self.assertEqual(row["status"], "md5_verified")
+
+    def test_verify_fastq_manifest_rejects_missing_required_columns(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "sample_fastq_manifest.tsv"
+            manifest.write_text("file_name\tlocal_path\nfixture.fastq.gz\tfixture.fastq.gz\n", encoding="utf-8-sig")
+
+            with self.assertRaises(GeoGetterError) as context:
+                verify_fastq_manifest(manifest)
+            self.assertEqual(context.exception.code, "invalid_manifest")
+
+    def test_verify_fastq_manifest_rejects_report_path_overwriting_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp)
+            data = b"verified\n"
+            fastq_path = output_dir / "verified.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            original_manifest = "\n".join(
+                [
+                    "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                    f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(data).hexdigest()}\t{len(data)}\t{fastq_path}\tplanned",
+                ]
+            )
+            manifest.write_text(original_manifest, encoding="utf-8-sig")
+
+            with self.assertRaises(GeoGetterError) as context:
+                verify_fastq_manifest(manifest, report_path=manifest)
+            self.assertEqual(context.exception.code, "invalid_manifest")
+            self.assertEqual(manifest.read_text(encoding="utf-8-sig"), original_manifest)
+
+    def test_verify_fastq_manifest_rejects_invalid_size_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp)
+            data = b"verified\n"
+            fastq_path = output_dir / "verified.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(data).hexdigest()}\tabc\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            with self.assertRaises(GeoGetterError) as context:
+                verify_fastq_manifest(manifest)
+            self.assertEqual(context.exception.code, "invalid_manifest")
 
 
 if __name__ == "__main__":

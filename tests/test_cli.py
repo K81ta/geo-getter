@@ -11,7 +11,7 @@ from geo_getter.planner import download_log_path, supplementary_manifest_path
 
 
 class CliTest(unittest.TestCase):
-    def test_help_only_exposes_gui_bridge_commands(self):
+    def test_help_exposes_supported_commands(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             with self.assertRaises(SystemExit) as context:
@@ -116,7 +116,31 @@ class CliTest(unittest.TestCase):
             self.assertEqual(event["event"], "verification_report")
             report = Path(event["report"])
             self.assertEqual(report, root / "verification_report.tsv")
+            self.assertEqual(event["statuses"], ["md5_verified"])
             self.assertIn("md5_verified", report.read_text(encoding="utf-8-sig"))
+
+    def test_verify_fastq_manifest_cli_returns_failure_when_report_has_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = b"mismatch\n"
+            fastq_path = root / "mismatch.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = root / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tmismatch.fastq.gz\thttps://example.invalid/mismatch\t{'0' * 32}\t{len(data)}\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["verify-fastq-manifest", "--manifest", str(manifest)]), 1)
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["statuses"], ["md5_mismatch"])
 
 
 if __name__ == "__main__":

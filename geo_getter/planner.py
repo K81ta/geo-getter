@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .errors import GeoGetterError
+from .errors import GeoGetterError, INVALID_MANIFEST
 from .models import DownloadPlan, FastqFile, PlannedFile
 
 
@@ -15,6 +15,18 @@ FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
 SUPPLEMENTARY_MANIFEST_SUFFIX = "supplementary_manifest.tsv"
 DOWNLOAD_LOG_SUFFIX = "download_log.tsv"
 VERIFICATION_REPORT_NAME = "verification_report.tsv"
+FASTQ_MANIFEST_REQUIRED_COLUMNS = (
+    "source_accession",
+    "query_accession",
+    "run_accession",
+    "file_index",
+    "file_name",
+    "url",
+    "expected_md5",
+    "size_bytes",
+    "local_path",
+    "status",
+)
 
 
 def build_download_plan(
@@ -171,9 +183,14 @@ def download_log_path(output_dir: str | Path) -> Path:
 def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> Path:
     manifest = Path(manifest_path)
     output = Path(report_path) if report_path else manifest.parent / VERIFICATION_REPORT_NAME
+    if manifest.resolve() == output.resolve():
+        raise GeoGetterError(INVALID_MANIFEST, "report_path_must_not_equal_manifest_path")
     with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
+        _validate_fastq_manifest_columns(reader.fieldnames)
         rows = list(reader)
+    if not rows:
+        raise GeoGetterError(INVALID_MANIFEST, "no_rows")
 
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
@@ -193,12 +210,12 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
                 "status",
             ]
         )
-        for row in rows:
-            local_path = _resolve_manifest_local_path(manifest, row.get("local_path", ""))
-            exists = local_path.exists()
-            expected_size = _parse_int(row.get("size_bytes", "0"))
+        for row_number, row in enumerate(rows, start=2):
+            local_path = _resolve_manifest_local_path(manifest, row)
+            exists = local_path.is_file()
+            expected_size = _parse_manifest_size(row.get("size_bytes"), row_number)
             expected_md5 = (row.get("expected_md5", "") or "").strip()
-            actual_size = _existing_size(local_path)
+            actual_size = _existing_size(local_path) if exists else 0
             actual_md5 = (
                 _calculate_md5(local_path)
                 if _should_calculate_md5(exists, expected_size, actual_size, expected_md5)
@@ -256,18 +273,44 @@ def _split_name(file_name: str) -> tuple[str, str]:
     return path.stem, path.suffix
 
 
-def _resolve_manifest_local_path(manifest_path: Path, local_path: str) -> Path:
-    candidate = Path(local_path)
-    if candidate.is_absolute():
-        return candidate
-    return (manifest_path.parent / candidate).resolve()
+def _validate_fastq_manifest_columns(fieldnames: list[str] | None) -> None:
+    if not fieldnames:
+        raise GeoGetterError(INVALID_MANIFEST, "missing_header")
+    missing = [name for name in FASTQ_MANIFEST_REQUIRED_COLUMNS if name not in fieldnames]
+    if missing:
+        raise GeoGetterError(INVALID_MANIFEST, f"missing_columns={','.join(missing)}")
 
 
-def _parse_int(value: str) -> int:
+def _resolve_manifest_local_path(manifest_path: Path, row: dict[str, str]) -> Path:
+    raw_local_path = (row.get("local_path") or "").strip()
+    file_name = (row.get("file_name") or "").strip()
+    if raw_local_path:
+        candidate = Path(raw_local_path)
+        resolved = candidate if candidate.is_absolute() else (manifest_path.parent / candidate).resolve()
+        if resolved.is_file() or not file_name:
+            return resolved
+        sibling = _manifest_sibling_path(manifest_path, file_name)
+        if sibling.is_file():
+            return sibling
+        return resolved
+    if file_name:
+        return _manifest_sibling_path(manifest_path, file_name)
+    return (manifest_path.parent / "__missing_manifest_local_path__").resolve()
+
+
+def _manifest_sibling_path(manifest_path: Path, file_name: str) -> Path:
+    return (manifest_path.parent / Path(file_name).name).resolve()
+
+
+def _parse_manifest_size(value: str | None, row_number: int) -> int:
+    text = (value or "").strip()
     try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+        parsed = int(text)
+    except ValueError as exc:
+        raise GeoGetterError(INVALID_MANIFEST, f"row={row_number} invalid_size_bytes={text}") from exc
+    if parsed < 0:
+        raise GeoGetterError(INVALID_MANIFEST, f"row={row_number} invalid_size_bytes={text}")
+    return parsed
 
 
 def _existing_size(path: Path) -> int:

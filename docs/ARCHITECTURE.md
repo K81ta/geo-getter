@@ -4,7 +4,7 @@
 
 GEOGetter は、GEO レコード、GEO URL、SRA / ENA / Project / BioSample 系 accession を起点に、raw FASTQ と GEO supplementary / processed file を取得する Windows 向けデスクトップアプリである。
 
-ユーザーは GUI から操作する。Python CLI は、GUI と Python コアをつなぐ中継役として使う。
+ユーザーは GUI から操作する。Python CLI は、GUI と Python コアをつなぐ中継役として使う。保存済み FASTQ の manifest 再確認も同じ CLI 入口から実行できる。
 
 実行環境:
 
@@ -20,10 +20,12 @@ flowchart TD
     Launcher --> GUI["GEOGetter.ps1\nPowerShell WinForms"]
     GUI --> ResolveCLI["python -m geo_getter.cli resolve-json"]
     GUI --> DownloadCLI["python -m geo_getter.cli selected-download-json"]
+    User --> VerifyCLI["python -m geo_getter.cli verify-fastq-manifest"]
     ResolveCLI --> Resolver["MetadataResolver"]
     Resolver --> GEO["GeoProvider\nNCBI GEO SOFT"]
     Resolver --> ENA["EnaProvider\nENA filereport"]
     DownloadCLI --> Planner["planner.py\n保存計画・manifest・log"]
+    VerifyCLI --> Planner
     DownloadCLI --> Downloader["downloader.py\n.part・Range・MD5"]
     Planner --> Output["accession別保存フォルダ"]
     Downloader --> Output
@@ -35,7 +37,7 @@ flowchart TD
 | --- | --- | --- |
 | Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat`, `geo_getter/app.py` | PowerShell WinForms GUI を STA で起動する |
 | GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル |
-| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理の起点 |
+| CLI | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、FASTQ manifest 再確認の起点 |
 | Metadata core | `accession.py`, `providers/*` | accession 抽出、GEO/ENA 問い合わせ、候補統合 |
 | Download core | `planner.py`, `downloader.py` | 出力先決定、manifest/log、容量確認、ダウンロード、MD5 検証 |
 
@@ -157,6 +159,21 @@ Downloads/GEOGetter/
 終了コード `0` は、選択ファイルの status がすべて `md5_verified` または `download_complete` の場合だけ返る。`md5_unavailable` はファイル保存済みでも MD5 未検証なので、終了コード `1` になる。
 
 キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。ただし、次回の GUI 実行では新しい accession suffix フォルダが選ばれることがあるため、同じ `.part` が自動で再利用されるとは限らない。同じ実保存フォルダと同じ local path を使う場合だけ、downloader 側で `.part` を再利用できる。
+
+### 6. 保存済み FASTQ の再確認
+
+FASTQ manifest が残っている保存フォルダでは、次の CLI で現在の保存ファイルを再確認できる。
+
+```powershell
+python -m geo_getter.cli verify-fastq-manifest `
+  --manifest <folder>_fastq_manifest.tsv
+```
+
+既定では manifest と同じフォルダに `verification_report.tsv` を作る。`--report <path>` を渡すと出力先を指定できる。
+
+manifest の `local_path` が存在する場合はそのパスを確認する。存在しない場合は、保存フォルダごと移動された可能性を考慮し、manifest と同じフォルダ内の `file_name` を確認する。
+
+report の `status` は `missing`, `size_mismatch`, `md5_mismatch`, `md5_unavailable`, `md5_verified` のいずれかになる。コマンドの終了コード `0` は、全行が `md5_verified` の場合だけ返る。ファイル欠落、サイズ不一致、MD5 不一致、MD5 未提供の行がある場合は、report を作成したうえで終了コード `1` を返す。
 
 ## 診断情報
 
@@ -305,6 +322,7 @@ FASTQ 候補生成に使う field:
 | `<folder>_fastq_manifest.tsv` | FASTQ 選択時 | FASTQ 保存予定 | UTF-8 BOM |
 | `<folder>_supplementary_manifest.tsv` | supplementary 選択時 | supplementary 保存予定 | UTF-8 BOM |
 | `<folder>_download_log.tsv` | 常時 | ファイル単位の実行結果 | 初期化は UTF-8 BOM、追記は UTF-8 |
+| `verification_report.tsv` | `verify-fastq-manifest` 実行時 | 保存済み FASTQ の再確認結果 | UTF-8 BOM |
 
 FASTQ manifest:
 
@@ -334,6 +352,17 @@ download log:
 | `bytes_expected` | FASTQ の期待サイズ。supplementary は `0` |
 | `bytes_downloaded` | 保存済み bytes |
 | `message` | 人間向けメッセージ |
+
+verification report:
+
+| 列 | 内容 |
+| --- | --- |
+| `source_accession`, `query_accession`, `run_accession`, `file_index`, `file_name` | manifest 由来の識別情報 |
+| `local_path` | 実際に確認したローカルパス |
+| `exists` | 確認対象ファイルが存在するか |
+| `expected_size_bytes`, `actual_size_bytes` | 期待サイズと現在のサイズ |
+| `expected_md5`, `actual_md5` | 期待 MD5 と現在の MD5。期待 MD5 がない場合やサイズ不一致の場合、`actual_md5` は空になる |
+| `status` | 再確認結果 |
 
 supplementary manifest:
 

@@ -24,7 +24,7 @@ from .providers.resolver import MetadataResolver
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="GEOGetter internal GUI bridge")
+    parser = argparse.ArgumentParser(description="GEOGetter command interface")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     resolve_json_parser = subparsers.add_parser("resolve-json", help="write resolved metadata as JSON")
@@ -130,8 +130,20 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
 
 def _verify_fastq_manifest(manifest_path: Path, report_path: Path | None = None) -> int:
     report = verify_fastq_manifest(manifest_path, report_path)
-    print(json.dumps({"event": "verification_report", "report": str(report)}, ensure_ascii=False), flush=True)
-    return 0
+    statuses = _verification_report_statuses(report)
+    print(
+        json.dumps(
+            {"event": "verification_report", "report": str(report), "statuses": statuses},
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+    return 0 if statuses and all(status == MD5_VERIFIED for status in statuses) else 1
+
+
+def _verification_report_statuses(report_path: Path) -> list[str]:
+    with report_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return [row.get("status", "") for row in csv.DictReader(handle, delimiter="\t")]
 
 
 def _new_accession_output_dir(output_root: Path, primary_accession: str) -> Path:
