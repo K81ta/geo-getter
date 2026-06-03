@@ -20,11 +20,13 @@ flowchart TD
     Launcher --> GUI["GEOGetter.ps1\nPowerShell WinForms"]
     GUI --> ResolveCLI["python -m geo_getter.cli resolve-json"]
     GUI --> DownloadCLI["python -m geo_getter.cli selected-download-json"]
+    GUI --> VerifyCLI["python -m geo_getter.cli verify-manifest-json"]
     ResolveCLI --> Resolver["MetadataResolver"]
     Resolver --> GEO["GeoProvider\nNCBI GEO SOFT"]
     Resolver --> ENA["EnaProvider\nENA filereport"]
     DownloadCLI --> Planner["planner.py\n保存計画・manifest・log"]
     DownloadCLI --> Downloader["downloader.py\n.part・Range・MD5"]
+    VerifyCLI --> Planner
     Planner --> Output["accession別保存フォルダ"]
     Downloader --> Output
 ```
@@ -35,7 +37,7 @@ flowchart TD
 | --- | --- | --- |
 | Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat`, `geo_getter/app.py` | PowerShell WinForms GUI を STA で起動する |
 | GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル |
-| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理の起点 |
+| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、manifest 再確認の起点 |
 | Metadata core | `accession.py`, `providers/*` | accession 抽出、GEO/ENA 問い合わせ、候補統合 |
 | Download core | `planner.py`, `downloader.py` | 出力先決定、manifest/log、容量確認、ダウンロード、MD5 検証 |
 
@@ -116,7 +118,31 @@ Downloads/GEOGetter/
 
 同名フォルダが存在し空でない場合は、既存成果物を上書きせず `GSE52778_2`, `GSE52778_3` のような suffix 付きフォルダを使う。
 
-### 5. 進捗と終了
+### 5. 保存済みFASTQ manifest再確認
+
+GUI の `ツール > 保存済みFASTQを確認` は、保存済みの `*_fastq_manifest.tsv` を選び、次の内部 CLI を非同期 subprocess として起動する。
+
+```powershell
+python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
+```
+
+このコマンドは GUI から呼ぶ内部 JSON bridge であり、ユーザー向けの公開 CLI として扱わない。出力先は manifest と同じフォルダの `verification_report.tsv` である。
+
+再確認では、manifest の `local_path` を優先してファイルを探す。フォルダ移動などで絶対パスが古く、同じフォルダに `file_name` のファイルが存在する場合は、manifest と同じフォルダのファイルを確認対象にする。
+
+`verification_report.tsv` の主な status:
+
+| status | 意味 |
+| --- | --- |
+| `md5_verified` | ファイルが存在し、サイズと MD5 が一致した |
+| `md5_unavailable` | ファイルは存在するが、manifest に期待 MD5 がないため MD5 照合できない |
+| `missing` | 確認対象ファイルが存在しない |
+| `size_mismatch` | ファイルサイズが manifest の値と一致しない |
+| `md5_mismatch` | サイズは一致するが MD5 が一致しない |
+
+終了コード `0` は、すべての FASTQ が `md5_verified` の場合だけ返る。それ以外の status がある場合は、レポートを作成したうえで終了コード `1` になる。
+
+### 6. 進捗と終了
 
 `selected-download-json` は stdout に JSON Lines を出す。GUI は stdout を 1 行ずつ読み取り、進捗バー、ログ、完了表示を更新する。
 
@@ -170,8 +196,9 @@ GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の
 | `resolved.json` | 最後に成功した `resolve-json` の結果 |
 | `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
 | `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |
+| `verify_stdout.jsonl`, `verify_stderr.txt` | manifest 再確認 subprocess の JSON Lines と標準エラー |
 | `gui_log.txt` | GUI 下部ログの内容 |
-| `artifacts/*` | 最後の download done event が返した manifest と download log |
+| `artifacts/*` | 最後の download done event が返した manifest、download log、最後の manifest 再確認レポート |
 
 診断 zip にはローカルパス、入力 accession、保存先、ファイル名が含まれる可能性があるため、ユーザーが必要時に手動で共有する。
 
