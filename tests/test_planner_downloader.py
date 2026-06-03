@@ -379,6 +379,37 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(row["exists"], "yes")
             self.assertEqual(row["status"], "md5_verified")
 
+    def test_verify_fastq_manifest_prefers_manifest_folder_when_absolute_path_still_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original_dir = Path(temp) / "original"
+            copied_dir = Path(temp) / "copied"
+            original_dir.mkdir()
+            copied_dir.mkdir()
+            original_data = b"original\n"
+            copied_data = b"modified\n"
+            original_path = original_dir / "verified.fastq.gz"
+            copied_path = copied_dir / "verified.fastq.gz"
+            original_path.write_bytes(original_data)
+            copied_path.write_bytes(copied_data)
+            manifest = copied_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(original_data).hexdigest()}\t{len(original_data)}\t{original_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            result = verify_fastq_manifest(manifest)
+            with result["report_path"].open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(result["status_counts"], {"md5_mismatch": 1})
+            self.assertEqual(row["local_path"], str(copied_path.resolve()))
+            self.assertEqual(row["actual_md5"], hashlib.md5(copied_data).hexdigest())
+            self.assertEqual(row["status"], "md5_mismatch")
+
     def test_verify_fastq_manifest_falls_back_to_local_path_name_for_moved_duplicates(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"

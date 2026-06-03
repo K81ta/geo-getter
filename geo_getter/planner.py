@@ -290,7 +290,7 @@ def _resolve_manifest_local_path(manifest_path: Path, row: dict[str, str]) -> Pa
     if raw_local_path:
         candidate = Path(raw_local_path)
         resolved = candidate if candidate.is_absolute() else (manifest_path.parent / candidate).resolve()
-        if resolved.is_file() or not file_name:
+        if not candidate.is_absolute() and resolved.is_file():
             return resolved
         if candidate.name:
             local_name_sibling = _manifest_sibling_path(manifest_path, candidate.name)
@@ -299,6 +299,8 @@ def _resolve_manifest_local_path(manifest_path: Path, row: dict[str, str]) -> Pa
         sibling = _manifest_sibling_path(manifest_path, file_name)
         if sibling.is_file():
             return sibling
+        if resolved.is_file() or not file_name:
+            return resolved
         return resolved
     if file_name:
         return _manifest_sibling_path(manifest_path, file_name)
