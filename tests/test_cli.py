@@ -1,3 +1,4 @@
+import hashlib
 import json
 import contextlib
 import io
@@ -19,6 +20,8 @@ class CliTest(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("resolve-json", output)
         self.assertIn("selected-download-json", output)
+        self.assertNotIn("verify-manifest-json", output)
+        self.assertNotIn("verify-fastq-manifest", output)
         self.assertNotIn("plan-json", output)
         self.assertNotIn("verify-fixture", output)
         self.assertNotIn("\n    resolve ", output)
@@ -89,6 +92,55 @@ class CliTest(unittest.TestCase):
             second_run_dir = out_dir / "GSE000001_2"
             self.assertEqual((second_run_dir / "supplementary.txt").read_bytes(), data)
             self.assertTrue(download_log_path(second_run_dir).exists())
+
+    def test_internal_manifest_verification_bridge_writes_json_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = b"verified\n"
+            fastq_path = root / "verified.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = root / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(data).hexdigest()}\t{len(data)}\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["verify-manifest-json", "--manifest", str(manifest)]), 0)
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["event"], "done")
+            self.assertEqual(event["kind"], "manifest_verification")
+            self.assertEqual(event["status_counts"], {"md5_verified": 1})
+            self.assertEqual(Path(event["report"]), root / "verification_report.tsv")
+
+    def test_internal_manifest_verification_bridge_returns_failure_for_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = b"mismatch\n"
+            fastq_path = root / "mismatch.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = root / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tmismatch.fastq.gz\thttps://example.invalid/mismatch\t{'0' * 32}\t{len(data)}\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["verify-manifest-json", "--manifest", str(manifest)]), 1)
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["status_counts"], {"md5_mismatch": 1})
 
 
 if __name__ == "__main__":

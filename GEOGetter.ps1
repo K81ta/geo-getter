@@ -110,9 +110,16 @@ $script:DownloadBridge = $null
 $script:DownloadCanceled = $false
 $script:DownloadStdoutText = ""
 $script:DownloadStderrText = ""
+$script:VerifyProcess = $null
+$script:VerifyBridge = $null
+$script:VerifyCanceled = $false
+$script:VerifyStdoutText = ""
+$script:VerifyStderrText = ""
 $script:DiagnosticProcessOutputLimitBytes = 1048576
 $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
+$script:LastVerificationDoneEvent = $null
+$script:LastVerificationExitCode = $null
 $script:LastInputText = ""
 $script:LastResolvedInputText = ""
 $script:Language = $UiLanguage
@@ -123,6 +130,8 @@ $script:Translations = @{
         languageMenu = "言語"
         japanese = "日本語"
         english = "English"
+        toolsMenu = "ツール"
+        verifyManifestMenu = "保存済みFASTQを確認"
         helpMenu = "ヘルプ"
         helpOpen = "ヘルプを開く"
         helpUsage = "基本の使い方"
@@ -153,6 +162,7 @@ $script:Translations = @{
         idle = "待機中"
         fetching = "metadata取得中"
         downloading = "ダウンロード中"
+        verifyingManifest = "manifest確認中"
         complete = "完了"
         completePartial = "完了（一部失敗あり）"
         error = "エラー"
@@ -246,11 +256,21 @@ $script:Translations = @{
         noFastqSelected = "FASTQが選択されていません。"
         noFilesSelected = "FASTQまたはGEO supplementary/processed fileを選択してください。"
         resolveAlreadyRunning = "metadata取得が既に実行中です。"
+        verifyManifestAlreadyRunning = "manifest確認が既に実行中です。"
         fastqCountLog = "{0}: FASTQ {1}件"
         supplementaryCountLog = "GEO supplementary/processed: {0}件"
         fastqManifestLog = "FASTQリスト: {0}"
         supplementaryManifestLog = "GEO supplementaryリスト: {0}"
         downloadLogLog = "ログファイル: {0}"
+        verifyManifestDialogTitle = "FASTQ manifestを選択"
+        verifyManifestFilter = "FASTQ manifest (*_fastq_manifest.tsv)|*_fastq_manifest.tsv|TSVファイル (*.tsv)|*.tsv|すべてのファイル (*.*)|*.*"
+        verifyManifestStartedLog = "FASTQ manifestを確認します: {0}"
+        verifyManifestReportLog = "確認レポート: {0}"
+        verifyManifestSummaryLog = "確認結果: {0}"
+        verifyManifestCompleteMessage = "確認レポートを作成しました: {0}"
+        verifyManifestPartialMessage = "確認レポートを作成しました（一部要確認）: {0}"
+        verifyManifestNoReport = "確認レポートが作成されませんでした。"
+        verifyCancelRequestLog = "キャンセル要求: manifest確認を停止します。"
         progressDisplayError = "進捗表示エラー: {0}"
         exitHandlerError = "終了処理エラー: {0}"
         processEnvError = "ProcessStartInfoの環境変数を設定できません。"
@@ -267,6 +287,8 @@ $script:Translations = @{
         languageMenu = "Language"
         japanese = "Japanese"
         english = "English"
+        toolsMenu = "Tools"
+        verifyManifestMenu = "Verify saved FASTQ"
         helpMenu = "Help"
         helpOpen = "Open help"
         helpUsage = "Basic usage"
@@ -297,6 +319,7 @@ $script:Translations = @{
         idle = "Idle"
         fetching = "Fetching metadata"
         downloading = "Downloading"
+        verifyingManifest = "Checking manifest"
         complete = "Complete"
         completePartial = "Complete with failures"
         error = "Error"
@@ -390,11 +413,21 @@ $script:Translations = @{
         noFastqSelected = "No FASTQ files are selected."
         noFilesSelected = "Select at least one FASTQ or GEO supplementary/processed file."
         resolveAlreadyRunning = "Metadata retrieval is already running."
+        verifyManifestAlreadyRunning = "Manifest verification is already running."
         fastqCountLog = "{0}: FASTQ {1} files"
         supplementaryCountLog = "GEO supplementary/processed: {0} files"
         fastqManifestLog = "FASTQ list: {0}"
         supplementaryManifestLog = "GEO supplementary list: {0}"
         downloadLogLog = "Download log: {0}"
+        verifyManifestDialogTitle = "Select FASTQ manifest"
+        verifyManifestFilter = "FASTQ manifest (*_fastq_manifest.tsv)|*_fastq_manifest.tsv|TSV file (*.tsv)|*.tsv|All files (*.*)|*.*"
+        verifyManifestStartedLog = "Checking FASTQ manifest: {0}"
+        verifyManifestReportLog = "Verification report: {0}"
+        verifyManifestSummaryLog = "Verification results: {0}"
+        verifyManifestCompleteMessage = "Verification report created: {0}"
+        verifyManifestPartialMessage = "Verification report created with issues: {0}"
+        verifyManifestNoReport = "No verification report was created."
+        verifyCancelRequestLog = "Cancel requested: stopping manifest verification."
         progressDisplayError = "Progress display error: {0}"
         exitHandlerError = "Exit handler error: {0}"
         processEnvError = "Could not set ProcessStartInfo environment variables."
@@ -548,6 +581,8 @@ function Update-StaticTexts {
     if ($languageMenuItem) { $languageMenuItem.Text = T "languageMenu" }
     if ($japaneseMenuItem) { $japaneseMenuItem.Text = T "japanese" }
     if ($englishMenuItem) { $englishMenuItem.Text = T "english" }
+    if ($toolsMenuItem) { $toolsMenuItem.Text = T "toolsMenu" }
+    if ($verifyManifestMenuItem) { $verifyManifestMenuItem.Text = T "verifyManifestMenu" }
     if ($helpMenuItem) { $helpMenuItem.Text = T "helpMenu" }
     if ($helpOpenMenuItem) { $helpOpenMenuItem.Text = T "helpOpen" }
     if ($aboutMenuItem) { $aboutMenuItem.Text = T "about" }
@@ -694,6 +729,20 @@ function Add-DiagnosticProcessOutput {
     $script:DownloadStderrText = Limit-DiagnosticText ($script:DownloadStderrText + $value)
 }
 
+function Add-DiagnosticVerificationOutput {
+    param(
+        [ValidateSet("stdout", "stderr")]
+        [string]$Stream,
+        [string]$Line
+    )
+    $value = $Line + [Environment]::NewLine
+    if ($Stream -eq "stdout") {
+        $script:VerifyStdoutText = Limit-DiagnosticText ($script:VerifyStdoutText + $value)
+        return
+    }
+    $script:VerifyStderrText = Limit-DiagnosticText ($script:VerifyStderrText + $value)
+}
+
 function Limit-DiagnosticText {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return "" }
@@ -718,10 +767,14 @@ function Copy-DiagnosticFile {
 
 function Copy-DiagnosticArtifacts {
     param([string]$ArtifactsDirectory)
-    if ($null -eq $script:LastDownloadDoneEvent) { return }
-    Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.fastq_manifest) $ArtifactsDirectory
-    Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.supplementary_manifest) $ArtifactsDirectory
-    Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.download_log) $ArtifactsDirectory
+    if ($null -ne $script:LastDownloadDoneEvent) {
+        Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.fastq_manifest) $ArtifactsDirectory
+        Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.supplementary_manifest) $ArtifactsDirectory
+        Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.download_log) $ArtifactsDirectory
+    }
+    if ($null -ne $script:LastVerificationDoneEvent) {
+        Copy-DiagnosticFile ([string]$script:LastVerificationDoneEvent.report) $ArtifactsDirectory
+    }
 }
 
 function Save-DiagnosticsZip {
@@ -754,12 +807,16 @@ function Save-DiagnosticsZip {
             output_free_bytes = Get-OutputFreeSpaceOrNull
             last_download_exit_code = $script:LastDownloadExitCode
             last_download_done = $script:LastDownloadDoneEvent
+            last_verification_exit_code = $script:LastVerificationExitCode
+            last_verification_done = $script:LastVerificationDoneEvent
         }
         Write-DiagnosticTextFile $stagingRoot "diagnostics.json" ($diagnostics | ConvertTo-Json -Depth 12)
         Write-DiagnosticTextFile $stagingRoot "resolve_stdout.txt" $script:ResolveStdoutText
         Write-DiagnosticTextFile $stagingRoot "resolve_stderr.txt" $script:ResolveStderrText
         Write-DiagnosticTextFile $stagingRoot "download_stdout.jsonl" $script:DownloadStdoutText
         Write-DiagnosticTextFile $stagingRoot "download_stderr.txt" $script:DownloadStderrText
+        Write-DiagnosticTextFile $stagingRoot "verify_stdout.jsonl" $script:VerifyStdoutText
+        Write-DiagnosticTextFile $stagingRoot "verify_stderr.txt" $script:VerifyStderrText
         $guiLogText = ""
         if ($logBox) { $guiLogText = $logBox.Text }
         Write-DiagnosticTextFile $stagingRoot "gui_log.txt" $guiLogText
@@ -1063,6 +1120,7 @@ function Set-Busy {
     $downloadButton.Enabled = -not $Busy
     $browseButton.Enabled = -not $Busy
     if ($diagnosticsButton) { $diagnosticsButton.Enabled = -not $Busy }
+    if ($verifyManifestMenuItem) { $verifyManifestMenuItem.Enabled = -not $Busy }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Enabled = -not $Busy }
     if ($fastqClearSelectionButton) { $fastqClearSelectionButton.Enabled = -not $Busy }
     if ($suppSelectAllButton) { $suppSelectAllButton.Enabled = -not $Busy }
@@ -1073,8 +1131,8 @@ function Set-Busy {
 function Update-CancelButton {
     if ($null -eq $cancelButton) { return }
     $cancelButton.Enabled = (
-        $null -ne $script:DownloadProcess -and
-        -not $script:DownloadProcess.HasExited
+        ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) -or
+        ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited)
     )
 }
 
@@ -1106,6 +1164,74 @@ function Handle-DownloadLine {
     }
     catch {
         Append-Log $Line
+    }
+}
+
+function Format-VerificationStatusCounts {
+    param([object]$Counts)
+    if ($null -eq $Counts) { return "" }
+    $parts = @()
+    $seen = @{}
+    foreach ($name in @("md5_verified", "md5_unavailable", "missing", "size_mismatch", "md5_mismatch")) {
+        $property = @($Counts.PSObject.Properties | Where-Object { $_.Name -eq $name } | Select-Object -First 1)
+        if ($property.Count -gt 0) {
+            $parts += ("{0}={1}" -f $name, $property[0].Value)
+            $seen[$name] = $true
+        }
+    }
+    foreach ($property in $Counts.PSObject.Properties) {
+        if (-not $seen.ContainsKey($property.Name)) {
+            $parts += ("{0}={1}" -f $property.Name, $property.Value)
+        }
+    }
+    return ($parts -join ", ")
+}
+
+function Handle-ManifestVerificationLine {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return }
+    try {
+        $event = $Line | ConvertFrom-Json
+        if ($event.event -eq "done" -and $event.kind -eq "manifest_verification") {
+            $script:LastVerificationDoneEvent = $event
+            $progressBar.Style = "Continuous"
+            $progressBar.Value = 100
+            if ($event.report) { Append-Log ((T "verifyManifestReportLog") -f $event.report) }
+            Append-Log ((T "verifyManifestSummaryLog") -f (Format-VerificationStatusCounts $event.status_counts))
+        }
+        else {
+            Append-Log $Line
+        }
+    }
+    catch {
+        Append-Log $Line
+    }
+}
+
+function Show-ManifestVerificationOpenDialog {
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = T "verifyManifestDialogTitle"
+    $dialog.Filter = T "verifyManifestFilter"
+    $dialog.CheckFileExists = $true
+    $dialog.Multiselect = $false
+    if ($outputBox -and -not [string]::IsNullOrWhiteSpace($outputBox.Text) -and [System.IO.Directory]::Exists($outputBox.Text)) {
+        $dialog.InitialDirectory = $outputBox.Text
+    }
+    if ($dialog.ShowDialog($form) -ne "OK") { return }
+
+    try {
+        Set-Busy $true
+        $progressBar.Style = "Marquee"
+        $progressBar.MarqueeAnimationSpeed = 30
+        $progressBar.Value = 0
+        $statusLabel.Text = T "verifyingManifest"
+        Start-ManifestVerificationProcess $dialog.FileName
+    }
+    catch {
+        $progressBar.Style = "Continuous"
+        $progressBar.Value = 0
+        Set-Busy $false
+        Show-AppError $_.Exception.Message
     }
 }
 
@@ -1162,6 +1288,83 @@ function Start-ResolveProcess {
         $script:ResolveProcess = $null
         throw
     }
+}
+
+function Start-ManifestVerificationProcess {
+    param([string]$ManifestPath)
+    if ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited) {
+        throw (T "verifyManifestAlreadyRunning")
+    }
+    $script:VerifyCanceled = $false
+    $script:VerifyStdoutText = ""
+    $script:VerifyStderrText = ""
+    $script:LastVerificationDoneEvent = $null
+    $script:LastVerificationExitCode = $null
+    Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = New-VerifyManifestProcessStartInfo $ManifestPath
+    $process.EnableRaisingEvents = $true
+    $script:VerifyBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
+        $form,
+        ([System.Action[string]]{
+            param($line)
+            Add-DiagnosticVerificationOutput "stdout" $line
+            try {
+                Handle-ManifestVerificationLine $line
+            }
+            catch {
+                try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
+            }
+        }),
+        ([System.Action[string]]{
+            param($line)
+            Add-DiagnosticVerificationOutput "stderr" $line
+            try {
+                Append-Log $line
+            }
+            catch { }
+        }),
+        ([System.Action[int]]{
+            param($code)
+            try {
+                $script:LastVerificationExitCode = $code
+                $progressBar.Style = "Continuous"
+                Set-Busy $false
+                $script:VerifyProcess = $null
+                Update-CancelButton
+                if ($script:VerifyCanceled) {
+                    $statusLabel.Text = T "canceled"
+                    return
+                }
+                if ($null -eq $script:LastVerificationDoneEvent) {
+                    $progressBar.Value = 0
+                    $statusLabel.Text = T "error"
+                    Append-Log (T "verifyManifestNoReport")
+                    return
+                }
+                $message = if ($code -eq 0) {
+                    $statusLabel.Text = T "complete"
+                    (T "verifyManifestCompleteMessage") -f $script:LastVerificationDoneEvent.report
+                }
+                else {
+                    $statusLabel.Text = T "completePartial"
+                    (T "verifyManifestPartialMessage") -f $script:LastVerificationDoneEvent.report
+                }
+                $icon = if ($code -eq 0) { "Information" } else { "Warning" }
+                [System.Windows.Forms.MessageBox]::Show($message, (T "verifyManifestDialogTitle"), "OK", $icon) | Out-Null
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        })
+    )
+    $script:VerifyBridge.Attach($process)
+    [void]$process.Start()
+    $script:VerifyProcess = $process
+    Update-CancelButton
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
 }
 
 function Start-DownloadProcess {
@@ -1240,6 +1443,11 @@ function New-DownloadProcessStartInfo {
     return New-PythonProcessStartInfo -Arguments @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text)
 }
 
+function New-VerifyManifestProcessStartInfo {
+    param([string]$ManifestPath)
+    return New-PythonProcessStartInfo -Arguments @("-m", "geo_getter.cli", "verify-manifest-json", "--manifest", $ManifestPath)
+}
+
 function New-PythonProcessStartInfo {
     param([string[]]$Arguments)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1302,6 +1510,22 @@ function Invoke-SelectedDownloadJsonForSelfTest {
         [string]$SuppIndices
     )
     $psi = New-DownloadProcessStartInfo $FastqIndices $SuppIndices
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        Stdout = $stdout
+        Stderr = $stderr
+    }
+}
+
+function Invoke-VerifyManifestJsonForSelfTest {
+    param([string]$ManifestPath)
+    $psi = New-VerifyManifestProcessStartInfo $ManifestPath
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     [void]$process.Start()
@@ -1418,16 +1642,20 @@ function New-MainForm {
     $script:languageMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:japaneseMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:englishMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $script:toolsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $script:verifyManifestMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:helpMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:helpOpenMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:aboutMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     [void]$languageMenuItem.DropDownItems.Add($japaneseMenuItem)
     [void]$languageMenuItem.DropDownItems.Add($englishMenuItem)
     [void]$settingsMenuItem.DropDownItems.Add($languageMenuItem)
+    [void]$toolsMenuItem.DropDownItems.Add($verifyManifestMenuItem)
     [void]$helpMenuItem.DropDownItems.Add($helpOpenMenuItem)
     [void]$helpMenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
     [void]$helpMenuItem.DropDownItems.Add($aboutMenuItem)
     [void]$menuStrip.Items.Add($settingsMenuItem)
+    [void]$menuStrip.Items.Add($toolsMenuItem)
     [void]$menuStrip.Items.Add($helpMenuItem)
     $rootLayout.Controls.Add($menuStrip, 0, 0)
 
@@ -1770,6 +1998,7 @@ function New-MainForm {
 
     $japaneseMenuItem.Add_Click({ Set-Language "ja" })
     $englishMenuItem.Add_Click({ Set-Language "en" })
+    $verifyManifestMenuItem.Add_Click({ Show-ManifestVerificationOpenDialog })
     $helpOpenMenuItem.Add_Click({ Show-HelpWindow })
     $aboutMenuItem.Add_Click({
         [System.Windows.Forms.MessageBox]::Show((T "aboutText"), (T "about"), "OK", "Information") | Out-Null
@@ -1855,6 +2084,9 @@ function New-MainForm {
             Start-DownloadProcess
         }
         catch {
+            $progressBar.Style = "Continuous"
+            $progressBar.Value = 0
+            $statusLabel.Text = T "error"
             Set-Busy $false
             Show-AppError $_.Exception.Message
         }
@@ -1863,7 +2095,9 @@ function New-MainForm {
     $diagnosticsButton.Add_Click({ Show-DiagnosticsSaveDialog })
 
     $cancelButton.Add_Click({
+        $canceledAny = $false
         if ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) {
+            $canceledAny = $true
             $script:DownloadCanceled = $true
             Append-Log (T "cancelRequestLog")
             try {
@@ -1872,8 +2106,19 @@ function New-MainForm {
             catch {
                 Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
             }
-            Update-CancelButton
         }
+        if ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited) {
+            $canceledAny = $true
+            $script:VerifyCanceled = $true
+            Append-Log (T "verifyCancelRequestLog")
+            try {
+                $script:VerifyProcess.Kill()
+            }
+            catch {
+                Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
+            }
+        }
+        if ($canceledAny) { Update-CancelButton }
     })
 
     $formLocal.add_FormClosing({
@@ -1883,6 +2128,10 @@ function New-MainForm {
         if ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) {
             $script:DownloadCanceled = $true
             try { $script:DownloadProcess.Kill() } catch { }
+        }
+        if ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited) {
+            $script:VerifyCanceled = $true
+            try { $script:VerifyProcess.Kill() } catch { }
         }
     })
 
@@ -1897,6 +2146,8 @@ if ($SelfTest) {
     Assert-Equal $form.Text "GEOGetter" "window title unchanged"
     Set-Language "en"
     Assert-Equal $settingsMenuItem.Text "Settings" "English settings menu"
+    Assert-Equal $toolsMenuItem.Text "Tools" "English tools menu"
+    Assert-Equal $verifyManifestMenuItem.Text "Verify saved FASTQ" "English verify manifest menu"
     Assert-Equal $helpOpenMenuItem.Text "Open help" "English open help menu"
     Assert-Equal $helpMenuItem.DropDownItems.Count 3 "Help menu uses single help entry plus separator and about"
     Assert-Equal $fetchButton.Text "Find files" "English find files button"
@@ -1905,6 +2156,8 @@ if ($SelfTest) {
     Assert-Equal $fastqGrid.Columns["geo_title"].HeaderText "Sample title" "English FASTQ header"
     Set-Language "ja"
     Assert-Equal $helpOpenMenuItem.Text "ヘルプを開く" "Japanese open help menu"
+    Assert-Equal $toolsMenuItem.Text "ツール" "Japanese tools menu"
+    Assert-Equal $verifyManifestMenuItem.Text "保存済みFASTQを確認" "Japanese verify manifest menu"
     Assert-Equal ((Get-Variable -Name inputHelpMenuItem -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "individual input help menu removed"
     Assert-Equal $fetchButton.Text "ファイルを検索" "Japanese find files button"
     Assert-Equal $browseButton.Text "参照..." "Japanese browse button"
@@ -2110,6 +2363,18 @@ if ($SelfTest) {
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "download_log.tsv")) $false "old download log removed"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "md5_verified" "download log md5 success"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "download_complete" "download log supplementary success"
+    $verifyResult = Invoke-VerifyManifestJsonForSelfTest (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")
+    $script:VerifyStdoutText = Limit-DiagnosticText $verifyResult.Stdout
+    $script:VerifyStderrText = Limit-DiagnosticText $verifyResult.Stderr
+    $script:LastVerificationExitCode = $verifyResult.ExitCode
+    $verifyDoneLine = @($verifyResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"kind"\s*:\s*"manifest_verification"' } | Select-Object -Last 1)
+    if ($verifyDoneLine.Count -gt 0) {
+        $script:LastVerificationDoneEvent = $verifyDoneLine[0] | ConvertFrom-Json
+    }
+    Assert-Equal $verifyResult.ExitCode 0 "verify-manifest-json exit code"
+    Assert-Contains $verifyResult.Stdout '"kind": "manifest_verification"' "verify-manifest-json done event"
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "verification_report.tsv")) $true "verification report exists"
+    Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "verification_report.tsv")) "md5_verified" "verification report md5 success"
     $diagnosticsZip = Join-Path $selfTestRoot "diagnostics.zip"
     Save-DiagnosticsZip $diagnosticsZip | Out-Null
     Assert-Equal (Test-Path -LiteralPath $diagnosticsZip) $true "diagnostics zip exists"
@@ -2119,6 +2384,7 @@ if ($SelfTest) {
     Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "gui_log.txt")) $true "diagnostics GUI log exists"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "resolved.json")) $true "diagnostics resolved JSON exists"
     Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "diagnostics includes download log"
+    Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "verification_report.tsv").Count -gt 0) $true "diagnostics includes verification report"
 
     $outputBox.Text = Join-Path $selfTestRoot "async out folder"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false

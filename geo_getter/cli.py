@@ -18,11 +18,13 @@ from .planner import (
     fastq_manifest_path,
     initialize_log,
     supplementary_manifest_path,
+    verify_fastq_manifest,
 )
 from .providers.resolver import MetadataResolver
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description="GEOGetter internal GUI bridge")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -37,11 +39,17 @@ def main(argv: list[str] | None = None) -> int:
     selected_download_parser.add_argument("--supp-indices", default="")
     selected_download_parser.add_argument("--out", required=True)
 
-    args = parser.parse_args(argv)
+    if argv_list and argv_list[0] == "verify-manifest-json":
+        verify_manifest_parser = subparsers.add_parser("verify-manifest-json", help=argparse.SUPPRESS)
+        verify_manifest_parser.add_argument("--manifest", required=True)
+
+    args = parser.parse_args(argv_list)
     if args.command == "resolve-json":
         return _resolve_json(args.input_text, args.input_file, args.out_json)
     if args.command == "selected-download-json":
         return _selected_download_json(Path(args.input_json), args.fastq_indices, args.supp_indices, Path(args.out))
+    if args.command == "verify-manifest-json":
+        return _verify_manifest_json(Path(args.manifest))
     return 2
 
 
@@ -131,6 +139,20 @@ def _new_accession_output_dir(output_root: Path, primary_accession: str) -> Path
         if not candidate.exists() or _is_empty_directory(candidate):
             return candidate
         counter += 1
+
+
+def _verify_manifest_json(manifest_path: Path) -> int:
+    result = verify_fastq_manifest(manifest_path)
+    payload = {
+        "event": "done",
+        "kind": "manifest_verification",
+        "manifest": str(manifest_path),
+        "report": str(result["report_path"]),
+        "status_counts": result["status_counts"],
+        "total": result["total"],
+    }
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    return 0 if result["total"] and result["status_counts"].get(MD5_VERIFIED, 0) == result["total"] else 1
 
 
 def _is_empty_directory(path: Path) -> bool:
