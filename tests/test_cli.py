@@ -122,6 +122,43 @@ class CliTest(unittest.TestCase):
             self.assertEqual(saved.read_bytes(), data)
             saved.resolve().relative_to((out_dir / "GSE000001").resolve())
 
+    def test_selected_download_disambiguates_case_only_supplementary_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source1 = root / "source1.txt"
+            source2 = root / "source2.txt"
+            source1.write_bytes(b"first\n")
+            source2.write_bytes(b"second\n")
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "Same.txt",
+                        "url": source1.as_uri(),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.txt",
+                        "url": source2.as_uri(),
+                    },
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "", "0,1", out_dir), 0)
+            run_dir = out_dir / "GSE000001"
+            self.assertEqual((run_dir / "Same.txt").read_bytes(), b"first\n")
+            self.assertEqual((run_dir / "same.2.txt").read_bytes(), b"second\n")
+            self.assertFalse((run_dir / "Same.txt.existing").exists())
+
     def test_selected_download_reports_unsupported_fastq_url_without_losing_done_event(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

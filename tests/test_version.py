@@ -34,6 +34,15 @@ class VersionTest(unittest.TestCase):
         self.assertIn('"/DSourceDir=$payloadDir"', text)
         self.assertIn('"/DOutputDir=$DistRoot"', text)
 
+    def test_release_does_not_publish_checksum_assets(self):
+        root = Path(__file__).resolve().parents[1]
+        release_workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        build_script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("exe.sha256", release_workflow)
+        self.assertNotIn("zip.sha256", release_workflow)
+        self.assertNotIn("Write-Sha256File", build_script)
+        self.assertNotIn("Created checksum", build_script)
+
 
 if __name__ == "__main__":
     unittest.main()

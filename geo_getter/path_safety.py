@@ -40,6 +40,10 @@ def unique_numbered_name(file_name: str, count: int) -> str:
     return f"{stem}.{count + 1}{suffix}"
 
 
+def name_collision_key(file_name: str) -> str:
+    return file_name.casefold()
+
+
 def split_download_name(file_name: str) -> tuple[str, str]:
     if file_name.endswith(".fastq.gz"):
         return file_name[:-9], ".fastq.gz"

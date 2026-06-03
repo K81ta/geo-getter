@@ -1173,15 +1173,19 @@ function ConvertTo-GeoGetterSafeName {
         [string]$DefaultName = "geo_getter_download",
         [switch]$ArtifactPrefix
     )
-    $safe = [regex]::Replace([string]$Value, '[<>:"/\\|?*]', '_')
-    if ($ArtifactPrefix) {
-        $safe = $safe.Trim(" .".ToCharArray())
+    $safe = [regex]::Replace([string]$Value, '[<>:"/\\|?*\x00-\x1F\x7F]', '_')
+    $safe = $safe.Trim(" .".ToCharArray())
+    if ([string]::IsNullOrWhiteSpace($safe) -or $safe -eq "." -or $safe -eq "..") { return $DefaultName }
+    $stem = ($safe -split '\.', 2)[0].ToUpperInvariant()
+    if (@("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9") -contains $stem) {
+        $safe = "_" + $safe
     }
-    else {
-        $safe = $safe.Trim()
-    }
-    if ([string]::IsNullOrWhiteSpace($safe)) { return $DefaultName }
     return $safe
+}
+
+function Get-PreflightNameCollisionKey {
+    param([string]$FileName)
+    return ([string]$FileName).ToLowerInvariant()
 }
 
 function Test-EmptyDirectory {
@@ -1236,6 +1240,16 @@ function Split-PreflightFileName {
     }
 }
 
+function Get-PreflightUniqueNumberedName {
+    param(
+        [string]$FileName,
+        [int]$Count
+    )
+    if ($Count -le 0) { return $FileName }
+    $parts = Split-PreflightFileName $FileName
+    return "{0}.{1}{2}" -f $parts.Stem, ($Count + 1), $parts.Suffix
+}
+
 function Get-SelectedFastqItemsForPreflight {
     $selected = @()
     if ($null -eq $script:Resolved) { return $selected }
@@ -1281,13 +1295,11 @@ function Get-PreflightPlannedPaths {
 
     $fastqCounts = @{}
     foreach ($item in $fastqItems) {
-        $fileName = [string]$item.file_name
-        $count = if ($fastqCounts.ContainsKey($fileName)) { [int]$fastqCounts[$fileName] } else { 0 }
-        $fastqCounts[$fileName] = $count + 1
-        if ($count -gt 0) {
-            $parts = Split-PreflightFileName $fileName
-            $fileName = "{0}.{1}{2}" -f $parts.Stem, ($count + 1), $parts.Suffix
-        }
+        $fileName = ConvertTo-GeoGetterSafeName ([string]$item.file_name) -DefaultName "download.fastq.gz"
+        $key = Get-PreflightNameCollisionKey $fileName
+        $count = if ($fastqCounts.ContainsKey($key)) { [int]$fastqCounts[$key] } else { 0 }
+        $fastqCounts[$key] = $count + 1
+        $fileName = Get-PreflightUniqueNumberedName $fileName $count
         $localPath = Join-Path $RunOutputDir $fileName
         $paths += $localPath
         $paths += ($localPath + ".part")
@@ -1296,13 +1308,10 @@ function Get-PreflightPlannedPaths {
     $suppCounts = @{}
     foreach ($item in $suppItems) {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.name) -DefaultName "geo_supplementary_file"
-        $count = if ($suppCounts.ContainsKey($fileName)) { [int]$suppCounts[$fileName] } else { 0 }
-        $suppCounts[$fileName] = $count + 1
-        if ($count -gt 0) {
-            $stem = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
-            $suffix = [System.IO.Path]::GetExtension($fileName)
-            $fileName = "{0}.{1}{2}" -f $stem, ($count + 1), $suffix
-        }
+        $key = Get-PreflightNameCollisionKey $fileName
+        $count = if ($suppCounts.ContainsKey($key)) { [int]$suppCounts[$key] } else { 0 }
+        $suppCounts[$key] = $count + 1
+        $fileName = Get-PreflightUniqueNumberedName $fileName $count
         $localPath = Join-Path $RunOutputDir $fileName
         $paths += $localPath
         $paths += ($localPath + ".part")
@@ -2564,6 +2573,10 @@ if ($SelfTest) {
     Assert-Equal (Format-Bytes ([Int64]2377036173)) "2.21 GB" "Format-Bytes over Int32"
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
     Assert-Equal (Format-Bytes ([Int64]-1)) "0 B" "Format-Bytes negative"
+    Assert-Equal (ConvertTo-GeoGetterSafeName "CON") "_CON" "preflight safe name handles reserved Windows name"
+    Assert-Equal (ConvertTo-GeoGetterSafeName "..") "geo_getter_download" "preflight safe name handles dot-only name"
+    Assert-Equal (Get-PreflightNameCollisionKey "Same.fastq.gz") "same.fastq.gz" "preflight name collision key is case-insensitive"
+    Assert-Equal (Get-PreflightUniqueNumberedName "same.fastq.gz" 1) "same.2.fastq.gz" "preflight duplicate FASTQ numbering"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80

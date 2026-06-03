@@ -210,25 +210,11 @@ function Get-IsccPath {
     return $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
 
-function Write-Sha256File {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ShaPath
-    )
-    if (-not (Test-Path $Path)) {
-        throw "Cannot create checksum because file was not found: $Path"
-    }
-    $hash = Get-FileHash -Algorithm SHA256 -Path $Path
-    Set-Content -Encoding ASCII -Path $ShaPath -Value ("{0}  {1}" -f $hash.Hash.ToLowerInvariant(), (Split-Path -Leaf $Path))
-}
-
 $version = Get-AppVersion
 $packageName = "GEOGetter-v$version-win-$Architecture-portable"
 $payloadDir = Join-Path $DistRoot $packageName
 $zipPath = Join-Path $DistRoot "$packageName.zip"
-$zipShaPath = "$zipPath.sha256"
 $installerPath = Join-Path $DistRoot "GEOGetter-Setup-v$version.exe"
-$installerShaPath = "$installerPath.sha256"
 
 New-Item -ItemType Directory -Path $DistRoot -Force | Out-Null
 Reset-Directory -Path $payloadDir
@@ -269,10 +255,8 @@ if (Test-Path $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
 Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -Force
-Write-Sha256File -Path $zipPath -ShaPath $zipShaPath
 
 Write-Host "Created portable zip: $zipPath"
-Write-Host "Created checksum: $zipShaPath"
 
 if ($BuildInstaller) {
     $iscc = Get-IsccPath
@@ -282,10 +266,8 @@ if ($BuildInstaller) {
     if (-not (Test-Path $InstallerScript)) {
         throw "Installer script not found: $InstallerScript"
     }
-    foreach ($path in @($installerPath, $installerShaPath)) {
-        if (Test-Path $path) {
-            Remove-Item -LiteralPath $path -Force
-        }
+    if (Test-Path $installerPath) {
+        Remove-Item -LiteralPath $installerPath -Force
     }
     & $iscc "/DAppVersion=$version" "/DSourceDir=$payloadDir" "/DOutputDir=$DistRoot" $InstallerScript
     if ($LASTEXITCODE -ne 0) {
@@ -294,7 +276,5 @@ if ($BuildInstaller) {
     if (-not (Test-Path $installerPath)) {
         throw "Expected installer was not created: $installerPath"
     }
-    Write-Sha256File -Path $installerPath -ShaPath $installerShaPath
     Write-Host "Created installer: $installerPath"
-    Write-Host "Created checksum: $installerShaPath"
 }

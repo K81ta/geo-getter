@@ -9,7 +9,7 @@ from pathlib import Path
 from . import __version__
 from .errors import INVALID_MANIFEST, MD5_MISMATCH, MD5_UNAVAILABLE, MD5_VERIFIED, MISSING, SIZE_MISMATCH, GeoGetterError
 from .models import DownloadPlan, FastqFile, PlannedFile
-from .path_safety import child_path, safe_file_name, unique_numbered_name
+from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
 
 
 FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
@@ -260,8 +260,9 @@ def _planned_files(files: list[FastqFile], output_dir: Path) -> list[PlannedFile
     planned: list[PlannedFile] = []
     for item in files:
         file_name = safe_file_name(item.file_name, "download.fastq.gz")
-        count = counts.get(file_name, 0)
-        counts[file_name] = count + 1
+        key = name_collision_key(file_name)
+        count = counts.get(key, 0)
+        counts[key] = count + 1
         file_name = unique_numbered_name(file_name, count)
         planned.append(PlannedFile(fastq=item, local_path=child_path(output_dir, file_name)))
     return planned

@@ -63,6 +63,4 @@ jobs:
         with:
           files: |
             dist/GEOGetter-Setup-v*.exe
-            dist/GEOGetter-Setup-v*.exe.sha256
             dist/GEOGetter-v*-win-x64-portable.zip
-            dist/GEOGetter-v*-win-x64-portable.zip.sha256

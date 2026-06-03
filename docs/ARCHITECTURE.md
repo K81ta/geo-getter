@@ -9,14 +9,14 @@ GEOGetter は、GEO レコード、GEO URL、SRA / ENA / Project / BioSample 系
 実行環境:
 
 - Windows x64 のデスクトップ利用を主対象にする。
-- Python package entry point は GUI 起動用に使う。
+- インストーラーと portable zip は `start_geo_getter.vbs` から GUI を起動する。
 - GUI は Python 関数を直接 import せず、subprocess と JSON で連携する。
 
 ## 全体像
 
 ```mermaid
 flowchart TD
-    User["ユーザー"] --> Launcher["start_geo_getter.vbs / installer shortcut / geo-getter"]
+    User["ユーザー"] --> Launcher["start_geo_getter.vbs / installer shortcut"]
     Launcher --> GUI["GEOGetter.ps1\nPowerShell WinForms"]
     GUI --> ResolveCLI["python -m geo_getter.cli resolve-json"]
     GUI --> DownloadCLI["python -m geo_getter.cli selected-download-json"]
@@ -35,7 +35,7 @@ flowchart TD
 
 | 層 | 担当 | 責務 |
 | --- | --- | --- |
-| Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat`, `geo_getter/app.py` | PowerShell WinForms GUI を STA で起動する |
+| Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat` | PowerShell WinForms GUI を STA で起動する |
 | GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル |
 | CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、manifest 再確認の起点 |
 | Metadata core | `accession.py`, `providers/*` | accession 抽出、GEO/ENA 問い合わせ、候補統合 |
@@ -47,13 +47,7 @@ flowchart TD
 
 配布版では `runtime/python/python.exe` が存在すれば同梱 Python を使う。存在しない場合はローカル環境の `python` にフォールバックする。
 
-`pyproject.toml` の console script は次を指す。
-
-```toml
-geo-getter = "geo_getter.app:main"
-```
-
-この entry point は `GEOGetter.ps1` を `powershell -NoProfile -STA -ExecutionPolicy Bypass -File` で起動するためのもの。
+インストーラーのショートカットと portable zip の起動ファイルは `start_geo_getter.vbs` を実行する。`start_geo_getter.vbs` は同じフォルダの `GEOGetter.ps1` を `powershell -NoProfile -STA -ExecutionPolicy Bypass -File` で起動する。
 
 ### 2. metadata 解決
 

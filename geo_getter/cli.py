@@ -11,7 +11,7 @@ from . import __version__
 from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
 from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED
 from .models import FastqFile
-from .path_safety import child_path, safe_file_name, unique_numbered_name
+from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
 from .planner import (
     append_download_log,
     build_download_plan,
@@ -303,8 +303,9 @@ def _planned_supplementary_files(output_dir: Path, selected_supp: list[dict]) ->
     planned: list[tuple[dict, Path]] = []
     for item in selected_supp:
         file_name = safe_file_name(item.get("name", "") or "geo_supplementary_file", "geo_supplementary_file")
-        count = counts.get(file_name, 0)
-        counts[file_name] = count + 1
+        key = name_collision_key(file_name)
+        count = counts.get(key, 0)
+        counts[key] = count + 1
         file_name = unique_numbered_name(file_name, count)
         planned.append((item, child_path(output_dir, file_name)))
     return planned
