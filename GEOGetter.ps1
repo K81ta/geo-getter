@@ -852,7 +852,8 @@ function Assert-ResolvedMatchesCurrentInput {
     if (-not (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
         throw (T "searchRequiredBeforeDownload")
     }
-    $currentInput = Normalize-InputText (if ($inputBox) { [string]$inputBox.Text } else { $script:LastInputText })
+    $currentInputValue = if ($inputBox) { [string]$inputBox.Text } else { $script:LastInputText }
+    $currentInput = Normalize-InputText $currentInputValue
     $resolvedInput = Normalize-InputText $script:LastResolvedInputText
     if ([string]::IsNullOrWhiteSpace($currentInput) -or [string]::IsNullOrWhiteSpace($resolvedInput)) {
         throw (T "searchRequiredBeforeDownload")
