@@ -40,18 +40,33 @@ public sealed class GeoGetterProcessUiBridge
     private readonly Action<string> output;
     private readonly Action<string> error;
     private readonly Action<int> exited;
+    private readonly Action outputClosed;
 
     public GeoGetterProcessUiBridge(Control control, Action<string> output, Action<string> error, Action<int> exited)
+        : this(control, output, error, exited, null)
+    {
+    }
+
+    public GeoGetterProcessUiBridge(Control control, Action<string> output, Action<string> error, Action<int> exited, Action outputClosed)
     {
         this.control = control;
         this.output = output;
         this.error = error;
         this.exited = exited;
+        this.outputClosed = outputClosed;
     }
 
     public void Attach(Process process)
     {
-        process.OutputDataReceived += (sender, args) => InvokeString(output, args.Data);
+        process.OutputDataReceived += (sender, args) =>
+        {
+            if (args.Data == null)
+            {
+                InvokeAction(outputClosed);
+                return;
+            }
+            InvokeString(output, args.Data);
+        };
         process.ErrorDataReceived += (sender, args) => InvokeString(error, args.Data);
         process.Exited += (sender, args) =>
         {
@@ -75,6 +90,12 @@ public sealed class GeoGetterProcessUiBridge
     private void InvokeInt(Action<int> action, int value)
     {
         TryBeginInvoke(action, new object[] { value });
+    }
+
+    private void InvokeAction(Action action)
+    {
+        if (action == null) return;
+        TryBeginInvoke(action, new object[] { });
     }
 
     private void TryBeginInvoke(Delegate action, object[] args)
@@ -120,6 +141,12 @@ $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
 $script:LastVerificationDoneEvent = $null
 $script:LastVerificationExitCode = $null
+$script:DownloadExitObserved = $false
+$script:DownloadStdoutClosed = $false
+$script:DownloadFinalized = $false
+$script:LastPreflightStatus = ""
+$script:LastPreflightError = ""
+$script:LastPreflightOutputDir = ""
 $script:LastInputText = ""
 $script:LastResolvedInputText = ""
 $script:Language = $UiLanguage
@@ -165,6 +192,7 @@ $script:Translations = @{
         verifyingManifest = "manifest確認中"
         complete = "完了"
         completePartial = "完了（一部失敗あり）"
+        completeUnverified = "完了（MD5未検証あり）"
         error = "エラー"
         canceled = "キャンセルしました"
         overallDesign = "Overall design"
@@ -276,6 +304,13 @@ $script:Translations = @{
         processEnvError = "ProcessStartInfoの環境変数を設定できません。"
         cancelRequestLog = "キャンセル要求: 実行中のダウンロードを停止します。途中ファイルは .part として残ります。"
         cancelFailedLog = "キャンセル失敗: {0}"
+        preflightFailedLog = "保存先preflight失敗: {0}"
+        preflightOutputRequired = "保存先を選択してください。"
+        preflightOutputIsFile = "保存先にファイルが指定されています。フォルダを選択してください: {0}"
+        preflightCannotCreateOutput = "保存先フォルダを作成できません: {0}"
+        preflightCannotWrite = "保存先に書き込めません: {0}"
+        preflightInsufficientSpace = "空き容量が足りません。必要容量(FASTQ): {0} / 空き容量: {1}"
+        preflightPathTooLong = "保存先パスが長すぎます: {0}"
         diagnosticsSavedLog = "診断情報を保存しました: {0}"
         diagnosticsFailedLog = "診断情報の保存に失敗しました: {0}"
         diagnosticsDialogTitle = "診断情報を保存"
@@ -322,6 +357,7 @@ $script:Translations = @{
         verifyingManifest = "Checking manifest"
         complete = "Complete"
         completePartial = "Complete with failures"
+        completeUnverified = "Complete with unverified files"
         error = "Error"
         canceled = "Canceled"
         overallDesign = "Overall design"
@@ -433,6 +469,13 @@ $script:Translations = @{
         processEnvError = "Could not set ProcessStartInfo environment variables."
         cancelRequestLog = "Cancel requested: stopping the running download. Partial files may remain as .part files."
         cancelFailedLog = "Cancel failed: {0}"
+        preflightFailedLog = "Output preflight failed: {0}"
+        preflightOutputRequired = "Select an output folder."
+        preflightOutputIsFile = "The output path is a file. Select a folder: {0}"
+        preflightCannotCreateOutput = "Could not create the output folder: {0}"
+        preflightCannotWrite = "Could not write to the output folder: {0}"
+        preflightInsufficientSpace = "Not enough free space. Required (FASTQ): {0} / Free: {1}"
+        preflightPathTooLong = "The output path is too long: {0}"
         diagnosticsSavedLog = "Saved diagnostics: {0}"
         diagnosticsFailedLog = "Failed to save diagnostics: {0}"
         diagnosticsDialogTitle = "Save diagnostics"
@@ -694,10 +737,39 @@ function Get-AppVersionForDiagnostics {
 }
 
 function Get-OutputFreeSpaceOrNull {
+    if (-not $outputBox) { return $null }
+    return Get-FreeSpaceForPathOrNull ([string]$outputBox.Text)
+}
+
+function Get-ExistingDirectoryForPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     try {
-        $outDir = [System.IO.Path]::GetFullPath($outputBox.Text)
-        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
-        $drive = New-Object System.IO.DriveInfo([System.IO.Path]::GetPathRoot($outDir))
+        $candidate = [System.IO.Path]::GetFullPath($Path)
+        if ([System.IO.File]::Exists($candidate)) {
+            $candidate = [System.IO.Path]::GetDirectoryName($candidate)
+        }
+        while (-not [string]::IsNullOrWhiteSpace($candidate) -and -not [System.IO.Directory]::Exists($candidate)) {
+            $parent = [System.IO.Directory]::GetParent($candidate)
+            if ($null -eq $parent) { return $null }
+            $candidate = $parent.FullName
+        }
+        if ([System.IO.Directory]::Exists($candidate)) { return $candidate }
+    }
+    catch {
+        return $null
+    }
+    return $null
+}
+
+function Get-FreeSpaceForPathOrNull {
+    param([string]$Path)
+    try {
+        $existingDir = Get-ExistingDirectoryForPath $Path
+        if ([string]::IsNullOrWhiteSpace($existingDir)) { return $null }
+        $root = [System.IO.Path]::GetPathRoot($existingDir)
+        if ([string]::IsNullOrWhiteSpace($root)) { return $null }
+        $drive = New-Object System.IO.DriveInfo($root)
         return [Int64]$drive.AvailableFreeSpace
     }
     catch {
@@ -805,6 +877,9 @@ function Save-DiagnosticsZip {
             selected_supplementary_indices = Get-SelectedSuppIndicesOrEmpty
             output_parent = if ($outputBox) { [string]$outputBox.Text } else { "" }
             output_free_bytes = Get-OutputFreeSpaceOrNull
+            last_preflight_status = $script:LastPreflightStatus
+            last_preflight_error = $script:LastPreflightError
+            preflight_output_dir = $script:LastPreflightOutputDir
             last_download_exit_code = $script:LastDownloadExitCode
             last_download_done = $script:LastDownloadDoneEvent
             last_verification_exit_code = $script:LastVerificationExitCode
@@ -892,6 +967,12 @@ function Clear-ResolvedState {
     $script:LastResolvedInputText = ""
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = $null
+    $script:DownloadExitObserved = $false
+    $script:DownloadStdoutClosed = $false
+    $script:DownloadFinalized = $false
+    $script:LastPreflightStatus = ""
+    $script:LastPreflightError = ""
+    $script:LastPreflightOutputDir = ""
     if ($fastqGrid) { $fastqGrid.Rows.Clear() }
     if ($suppGrid) { $suppGrid.Rows.Clear() }
     if ($DeleteResolvedJson -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
@@ -1060,15 +1141,13 @@ function Get-SelectedTotalBytes {
 
 function Update-Capacity {
     $total = Get-SelectedTotalBytes
-    try {
-        $outDir = [System.IO.Path]::GetFullPath($outputBox.Text)
-        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
-        $drive = New-Object System.IO.DriveInfo([System.IO.Path]::GetPathRoot($outDir))
+    $freeBytes = if ($outputBox) { Get-FreeSpaceForPathOrNull ([string]$outputBox.Text) } else { $null }
+    if ($null -ne $freeBytes) {
         $suppCount = Get-SelectedSuppCount
         $suffix = if ($suppCount -gt 0) { (T "supplementarySuffix") -f $suppCount } else { "" }
-        $capacityLabel.Text = (T "capacityText") -f (Format-Bytes $total), (Format-Bytes $drive.AvailableFreeSpace), $suffix
+        $capacityLabel.Text = (T "capacityText") -f (Format-Bytes $total), (Format-Bytes ([Int64]$freeBytes)), $suffix
     }
-    catch {
+    else {
         $capacityLabel.Text = (T "capacityUnknown") -f (Format-Bytes $total)
     }
     Update-SelectionSummary
@@ -1080,6 +1159,226 @@ function Update-SelectionSummary {
     $suppCount = Get-SelectedSuppCount
     $output = if ($outputBox) { [string]$outputBox.Text } else { "" }
     $selectionSummaryLabel.Text = (T "selectionSummary") -f $fastqCount, (Format-Bytes (Get-SelectedTotalBytes)), $suppCount, $output
+}
+
+function ConvertTo-GeoGetterSafeName {
+    param(
+        [string]$Value,
+        [string]$DefaultName = "geo_getter_download",
+        [switch]$ArtifactPrefix
+    )
+    $safe = [regex]::Replace([string]$Value, '[<>:"/\\|?*]', '_')
+    if ($ArtifactPrefix) {
+        $safe = $safe.Trim(" .".ToCharArray())
+    }
+    else {
+        $safe = $safe.Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($safe)) { return $DefaultName }
+    return $safe
+}
+
+function Test-EmptyDirectory {
+    param([string]$Path)
+    if (-not [System.IO.Directory]::Exists($Path)) { return $false }
+    try {
+        $items = [System.IO.Directory]::EnumerateFileSystemEntries($Path).GetEnumerator()
+        try {
+            return -not $items.MoveNext()
+        }
+        finally {
+            if ($items -is [System.IDisposable]) { $items.Dispose() }
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-PreflightRunOutputDir {
+    param(
+        [string]$OutputRoot,
+        [string]$PrimaryAccession
+    )
+    $baseSource = if ([string]::IsNullOrWhiteSpace($PrimaryAccession)) { "geo_getter_download" } else { $PrimaryAccession.Trim() }
+    $baseName = ConvertTo-GeoGetterSafeName $baseSource
+    $candidate = Join-Path $OutputRoot $baseName
+    if (-not (Test-Path -LiteralPath $candidate) -or (Test-EmptyDirectory $candidate)) {
+        return [System.IO.Path]::GetFullPath($candidate)
+    }
+    $counter = 2
+    while ($true) {
+        $candidate = Join-Path $OutputRoot ("{0}_{1}" -f $baseName, $counter)
+        if (-not (Test-Path -LiteralPath $candidate) -or (Test-EmptyDirectory $candidate)) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+        $counter += 1
+    }
+}
+
+function Split-PreflightFileName {
+    param([string]$FileName)
+    if ($FileName.EndsWith(".fastq.gz", [System.StringComparison]::Ordinal)) {
+        return [pscustomobject]@{
+            Stem = $FileName.Substring(0, $FileName.Length - 9)
+            Suffix = ".fastq.gz"
+        }
+    }
+    return [pscustomobject]@{
+        Stem = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+        Suffix = [System.IO.Path]::GetExtension($FileName)
+    }
+}
+
+function Get-SelectedFastqItemsForPreflight {
+    $selected = @()
+    if ($null -eq $script:Resolved) { return $selected }
+    $items = @($script:Resolved.fastq_files)
+    foreach ($row in $fastqGrid.Rows) {
+        if ($row.IsNewRow) { continue }
+        if ([bool]$row.Cells["selected"].Value) {
+            $selected += $items[[int]$row.Tag]
+        }
+    }
+    return $selected
+}
+
+function Get-SelectedSupplementaryItemsForPreflight {
+    $selected = @()
+    if ($null -eq $script:Resolved) { return $selected }
+    $items = @($script:Resolved.supplementary_files)
+    foreach ($row in $suppGrid.Rows) {
+        if ($row.IsNewRow) { continue }
+        if ([bool]$row.Cells["supp_selected"].Value) {
+            $selected += $items[[int]$row.Tag]
+        }
+    }
+    return $selected
+}
+
+function Get-PreflightPlannedPaths {
+    param([string]$RunOutputDir)
+    $paths = @([System.IO.Path]::GetFullPath($RunOutputDir))
+    $fastqItems = @(Get-SelectedFastqItemsForPreflight)
+    $suppItems = @(Get-SelectedSupplementaryItemsForPreflight)
+    $prefix = ConvertTo-GeoGetterSafeName ([System.IO.Path]::GetFileName($RunOutputDir)) -ArtifactPrefix
+
+    if ($fastqItems.Count -gt 0) {
+        $paths += (Join-Path $RunOutputDir ("{0}_fastq_manifest.tsv" -f $prefix))
+    }
+    if ($suppItems.Count -gt 0) {
+        $paths += (Join-Path $RunOutputDir ("{0}_supplementary_manifest.tsv" -f $prefix))
+    }
+    if (($fastqItems.Count + $suppItems.Count) -gt 0) {
+        $paths += (Join-Path $RunOutputDir ("{0}_download_log.tsv" -f $prefix))
+    }
+
+    $fastqCounts = @{}
+    foreach ($item in $fastqItems) {
+        $fileName = [string]$item.file_name
+        $count = if ($fastqCounts.ContainsKey($fileName)) { [int]$fastqCounts[$fileName] } else { 0 }
+        $fastqCounts[$fileName] = $count + 1
+        if ($count -gt 0) {
+            $parts = Split-PreflightFileName $fileName
+            $fileName = "{0}.{1}{2}" -f $parts.Stem, ($count + 1), $parts.Suffix
+        }
+        $localPath = Join-Path $RunOutputDir $fileName
+        $paths += $localPath
+        $paths += ($localPath + ".part")
+    }
+
+    $suppCounts = @{}
+    foreach ($item in $suppItems) {
+        $fileName = ConvertTo-GeoGetterSafeName ([string]$item.name) -DefaultName "geo_supplementary_file"
+        $count = if ($suppCounts.ContainsKey($fileName)) { [int]$suppCounts[$fileName] } else { 0 }
+        $suppCounts[$fileName] = $count + 1
+        if ($count -gt 0) {
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+            $suffix = [System.IO.Path]::GetExtension($fileName)
+            $fileName = "{0}.{1}{2}" -f $stem, ($count + 1), $suffix
+        }
+        $localPath = Join-Path $RunOutputDir $fileName
+        $paths += $localPath
+        $paths += ($localPath + ".part")
+    }
+    return $paths
+}
+
+function Assert-PreflightPathLength {
+    param([string[]]$Paths)
+    foreach ($path in $Paths) {
+        try {
+            $fullPath = [System.IO.Path]::GetFullPath($path)
+        }
+        catch {
+            throw ((T "preflightPathTooLong") -f $path)
+        }
+        if ($fullPath.Length -ge 260) {
+            throw ((T "preflightPathTooLong") -f $fullPath)
+        }
+    }
+}
+
+function Test-DownloadPreflight {
+    $script:LastPreflightStatus = "running"
+    $script:LastPreflightError = ""
+    $script:LastPreflightOutputDir = ""
+    try {
+        if (-not $outputBox -or [string]::IsNullOrWhiteSpace($outputBox.Text)) {
+            throw (T "preflightOutputRequired")
+        }
+        $outputRoot = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
+        if ([System.IO.File]::Exists($outputRoot)) {
+            throw ((T "preflightOutputIsFile") -f $outputRoot)
+        }
+        try {
+            [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
+        }
+        catch {
+            throw ((T "preflightCannotCreateOutput") -f ("{0} ({1})" -f $outputRoot, $_.Exception.Message))
+        }
+
+        $primary = if ($script:Resolved) { [string]$script:Resolved.primary_accession } else { "" }
+        $runOutputDir = Get-PreflightRunOutputDir $outputRoot $primary
+        $script:LastPreflightOutputDir = $runOutputDir
+        try {
+            [System.IO.Directory]::CreateDirectory($runOutputDir) | Out-Null
+        }
+        catch {
+            throw ((T "preflightCannotCreateOutput") -f ("{0} ({1})" -f $runOutputDir, $_.Exception.Message))
+        }
+
+        Assert-PreflightPathLength @(Get-PreflightPlannedPaths $runOutputDir)
+
+        $probePath = Join-Path $runOutputDir (".geo_getter_preflight_" + [System.Guid]::NewGuid().ToString("N") + ".tmp")
+        try {
+            [System.IO.File]::WriteAllText($probePath, "ok", $script:Utf8NoBom)
+            Remove-Item -LiteralPath $probePath -Force -ErrorAction Stop
+        }
+        catch {
+            Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+            throw ((T "preflightCannotWrite") -f ("{0} ({1})" -f $runOutputDir, $_.Exception.Message))
+        }
+
+        $freeBytes = Get-FreeSpaceForPathOrNull $runOutputDir
+        $requiredBytes = [Int64](Get-SelectedTotalBytes)
+        if ($null -ne $freeBytes -and $requiredBytes -gt [Int64]$freeBytes) {
+            throw ((T "preflightInsufficientSpace") -f (Format-Bytes $requiredBytes), (Format-Bytes ([Int64]$freeBytes)))
+        }
+
+        $script:LastPreflightStatus = "ok"
+        return [pscustomobject]@{
+            OutputDir = $runOutputDir
+            RequiredBytes = $requiredBytes
+            FreeBytes = $freeBytes
+        }
+    }
+    catch {
+        $script:LastPreflightStatus = "failed"
+        $script:LastPreflightError = $_.Exception.Message
+        Append-Log ((T "preflightFailedLog") -f $script:LastPreflightError)
+        throw
+    }
 }
 
 function Add-FastqRowsFromResolved {
@@ -1153,10 +1452,10 @@ function Handle-DownloadLine {
         elseif ($event.event -eq "done") {
             $script:LastDownloadDoneEvent = $event
             $progressBar.Value = 100
-            $statusLabel.Text = T "complete"
             if ($event.fastq_manifest) { Append-Log ((T "fastqManifestLog") -f $event.fastq_manifest) }
             if ($event.supplementary_manifest) { Append-Log ((T "supplementaryManifestLog") -f $event.supplementary_manifest) }
             Append-Log ((T "downloadLogLog") -f $event.download_log)
+            Complete-DownloadIfReady
         }
         else {
             Append-Log $Line
@@ -1232,6 +1531,53 @@ function Show-ManifestVerificationOpenDialog {
         $progressBar.Value = 0
         Set-Busy $false
         Show-AppError $_.Exception.Message
+    }
+}
+
+function Get-DownloadFinalStatusKey {
+    param(
+        [object]$DoneEvent,
+        [object]$ExitCode,
+        [bool]$Canceled
+    )
+    if ($Canceled) { return "canceled" }
+    if ($null -eq $DoneEvent) { return "error" }
+
+    $statuses = @()
+    if ($DoneEvent.PSObject.Properties.Name -contains "statuses") {
+        $statuses = @($DoneEvent.statuses) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    }
+    if ($statuses.Count -eq 0) { return "error" }
+
+    $okStatuses = @("md5_verified", "download_complete")
+    $hasUnverified = $false
+    foreach ($status in $statuses) {
+        $text = [string]$status
+        if ($text -eq "md5_unavailable") {
+            $hasUnverified = $true
+            continue
+        }
+        if ($okStatuses -notcontains $text) {
+            return "completePartial"
+        }
+    }
+    if ($hasUnverified) { return "completeUnverified" }
+    if ($ExitCode -eq 0) { return "complete" }
+    return "completePartial"
+}
+
+function Complete-DownloadIfReady {
+    if ($script:DownloadFinalized) { return }
+    if (-not $script:DownloadExitObserved -or -not $script:DownloadStdoutClosed) { return }
+
+    $script:DownloadFinalized = $true
+    Set-Busy $false
+    $script:DownloadProcess = $null
+    Update-CancelButton
+    $statusKey = Get-DownloadFinalStatusKey $script:LastDownloadDoneEvent $script:LastDownloadExitCode $script:DownloadCanceled
+    $statusLabel.Text = T $statusKey
+    if ($statusKey -eq "error") {
+        $progressBar.Value = 0
     }
 }
 
@@ -1370,16 +1716,24 @@ function Start-ManifestVerificationProcess {
 function Start-DownloadProcess {
     Assert-ResolvedMatchesCurrentInput
     Assert-AnySelection
-    $psi = New-DownloadProcessStartInfo (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
-
     $script:DownloadCanceled = $false
     $script:DownloadStdoutText = ""
     $script:DownloadStderrText = ""
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = $null
+    $script:DownloadExitObserved = $false
+    $script:DownloadStdoutClosed = $false
+    $script:DownloadFinalized = $false
+    Test-DownloadPreflight | Out-Null
+
+    $psi = New-DownloadProcessStartInfo (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     $process.EnableRaisingEvents = $true
+    Set-Busy $true
+    $progressBar.Style = "Continuous"
+    $progressBar.Value = 0
+    $statusLabel.Text = T "downloading"
     $script:DownloadBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
         $form,
         ([System.Action[string]]{
@@ -1404,18 +1758,17 @@ function Start-DownloadProcess {
             param($code)
             try {
                 $script:LastDownloadExitCode = $code
-                Set-Busy $false
-                $script:DownloadProcess = $null
-                Update-CancelButton
-                if ($script:DownloadCanceled) {
-                    $statusLabel.Text = T "canceled"
-                }
-                elseif ($code -eq 0) {
-                    $statusLabel.Text = T "complete"
-                }
-                else {
-                    $statusLabel.Text = T "completePartial"
-                }
+                $script:DownloadExitObserved = $true
+                Complete-DownloadIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }),
+        ([System.Action]{
+            try {
+                $script:DownloadStdoutClosed = $true
+                Complete-DownloadIfReady
             }
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
@@ -2077,10 +2430,6 @@ function New-MainForm {
 
     $downloadButton.Add_Click({
         try {
-            Set-Busy $true
-            $progressBar.Style = "Continuous"
-            $progressBar.Value = 0
-            $statusLabel.Text = T "downloading"
             Start-DownloadProcess
         }
         catch {
@@ -2088,6 +2437,9 @@ function New-MainForm {
             $progressBar.Value = 0
             $statusLabel.Text = T "error"
             Set-Busy $false
+            $progressBar.Style = "Continuous"
+            $progressBar.Value = 0
+            $statusLabel.Text = T "error"
             Show-AppError $_.Exception.Message
         }
     })
@@ -2186,6 +2538,13 @@ if ($SelfTest) {
 
     $selfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("geo getter selftest " + [System.Guid]::NewGuid().ToString("N"))
     [System.IO.Directory]::CreateDirectory($selfTestRoot) | Out-Null
+    $noCreateOutput = Join-Path $selfTestRoot "capacity should not be created"
+    $outputBox.Text = $noCreateOutput
+    Update-Capacity
+    Assert-Equal (Test-Path -LiteralPath $noCreateOutput) $false "capacity update does not create output folder"
+    $null = Get-OutputFreeSpaceOrNull
+    Assert-Equal (Test-Path -LiteralPath $noCreateOutput) $false "diagnostic free space lookup does not create output folder"
+
     $sourcePath = Join-Path $selfTestRoot "source fastq.gz"
     [System.IO.File]::WriteAllBytes($sourcePath, [System.Text.Encoding]::ASCII.GetBytes("@r1`nACGT`n+`n!!!!`n"))
     $expectedMd5 = (Get-FileHash -Algorithm MD5 -LiteralPath $sourcePath).Hash.ToLowerInvariant()
@@ -2336,10 +2695,102 @@ if ($SelfTest) {
     Update-Capacity
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress label remains process state"
+    $script:DownloadExitObserved = $false
+    $script:DownloadStdoutClosed = $false
+    $script:DownloadFinalized = $false
+    $statusLabel.Text = T "downloading"
+    Handle-DownloadLine '{"event":"done","statuses":["md5_unavailable"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv"}'
+    Assert-Equal $statusLabel.Text (T "downloading") "done event does not finalize status before exit and stdout close"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified", "download_complete") }) 0 $false) "complete" "final state all ok"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_unavailable") }) 1 $false) "completeUnverified" "final state md5 unavailable"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("network_failed") }) 1 $false) "completePartial" "final state network failed"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_mismatch") }) 1 $false) "completePartial" "final state md5 mismatch"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("size_mismatch") }) 1 $false) "completePartial" "final state size mismatch"
+    Assert-Equal (Get-DownloadFinalStatusKey $null 0 $false) "error" "final state missing done event with zero exit"
+    Assert-Equal (Get-DownloadFinalStatusKey $null 1 $false) "error" "final state missing done event with nonzero exit"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified") }) 1 $true) "canceled" "final state canceled wins"
+
+    $script:LastDownloadDoneEvent = $null
+    $script:LastDownloadExitCode = 1
+    $script:DownloadCanceled = $false
+    $script:DownloadExitObserved = $true
+    $script:DownloadStdoutClosed = $false
+    $script:DownloadFinalized = $false
+    $statusLabel.Text = T "downloading"
+    Complete-DownloadIfReady
+    Assert-Equal $statusLabel.Text (T "downloading") "download finalizer waits for stdout close after exit"
+    $script:LastDownloadDoneEvent = [pscustomobject]@{ statuses = @("md5_unavailable") }
+    Complete-DownloadIfReady
+    Assert-Equal $statusLabel.Text (T "downloading") "download finalizer still waits for stdout close after done"
+    $script:DownloadStdoutClosed = $true
+    Complete-DownloadIfReady
+    Assert-Equal $statusLabel.Text (T "completeUnverified") "download finalizer handles exit before done processing"
 
     foreach ($row in $fastqGrid.Rows) {
         if (-not $row.IsNewRow) { $row.Cells["selected"].Value = $false }
     }
+    $fastqGrid.Rows[0].Cells["selected"].Value = $true
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
+
+    $fileOutputPath = Join-Path $selfTestRoot "output path is file"
+    [System.IO.File]::WriteAllText($fileOutputPath, "not a directory", $utf8NoBom)
+    $outputBox.Text = $fileOutputPath
+    $fileOutputPreflightMessage = ""
+    try {
+        Test-DownloadPreflight | Out-Null
+    }
+    catch {
+        $fileOutputPreflightMessage = $_.Exception.Message
+    }
+    Assert-Contains $fileOutputPreflightMessage "ファイル" "preflight rejects output path that is a file"
+    Assert-Equal $script:LastPreflightStatus "failed" "preflight records file output failure"
+    $startPreflightMessage = ""
+    $script:DownloadProcess = $null
+    try {
+        Start-DownloadProcess
+    }
+    catch {
+        $startPreflightMessage = $_.Exception.Message
+    }
+    Assert-Contains $startPreflightMessage "ファイル" "download start stops before subprocess on preflight failure"
+    Assert-Equal $script:DownloadProcess $null "download process is not created when preflight fails"
+
+    $longPreflightMessage = ""
+    try {
+        Assert-PreflightPathLength @(Join-Path $selfTestRoot ("x" * 270))
+    }
+    catch {
+        $longPreflightMessage = $_.Exception.Message
+    }
+    Assert-Contains $longPreflightMessage "長すぎます" "preflight checks long paths"
+
+    $outputBox.Text = Join-Path $selfTestRoot "supp only output"
+    $fastqGrid.Rows[0].Cells["selected"].Value = $false
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
+    $suppOnlyPreflight = Test-DownloadPreflight
+    Assert-Equal $script:LastPreflightStatus "ok" "preflight accepts supplementary-only selection"
+    Assert-Equal $suppOnlyPreflight.RequiredBytes ([Int64]0) "supplementary-only preflight excludes unknown size from capacity"
+
+    $outputBox.Text = Join-Path $selfTestRoot "huge fastq output"
+    $fastqGrid.Rows[0].Cells["selected"].Value = $true
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
+    $originalSmallSize = [Int64]$script:Resolved.fastq_files[[int]$fastqGrid.Rows[0].Tag].size_bytes
+    $hugeFreeBytes = Get-FreeSpaceForPathOrNull $outputBox.Text
+    if ($null -eq $hugeFreeBytes) { throw "self-test could not read temporary drive free space" }
+    $script:Resolved.fastq_files[[int]$fastqGrid.Rows[0].Tag].size_bytes = [Int64]$hugeFreeBytes + 1
+    $hugePreflightMessage = ""
+    try {
+        Test-DownloadPreflight | Out-Null
+    }
+    catch {
+        $hugePreflightMessage = $_.Exception.Message
+    }
+    finally {
+        $script:Resolved.fastq_files[[int]$fastqGrid.Rows[0].Tag].size_bytes = $originalSmallSize
+    }
+    Assert-Contains $hugePreflightMessage "空き容量" "preflight rejects insufficient FASTQ capacity"
+
+    $outputBox.Text = Join-Path $selfTestRoot "out folder"
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
 
