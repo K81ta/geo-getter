@@ -192,6 +192,20 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 
 終了コード `0` は、選択ファイルの status がすべて `md5_verified` または `download_complete` の場合だけ返る。`md5_unavailable` はファイル保存済みでも MD5 未検証なので、終了コード `1` になる。
 
+プロセス全体の失敗では、CLI は stderr に 1 行の error JSON を出す。stdout の `progress` / `message` / `done` 契約には混ぜない。
+
+```json
+{
+  "event": "error",
+  "command": "selected-download-json",
+  "code": "invalid_json",
+  "detail": "Expecting value: line 1 column 1 (char 0)",
+  "message": "Could not parse JSON input.\nDetail: Expecting value: line 1 column 1 (char 0)"
+}
+```
+
+ファイル単位の保存失敗は `event: error` ではなく、従来どおり `done.statuses` と download log に残す。
+
 キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。ただし、次回の GUI 実行では新しい accession suffix フォルダが選ばれることがあるため、同じ `.part` が自動で再利用されるとは限らない。同じ実保存フォルダと同じ local path を使う場合だけ、downloader 側で `.part` を再利用できる。
 
 ## 外部データソース
@@ -431,12 +445,12 @@ GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の
 
 | ファイル | 内容 |
 | --- | --- |
-| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、preflight 状態、最後の download / verification done event |
+| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、preflight 状態、最後の error code / detail、各 CLI 引数、最後の download / verification done event |
 | `resolved.json` | 最後に成功した `resolve-json` の結果 |
 | `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
 | `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |
 | `verify_stdout.jsonl`, `verify_stderr.txt` | manifest 再確認 subprocess の JSON Lines と標準エラー |
 | `gui_log.txt` | GUI 下部ログの内容 |
-| `artifacts/*` | 最後の download done event が返した manifest、download log、最後の manifest 再確認レポート |
+| `artifacts/*` | 最後の download done event が返した manifest、download log、最後の manifest 再確認レポート。`done` 前に失敗した場合は、予定出力フォルダに作成済みの manifest / download log |
 
 診断 zip にはローカルパス、入力 accession、保存先、ファイル名が含まれる可能性があるため、ユーザーが必要時に手動で共有する。

@@ -137,6 +137,12 @@ $script:VerifyCanceled = $false
 $script:VerifyStdoutText = ""
 $script:VerifyStderrText = ""
 $script:DiagnosticProcessOutputLimitBytes = 1048576
+$script:LastDiagnosticError = $null
+$script:LastResolveExitCode = $null
+$script:LastResolveArguments = @()
+$script:LastDownloadArguments = @()
+$script:LastVerificationArguments = @()
+$script:LastDownloadStartError = ""
 $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
 $script:LastVerificationDoneEvent = $null
@@ -150,6 +156,8 @@ $script:VerifyFinalized = $false
 $script:LastPreflightStatus = ""
 $script:LastPreflightError = ""
 $script:LastPreflightOutputDir = ""
+$script:LastPreflightRequiredBytes = $null
+$script:LastPreflightFreeBytes = $null
 $script:LastInputText = ""
 $script:LastResolvedInputText = ""
 $script:Language = $UiLanguage
@@ -744,6 +752,93 @@ function Get-OutputFreeSpaceOrNull {
     return Get-FreeSpaceForPathOrNull ([string]$outputBox.Text)
 }
 
+function New-DiagnosticError {
+    param(
+        [string]$Phase,
+        [string]$Command,
+        [string]$Code,
+        [string]$Detail,
+        [string]$Message,
+        [string]$Source,
+        [object]$ExitCode
+    )
+    return [pscustomobject]@{
+        phase = $Phase
+        command = $Command
+        code = $Code
+        detail = [string]$Detail
+        message = [string]$Message
+        source = $Source
+        exit_code = $ExitCode
+    }
+}
+
+function Get-CliErrorEventFromText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $event = $line | ConvertFrom-Json
+            if ($event.event -eq "error") { return $event }
+        }
+        catch { }
+    }
+    return $null
+}
+
+function Set-DiagnosticErrorFromProcessOutput {
+    param(
+        [string]$Phase,
+        [string]$Command,
+        [object]$ExitCode,
+        [string]$Stdout,
+        [string]$Stderr,
+        [string]$DefaultCode,
+        [string]$DefaultMessage
+    )
+    $event = Get-CliErrorEventFromText $Stderr
+    $source = "cli_stderr_json"
+    if ($null -eq $event) {
+        $event = Get-CliErrorEventFromText $Stdout
+        $source = "cli_stdout_json"
+    }
+    if ($null -ne $event) {
+        $script:LastDiagnosticError = New-DiagnosticError $Phase $Command ([string]$event.code) ([string]$event.detail) ([string]$event.message) $source $ExitCode
+        return
+    }
+
+    $detail = (($Stdout + [Environment]::NewLine + $Stderr).Trim())
+    $message = if ([string]::IsNullOrWhiteSpace($DefaultMessage)) { $detail } else { $DefaultMessage }
+    $script:LastDiagnosticError = New-DiagnosticError $Phase $Command $DefaultCode $detail $message "process_output" $ExitCode
+}
+
+function Get-PreflightDiagnosticCode {
+    param([string]$Message)
+    if ($Message -match "空き容量|free space") { return "insufficient_space" }
+    if ($Message -match "保存先|output folder") { return "output_path_invalid" }
+    if ($Message -match "長すぎます|too long") { return "path_too_long" }
+    if ($Message -match "FASTQまたは|Select at least one") { return "selection_required" }
+    if ($Message -match "検索結果|入力内容|search result|input has changed|Search files again") { return "resolved_state_invalid" }
+    return "preflight_failed"
+}
+
+function Set-DownloadPreflightDiagnosticError {
+    param(
+        [string]$Message,
+        [bool]$ClearOutputContext = $false
+    )
+    $script:LastPreflightStatus = "failed"
+    $script:LastPreflightError = $Message
+    if ($ClearOutputContext) {
+        $script:LastPreflightOutputDir = ""
+        $script:LastPreflightRequiredBytes = $null
+        $script:LastPreflightFreeBytes = $null
+    }
+    $code = Get-PreflightDiagnosticCode $script:LastPreflightError
+    $script:LastDiagnosticError = New-DiagnosticError "download_preflight" "selected-download-json" $code $script:LastPreflightError $script:LastPreflightError "gui_preflight" $null
+}
+
 function Get-ExistingDirectoryForPath {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
@@ -840,12 +935,40 @@ function Copy-DiagnosticFile {
     Copy-Item -LiteralPath $Source -Destination (Join-Path $DestinationDirectory ([System.IO.Path]::GetFileName($Source))) -Force
 }
 
+function Copy-DiagnosticFilesByPattern {
+    param(
+        [string]$Directory,
+        [string]$Pattern,
+        [string]$DestinationDirectory
+    )
+    if ([string]::IsNullOrWhiteSpace($Directory)) { return }
+    if (-not [System.IO.Directory]::Exists($Directory)) { return }
+    $matches = @(Get-ChildItem -LiteralPath $Directory -Filter $Pattern -File -ErrorAction SilentlyContinue)
+    if ($matches.Count -eq 0) { return }
+    New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
+    foreach ($item in $matches) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $DestinationDirectory $item.Name) -Force
+    }
+}
+
+function Copy-DiagnosticPreDoneArtifacts {
+    param([string]$ArtifactsDirectory)
+    $dir = $script:LastPreflightOutputDir
+    if ([string]::IsNullOrWhiteSpace($dir)) { return }
+    Copy-DiagnosticFilesByPattern $dir "*_fastq_manifest.tsv" $ArtifactsDirectory
+    Copy-DiagnosticFilesByPattern $dir "*_supplementary_manifest.tsv" $ArtifactsDirectory
+    Copy-DiagnosticFilesByPattern $dir "*_download_log.tsv" $ArtifactsDirectory
+}
+
 function Copy-DiagnosticArtifacts {
     param([string]$ArtifactsDirectory)
     if ($null -ne $script:LastDownloadDoneEvent) {
         Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.fastq_manifest) $ArtifactsDirectory
         Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.supplementary_manifest) $ArtifactsDirectory
         Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.download_log) $ArtifactsDirectory
+    }
+    else {
+        Copy-DiagnosticPreDoneArtifacts $ArtifactsDirectory
     }
     if ($null -ne $script:LastVerificationDoneEvent) {
         Copy-DiagnosticFile ([string]$script:LastVerificationDoneEvent.report) $ArtifactsDirectory
@@ -880,11 +1003,19 @@ function Save-DiagnosticsZip {
             selected_supplementary_indices = Get-SelectedSuppIndicesOrEmpty
             output_parent = if ($outputBox) { [string]$outputBox.Text } else { "" }
             output_free_bytes = Get-OutputFreeSpaceOrNull
+            last_error = $script:LastDiagnosticError
+            last_resolve_exit_code = $script:LastResolveExitCode
+            last_resolve_arguments = @($script:LastResolveArguments)
             last_preflight_status = $script:LastPreflightStatus
             last_preflight_error = $script:LastPreflightError
             preflight_output_dir = $script:LastPreflightOutputDir
+            preflight_required_bytes = $script:LastPreflightRequiredBytes
+            preflight_free_bytes = $script:LastPreflightFreeBytes
+            last_download_arguments = @($script:LastDownloadArguments)
+            last_download_start_error = $script:LastDownloadStartError
             last_download_exit_code = $script:LastDownloadExitCode
             last_download_done = $script:LastDownloadDoneEvent
+            last_verification_arguments = @($script:LastVerificationArguments)
             last_verification_exit_code = $script:LastVerificationExitCode
             last_verification_done = $script:LastVerificationDoneEvent
         }
@@ -964,21 +1095,50 @@ function Normalize-InputText {
     return $Value.Trim()
 }
 
-function Clear-ResolvedState {
-    param([switch]$DeleteResolvedJson)
-    $script:Resolved = $null
-    $script:LastResolvedInputText = ""
+function Clear-DownloadDiagnosticState {
+    $script:DownloadStdoutText = ""
+    $script:DownloadStderrText = ""
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = $null
+    $script:LastDownloadArguments = @()
+    $script:LastDownloadStartError = ""
     $script:DownloadExitObserved = $false
     $script:DownloadStdoutClosed = $false
     $script:DownloadFinalized = $false
+}
+
+function Clear-VerificationDiagnosticState {
+    $script:VerifyStdoutText = ""
+    $script:VerifyStderrText = ""
+    $script:LastVerificationDoneEvent = $null
+    $script:LastVerificationExitCode = $null
+    $script:LastVerificationArguments = @()
     $script:VerifyExitObserved = $false
     $script:VerifyStdoutClosed = $false
     $script:VerifyFinalized = $false
+}
+
+function Clear-ResolvedState {
+    param(
+        [switch]$DeleteResolvedJson,
+        [switch]$PreserveResolveDiagnostics
+    )
+    $script:Resolved = $null
+    $script:LastResolvedInputText = ""
+    if (-not $PreserveResolveDiagnostics) {
+        $script:ResolveStdoutText = ""
+        $script:ResolveStderrText = ""
+        $script:LastResolveExitCode = $null
+        $script:LastResolveArguments = @()
+        $script:LastDiagnosticError = $null
+    }
+    Clear-DownloadDiagnosticState
+    Clear-VerificationDiagnosticState
     $script:LastPreflightStatus = ""
     $script:LastPreflightError = ""
     $script:LastPreflightOutputDir = ""
+    $script:LastPreflightRequiredBytes = $null
+    $script:LastPreflightFreeBytes = $null
     if ($fastqGrid) { $fastqGrid.Rows.Clear() }
     if ($suppGrid) { $suppGrid.Rows.Clear() }
     if ($DeleteResolvedJson -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
@@ -1027,6 +1187,7 @@ function Complete-ResolveProcess {
     param([int]$ExitCode)
     try {
         $script:ResolveProcess = $null
+        $script:LastResolveExitCode = $ExitCode
         $inputPath = $script:ResolveInputPath
         $script:ResolveInputPath = $null
         if ($inputPath) {
@@ -1038,10 +1199,14 @@ function Complete-ResolveProcess {
             Apply-ResolvedResult (Get-Content -Raw -Encoding UTF8 $script:ResolvedJsonPath | ConvertFrom-Json)
         }
         else {
-            Clear-ResolvedState -DeleteResolvedJson
+            Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
+            Set-DiagnosticErrorFromProcessOutput "resolve" "resolve-json" $ExitCode $script:ResolveStdoutText $script:ResolveStderrText "resolve_failed" (T "metadataFailed")
             $message = (($script:ResolveStdoutText + $script:ResolveStderrText).Trim())
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = T "metadataFailed"
+            }
+            if ($null -ne $script:LastDiagnosticError -and -not [string]::IsNullOrWhiteSpace([string]$script:LastDiagnosticError.message)) {
+                $message = [string]$script:LastDiagnosticError.message
             }
             $statusLabel.Text = T "error"
             Show-AppError $message
@@ -1338,6 +1503,8 @@ function Test-DownloadPreflight {
     $script:LastPreflightStatus = "running"
     $script:LastPreflightError = ""
     $script:LastPreflightOutputDir = ""
+    $script:LastPreflightRequiredBytes = $null
+    $script:LastPreflightFreeBytes = $null
     try {
         if (-not $outputBox -or [string]::IsNullOrWhiteSpace($outputBox.Text)) {
             throw (T "preflightOutputRequired")
@@ -1377,6 +1544,8 @@ function Test-DownloadPreflight {
 
         $freeBytes = Get-FreeSpaceForPathOrNull $runOutputDir
         $requiredBytes = [Int64](Get-SelectedTotalBytes)
+        $script:LastPreflightRequiredBytes = $requiredBytes
+        $script:LastPreflightFreeBytes = $freeBytes
         if ($null -ne $freeBytes -and $requiredBytes -gt [Int64]$freeBytes) {
             throw ((T "preflightInsufficientSpace") -f (Format-Bytes $requiredBytes), (Format-Bytes ([Int64]$freeBytes)))
         }
@@ -1389,8 +1558,7 @@ function Test-DownloadPreflight {
         }
     }
     catch {
-        $script:LastPreflightStatus = "failed"
-        $script:LastPreflightError = $_.Exception.Message
+        Set-DownloadPreflightDiagnosticError $_.Exception.Message
         Append-Log ((T "preflightFailedLog") -f $script:LastPreflightError)
         throw
     }
@@ -1594,6 +1762,9 @@ function Complete-DownloadIfReady {
     $statusLabel.Text = T $statusKey
     if ($statusKey -eq "error") {
         $progressBar.Value = 0
+        if ($null -eq $script:LastDiagnosticError) {
+            Set-DiagnosticErrorFromProcessOutput "download" "selected-download-json" $script:LastDownloadExitCode $script:DownloadStdoutText $script:DownloadStderrText "download_failed_before_done" "Download process ended before the done event."
+        }
     }
 }
 
@@ -1613,6 +1784,9 @@ function Complete-ManifestVerificationIfReady {
     if ($null -eq $script:LastVerificationDoneEvent) {
         $progressBar.Value = 0
         $statusLabel.Text = T "error"
+        if ($null -eq $script:LastDiagnosticError) {
+            Set-DiagnosticErrorFromProcessOutput "verification" "verify-manifest-json" $script:LastVerificationExitCode $script:VerifyStdoutText $script:VerifyStderrText "verification_failed_before_report" (T "verifyManifestNoReport")
+        }
         Append-Log (T "verifyManifestNoReport")
         return
     }
@@ -1639,8 +1813,11 @@ function Start-ResolveProcess {
     $script:ResolveInputPath = New-ResolveInputFile $InputText
     $script:ResolveStdoutText = ""
     $script:ResolveStderrText = ""
+    $script:LastResolveExitCode = $null
+    $script:LastDiagnosticError = $null
     $process = New-Object System.Diagnostics.Process
     try {
+        $script:LastResolveArguments = Get-ResolvePythonArguments $script:ResolveInputPath
         $process.StartInfo = New-ResolveProcessStartInfo $script:ResolveInputPath
         $process.EnableRaisingEvents = $true
         $script:ResolveBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
@@ -1691,13 +1868,9 @@ function Start-ManifestVerificationProcess {
         throw (T "verifyManifestAlreadyRunning")
     }
     $script:VerifyCanceled = $false
-    $script:VerifyStdoutText = ""
-    $script:VerifyStderrText = ""
-    $script:LastVerificationDoneEvent = $null
-    $script:LastVerificationExitCode = $null
-    $script:VerifyExitObserved = $false
-    $script:VerifyStdoutClosed = $false
-    $script:VerifyFinalized = $false
+    Clear-VerificationDiagnosticState
+    $script:LastDiagnosticError = $null
+    $script:LastVerificationArguments = Get-VerifyManifestPythonArguments $ManifestPath
     Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
 
     $process = New-Object System.Diagnostics.Process
@@ -1760,19 +1933,24 @@ function Start-ManifestVerificationProcess {
 }
 
 function Start-DownloadProcess {
-    Assert-ResolvedMatchesCurrentInput
-    Assert-AnySelection
     $script:DownloadCanceled = $false
-    $script:DownloadStdoutText = ""
-    $script:DownloadStderrText = ""
-    $script:LastDownloadDoneEvent = $null
-    $script:LastDownloadExitCode = $null
-    $script:DownloadExitObserved = $false
-    $script:DownloadStdoutClosed = $false
-    $script:DownloadFinalized = $false
+    Clear-DownloadDiagnosticState
+    Clear-VerificationDiagnosticState
+    $script:LastDiagnosticError = $null
+    try {
+        Assert-ResolvedMatchesCurrentInput
+        Assert-AnySelection
+    }
+    catch {
+        Set-DownloadPreflightDiagnosticError $_.Exception.Message $true
+        throw
+    }
     Test-DownloadPreflight | Out-Null
 
-    $psi = New-DownloadProcessStartInfo (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
+    $fastqIndices = Get-SelectedFastqIndicesOrEmpty
+    $suppIndices = Get-SelectedSuppIndicesOrEmpty
+    $script:LastDownloadArguments = Get-DownloadPythonArguments $fastqIndices $suppIndices
+    $psi = New-DownloadProcessStartInfo $fastqIndices $suppIndices
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     $process.EnableRaisingEvents = $true
@@ -1822,7 +2000,16 @@ function Start-DownloadProcess {
         })
     )
     $script:DownloadBridge.Attach($process)
-    [void]$process.Start()
+    try {
+        [void]$process.Start()
+    }
+    catch {
+        $script:DownloadProcess = $null
+        $script:LastDownloadStartError = $_.Exception.Message
+        $script:LastDiagnosticError = New-DiagnosticError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
+        Update-CancelButton
+        throw
+    }
     $script:DownloadProcess = $process
     Update-CancelButton
     $process.BeginOutputReadLine()
@@ -1831,7 +2018,7 @@ function Start-DownloadProcess {
 
 function New-ResolveProcessStartInfo {
     param([string]$InputPath)
-    return New-PythonProcessStartInfo -Arguments @("-m", "geo_getter.cli", "resolve-json", "--input-file", $InputPath, "--out-json", $script:ResolvedJsonPath)
+    return New-PythonProcessStartInfo -Arguments (Get-ResolvePythonArguments $InputPath)
 }
 
 function New-DownloadProcessStartInfo {
@@ -1839,12 +2026,30 @@ function New-DownloadProcessStartInfo {
         [string]$FastqIndices,
         [string]$SuppIndices
     )
-    return New-PythonProcessStartInfo -Arguments @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text)
+    return New-PythonProcessStartInfo -Arguments (Get-DownloadPythonArguments $FastqIndices $SuppIndices)
 }
 
 function New-VerifyManifestProcessStartInfo {
     param([string]$ManifestPath)
-    return New-PythonProcessStartInfo -Arguments @("-m", "geo_getter.cli", "verify-manifest-json", "--manifest", $ManifestPath)
+    return New-PythonProcessStartInfo -Arguments (Get-VerifyManifestPythonArguments $ManifestPath)
+}
+
+function Get-ResolvePythonArguments {
+    param([string]$InputPath)
+    return @("-m", "geo_getter.cli", "resolve-json", "--input-file", $InputPath, "--out-json", $script:ResolvedJsonPath)
+}
+
+function Get-DownloadPythonArguments {
+    param(
+        [string]$FastqIndices,
+        [string]$SuppIndices
+    )
+    return @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text)
+}
+
+function Get-VerifyManifestPythonArguments {
+    param([string]$ManifestPath)
+    return @("-m", "geo_getter.cli", "verify-manifest-json", "--manifest", $ManifestPath)
 }
 
 function New-PythonProcessStartInfo {
@@ -2588,9 +2793,28 @@ if ($SelfTest) {
     $encodingResult = Invoke-PythonCli -Arguments @("-m", "geo_getter.cli", "resolve-json", "")
     Assert-Equal $encodingResult.ExitCode 1 "empty input error exit code"
     Assert-Contains $encodingResult.Stderr "input_text or --input-file" "CLI stderr stays English"
+    $resolveErrorEvent = $encodingResult.Stderr.Trim() | ConvertFrom-Json
+    Assert-Equal $resolveErrorEvent.event "error" "CLI emits structured error event"
+    Assert-Equal $resolveErrorEvent.command "resolve-json" "CLI error records command"
+    Assert-Equal $resolveErrorEvent.code "invalid_input" "CLI error records code"
 
     $selfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("geo getter selftest " + [System.Guid]::NewGuid().ToString("N"))
     [System.IO.Directory]::CreateDirectory($selfTestRoot) | Out-Null
+    $script:ResolveStdoutText = $encodingResult.Stdout
+    $script:ResolveStderrText = $encodingResult.Stderr
+    $script:LastResolveExitCode = $encodingResult.ExitCode
+    $script:LastResolveArguments = @("-m", "geo_getter.cli", "resolve-json", "")
+    Set-DiagnosticErrorFromProcessOutput "resolve" "resolve-json" $encodingResult.ExitCode $encodingResult.Stdout $encodingResult.Stderr "resolve_failed" (T "metadataFailed")
+    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "GUI parses CLI error code"
+    $resolveFailureZip = Join-Path $selfTestRoot "resolve-failure-diagnostics.zip"
+    Save-DiagnosticsZip $resolveFailureZip | Out-Null
+    $resolveFailureExtract = Join-Path $selfTestRoot "resolve failure extract"
+    Expand-Archive -LiteralPath $resolveFailureZip -DestinationPath $resolveFailureExtract -Force
+    $resolveFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $resolveFailureExtract "diagnostics.json") | ConvertFrom-Json
+    Assert-Equal $resolveFailureDiagnostics.last_error.phase "resolve" "diagnostics records resolve phase"
+    Assert-Equal $resolveFailureDiagnostics.last_error.code "invalid_input" "diagnostics records resolve error code"
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $resolveFailureExtract "resolved.json")) $false "resolve failure diagnostics excludes stale resolved json"
+    Clear-ResolvedState -DeleteResolvedJson
     $noCreateOutput = Join-Path $selfTestRoot "capacity should not be created"
     $outputBox.Text = $noCreateOutput
     Update-Capacity
@@ -2823,6 +3047,15 @@ if ($SelfTest) {
     }
     Assert-Contains $startPreflightMessage "ファイル" "download start stops before subprocess on preflight failure"
     Assert-Equal $script:DownloadProcess $null "download process is not created when preflight fails"
+    Assert-Equal $script:LastDiagnosticError.phase "download_preflight" "preflight records diagnostic phase"
+    Assert-Equal $script:LastDiagnosticError.code "output_path_invalid" "preflight records diagnostic code"
+    $preflightFailureZip = Join-Path $selfTestRoot "preflight-failure-diagnostics.zip"
+    Save-DiagnosticsZip $preflightFailureZip | Out-Null
+    $preflightFailureExtract = Join-Path $selfTestRoot "preflight failure extract"
+    Expand-Archive -LiteralPath $preflightFailureZip -DestinationPath $preflightFailureExtract -Force
+    $preflightFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $preflightFailureExtract "diagnostics.json") | ConvertFrom-Json
+    Assert-Equal $preflightFailureDiagnostics.last_error.phase "download_preflight" "diagnostics records preflight phase"
+    Assert-Equal $preflightFailureDiagnostics.last_error.code "output_path_invalid" "diagnostics records preflight code"
 
     $longPreflightMessage = ""
     try {
@@ -2841,8 +3074,8 @@ if ($SelfTest) {
     Assert-Equal $suppOnlyPreflight.RequiredBytes ([Int64]0) "supplementary-only preflight excludes unknown size from capacity"
 
     $outputBox.Text = Join-Path $selfTestRoot "huge fastq output"
-    $fastqGrid.Rows[0].Cells["selected"].Value = $true
-    $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
+    Set-GridSelection $fastqGrid "selected" $true
+    Set-GridSelection $suppGrid "supp_selected" $false
     $originalSmallSize = [Int64]$script:Resolved.fastq_files[[int]$fastqGrid.Rows[0].Tag].size_bytes
     $hugeFreeBytes = Get-FreeSpaceForPathOrNull $outputBox.Text
     if ($null -eq $hugeFreeBytes) { throw "self-test could not read temporary drive free space" }
@@ -2858,8 +3091,10 @@ if ($SelfTest) {
         $script:Resolved.fastq_files[[int]$fastqGrid.Rows[0].Tag].size_bytes = $originalSmallSize
     }
     Assert-Contains $hugePreflightMessage "空き容量" "preflight rejects insufficient FASTQ capacity"
+    Assert-Equal $script:LastDiagnosticError.code "insufficient_space" "preflight records insufficient space code"
 
     $outputBox.Text = Join-Path $selfTestRoot "out folder"
+    Set-GridSelection $fastqGrid "selected" $false
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
 
@@ -2895,6 +3130,34 @@ if ($SelfTest) {
     Assert-Contains $verifyResult.Stdout '"kind": "manifest_verification"' "verify-manifest-json done event"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "verification_report.tsv")) $true "verification report exists"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "verification_report.tsv")) "md5_verified" "verification report md5 success"
+
+    $downloadDoneEventForDiagnostics = $script:LastDownloadDoneEvent
+    $script:LastDownloadDoneEvent = $null
+    $script:LastDownloadExitCode = 1
+    $script:DownloadCanceled = $false
+    $script:DownloadExitObserved = $true
+    $script:DownloadStdoutClosed = $true
+    $script:DownloadFinalized = $false
+    $script:DownloadStdoutText = ""
+    $script:DownloadStderrText = '{"event":"error","command":"selected-download-json","code":"invalid_json","detail":"fixture","message":"fixture"}'
+    $script:LastPreflightOutputDir = $selfTestRunOutput
+    $script:LastDiagnosticError = $null
+    Complete-DownloadIfReady
+    Assert-Equal $script:LastDiagnosticError.phase "download" "download without done records phase"
+    Assert-Equal $script:LastDiagnosticError.code "invalid_json" "download without done parses CLI error"
+    $noDoneZip = Join-Path $selfTestRoot "download-no-done-diagnostics.zip"
+    Save-DiagnosticsZip $noDoneZip | Out-Null
+    $noDoneExtract = Join-Path $selfTestRoot "download no done extract"
+    Expand-Archive -LiteralPath $noDoneZip -DestinationPath $noDoneExtract -Force
+    $noDoneDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $noDoneExtract "diagnostics.json") | ConvertFrom-Json
+    Assert-Equal $noDoneDiagnostics.last_error.phase "download" "diagnostics records no-done phase"
+    Assert-Equal $noDoneDiagnostics.last_error.code "invalid_json" "diagnostics records no-done code"
+    Assert-Equal ((Get-ChildItem -Path $noDoneExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "no-done diagnostics includes available download log"
+    $script:LastDownloadDoneEvent = $downloadDoneEventForDiagnostics
+    $script:LastDownloadExitCode = $downloadResult.ExitCode
+    $script:DownloadFinalized = $true
+    $script:LastDiagnosticError = $null
+
     $progressBar.Value = 0
     $statusLabel.Text = T "verifyingManifest"
     [void]$form.Handle
@@ -2921,6 +3184,30 @@ if ($SelfTest) {
     Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "resolved.json")) $true "diagnostics resolved JSON exists"
     Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "diagnostics includes download log"
     Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "verification_report.tsv").Count -gt 0) $true "diagnostics includes verification report"
+    $successDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $diagnosticsExtract "diagnostics.json") | ConvertFrom-Json
+    Assert-Equal $successDiagnostics.last_error $null "successful diagnostics does not keep stale error"
+
+    $inputBox.Text = "DIFFERENT_INPUT"
+    $staleDownloadStartMessage = ""
+    try {
+        Start-DownloadProcess
+    }
+    catch {
+        $staleDownloadStartMessage = $_.Exception.Message
+    }
+    Assert-Equal $staleDownloadStartMessage (T "inputChangedAfterResolve") "download start validation reports changed input"
+    Assert-Equal $script:DownloadProcess $null "download start validation does not create process"
+    Assert-Equal $script:LastDiagnosticError.phase "download_preflight" "download start validation records phase"
+    Assert-Equal $script:LastDiagnosticError.code "resolved_state_invalid" "download start validation records code"
+    $staleDownloadZip = Join-Path $selfTestRoot "download-validation-stale-diagnostics.zip"
+    Save-DiagnosticsZip $staleDownloadZip | Out-Null
+    $staleDownloadExtract = Join-Path $selfTestRoot "download validation stale extract"
+    Expand-Archive -LiteralPath $staleDownloadZip -DestinationPath $staleDownloadExtract -Force
+    Assert-Equal ((Get-ChildItem -Path $staleDownloadExtract -Recurse -Filter "*_download_log.tsv").Count) 0 "download validation diagnostics omits stale download log"
+    Assert-Equal ((Get-ChildItem -Path $staleDownloadExtract -Recurse -Filter "*_fastq_manifest.tsv").Count) 0 "download validation diagnostics omits stale fastq manifest"
+    Assert-Equal ((Get-ChildItem -Path $staleDownloadExtract -Recurse -Filter "verification_report.tsv").Count) 0 "download validation diagnostics omits stale verification report"
+    $inputBox.Text = "SELFTEST"
+
     $originalPythonExe = $PythonExe
     $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
     $threwVerifyStart = $false
@@ -2935,6 +3222,32 @@ if ($SelfTest) {
     }
     Assert-Equal $threwVerifyStart $true "manifest verification start failure throws"
     Assert-Equal $script:VerifyProcess $null "manifest verification start failure clears process"
+
+    $outputBox.Text = Join-Path $selfTestRoot "download start failure output"
+    $fastqGrid.Rows[0].Cells["selected"].Value = $true
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
+    $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
+    $threwDownloadStart = $false
+    try {
+        Start-DownloadProcess
+    }
+    catch {
+        $threwDownloadStart = $true
+    }
+    finally {
+        $PythonExe = $originalPythonExe
+    }
+    Assert-Equal $threwDownloadStart $true "download start failure throws"
+    Assert-Equal $script:DownloadProcess $null "download start failure clears process"
+    Assert-Equal $script:LastDiagnosticError.phase "download_process_start" "download start failure records phase"
+    Assert-Equal $script:LastDiagnosticError.code "process_start_failed" "download start failure records code"
+    $downloadStartFailureZip = Join-Path $selfTestRoot "download-start-failure-diagnostics.zip"
+    Save-DiagnosticsZip $downloadStartFailureZip | Out-Null
+    $downloadStartFailureExtract = Join-Path $selfTestRoot "download start failure extract"
+    Expand-Archive -LiteralPath $downloadStartFailureZip -DestinationPath $downloadStartFailureExtract -Force
+    $downloadStartFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $downloadStartFailureExtract "diagnostics.json") | ConvertFrom-Json
+    Assert-Equal $downloadStartFailureDiagnostics.last_error.phase "download_process_start" "diagnostics records download start phase"
+    Assert-Equal $downloadStartFailureDiagnostics.last_error.code "process_start_failed" "diagnostics records download start code"
 
     $outputBox.Text = Join-Path $selfTestRoot "async out folder"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false

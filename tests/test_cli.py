@@ -6,11 +6,31 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main
+from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
 from geo_getter.planner import download_log_path, supplementary_manifest_path
 
 
 class CliTest(unittest.TestCase):
+    def run_cli_with_streams(self, argv):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = run_cli(argv)
+        return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def assert_cli_error(self, argv, expected_code):
+        exit_code, stdout, stderr = self.run_cli_with_streams(argv)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(len(stderr.splitlines()), 1)
+        payload = json.loads(stderr)
+        self.assertEqual(payload["event"], "error")
+        self.assertEqual(payload["code"], expected_code)
+        self.assertIn("command", payload)
+        self.assertIn("detail", payload)
+        self.assertIn("message", payload)
+        return payload
+
     def test_help_only_exposes_gui_bridge_commands(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -32,6 +52,62 @@ class CliTest(unittest.TestCase):
             path = Path(temp) / "payload.json"
             path.write_text("\ufeff{\"value\": 1}", encoding="utf-8")
             self.assertEqual(_load_json(path), {"value": 1})
+
+    def test_resolve_json_empty_input_emits_structured_stderr_error(self):
+        payload = self.assert_cli_error(["resolve-json", ""], "invalid_input")
+        self.assertEqual(payload["command"], "resolve-json")
+        self.assertIn("input_text or --input-file", payload["message"])
+
+    def test_selected_download_invalid_json_emits_structured_stderr_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "invalid.json"
+            input_json.write_text("{not-json", encoding="utf-8")
+
+            payload = self.assert_cli_error(
+                ["selected-download-json", "--input-json", str(input_json), "--out", str(root / "out")],
+                "invalid_json",
+            )
+
+        self.assertEqual(payload["command"], "selected-download-json")
+
+    def test_selected_download_missing_required_argument_emits_structured_stderr_error(self):
+        payload = self.assert_cli_error(["selected-download-json"], "invalid_input")
+        self.assertEqual(payload["command"], "selected-download-json")
+        self.assertIn("required", payload["message"])
+
+    def test_selected_download_out_of_range_index_emits_structured_stderr_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps({"input_text": "GSE", "primary_accession": "GSE", "fastq_files": [], "supplementary_files": []}),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "selection_invalid",
+            )
+
+        self.assertEqual(payload["command"], "selected-download-json")
+
+    def test_verify_manifest_invalid_manifest_emits_structured_stderr_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "sample_fastq_manifest.tsv"
+            manifest.write_text("file_name\tlocal_path\nfixture.fastq.gz\tfixture.fastq.gz\n", encoding="utf-8-sig")
+
+            payload = self.assert_cli_error(["verify-manifest-json", "--manifest", str(manifest)], "invalid_manifest")
+
+        self.assertEqual(payload["command"], "verify-manifest-json")
 
     def test_selected_fastq_rejects_negative_index(self):
         payload = {
@@ -189,6 +265,7 @@ class CliTest(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 1)
             self.assertIn('"event": "done"', output)
+            self.assertNotIn('"event": "error"', output)
             self.assertIn('"network_failed"', output)
             run_dir = root / "out" / "GSE000003"
             log_text = download_log_path(run_dir).read_text(encoding="utf-8")
@@ -278,6 +355,7 @@ class CliTest(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 1)
             self.assertIn('"event": "done"', output)
+            self.assertNotIn('"event": "error"', output)
             self.assertIn('"md5_unavailable"', output)
             self.assertTrue((out_dir / "GSE000002" / "source.fastq.gz").exists())
 
