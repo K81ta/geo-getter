@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import __version__
 from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
-from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED
+from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED, GeoGetterError
 from .models import FastqFile
 from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
 from .planner import (
@@ -24,9 +24,14 @@ from .planner import (
 from .providers.resolver import MetadataResolver
 
 
+class GeoGetterArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(description="GEOGetter internal GUI bridge")
+    parser = GeoGetterArgumentParser(description="GEOGetter internal GUI bridge")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     resolve_json_parser = subparsers.add_parser("resolve-json", help="write resolved metadata as JSON")
@@ -52,6 +57,47 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify-manifest-json":
         return _verify_manifest_json(Path(args.manifest))
     return 2
+
+
+def run_cli(argv: list[str] | None = None) -> int:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    command = _command_from_argv(argv_list)
+    try:
+        return main(argv_list)
+    except Exception as exc:
+        print(json.dumps(_error_payload(command, exc), ensure_ascii=False), file=sys.stderr)
+        return 1
+
+
+def _command_from_argv(argv: list[str]) -> str:
+    if argv and not argv[0].startswith("-"):
+        return argv[0]
+    return ""
+
+
+def _error_payload(command: str, exc: Exception) -> dict[str, str]:
+    code, detail, message = _classify_error(exc)
+    return {
+        "event": "error",
+        "command": command,
+        "code": code,
+        "detail": detail,
+        "message": message,
+    }
+
+
+def _classify_error(exc: Exception) -> tuple[str, str, str]:
+    if isinstance(exc, GeoGetterError):
+        return exc.code, exc.detail, exc.user_message
+    if isinstance(exc, json.JSONDecodeError):
+        return "invalid_json", str(exc), f"Could not parse JSON input.\nDetail: {exc}"
+    if isinstance(exc, IndexError):
+        return "selection_invalid", str(exc), f"Selected file index is invalid.\nDetail: {exc}"
+    if isinstance(exc, ValueError):
+        return "invalid_input", str(exc), str(exc)
+    if isinstance(exc, (FileNotFoundError, OSError)):
+        return "file_error", str(exc), f"Could not read or write a required file.\nDetail: {exc}"
+    return "internal_error", str(exc), f"Internal error.\nDetail: {exc}"
 
 
 def _resolve_json(input_text: str | None, input_file: str | None, out_json: str | None) -> int:
@@ -321,8 +367,4 @@ def _unique_existing_path(path: Path) -> Path:
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
+    raise SystemExit(run_cli())
