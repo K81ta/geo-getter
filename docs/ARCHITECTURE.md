@@ -2,9 +2,9 @@
 
 ## 位置づけ
 
-GEOGetter は、GEO レコード、GEO URL、SRA / ENA / Project / BioSample 系 accession を起点に、raw FASTQ と GEO supplementary / processed file を取得する Windows 向けデスクトップアプリである。
+GEOGetter は、GEO record、GEO URL、SRA / ENA / Project / BioSample 系 accession を起点に、raw FASTQ と GEO supplementary / processed file を保存する Windows 向けデスクトップアプリである。
 
-ユーザーは GUI から操作する。Python CLI は、GUI と Python コアをつなぐ中継役として使う。
+ユーザーは GUI から操作する。Python CLI は GUI と Python コアをつなぐ内部 bridge として使う。
 
 実行環境:
 
@@ -12,7 +12,30 @@ GEOGetter は、GEO レコード、GEO URL、SRA / ENA / Project / BioSample 系
 - インストーラーと portable zip は `start_geo_getter.vbs` から GUI を起動する。
 - GUI は Python 関数を直接 import せず、subprocess と JSON で連携する。
 
-## 全体像
+## データの入口と出口
+
+GEOGetter の入口は、入力欄に貼り付けられた accession または GEO URL である。対応する accession は、入力テキストの中で最初に見つかった 1 件を primary accession として扱う。
+
+主な入口:
+
+| 入力 | 主な経路 |
+| --- | --- |
+| `GSE`, `GSM`, GEO URL | GEO SOFT を取得し、関連 accession と supplementary file を探す |
+| `SRP`, `SRX`, `SRR`, `SRS`, `ERP`, `ERX`, `ERR`, `ERS`, `DRP`, `DRX`, `DRR`, `DRS` | ENA Portal API `filereport` に直接問い合わせる |
+| `PRJNA`, `PRJEB`, `PRJDB`, `SAMN`, `SAMEA`, `SAMD` | ENA Portal API `filereport` に直接問い合わせる |
+
+主な出口:
+
+| 出力 | 内容 |
+| --- | --- |
+| raw FASTQ | ENA `fastq_ftp` から保存する FASTQ |
+| GEO supplementary / processed file | GEO SOFT の supplementary URL から保存するファイル |
+| FASTQ manifest | FASTQ の URL、期待 MD5、期待サイズ、保存パス |
+| supplementary manifest | supplementary / processed file の URL と保存パス |
+| download log | ファイルごとの保存結果 |
+| verification report | 保存済み FASTQ manifest の再確認結果 |
+
+## 全体構成
 
 ```mermaid
 flowchart TD
@@ -31,17 +54,15 @@ flowchart TD
     Downloader --> Output
 ```
 
-主要な責務:
-
 | 層 | 担当 | 責務 |
 | --- | --- | --- |
 | Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat` | PowerShell WinForms GUI を STA で起動する |
-| GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル |
-| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、manifest 再確認の起点 |
+| GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル、診断 zip 作成 |
+| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、manifest 再確認 |
 | Metadata core | `accession.py`, `providers/*` | accession 抽出、GEO/ENA 問い合わせ、候補統合 |
-| Download core | `planner.py`, `downloader.py` | 出力先決定、manifest/log、容量確認、ダウンロード、MD5 検証 |
+| Download core | `planner.py`, `downloader.py`, `path_safety.py` | 出力先決定、manifest/log、容量確認、ファイル名安全化、ダウンロード、MD5 検証 |
 
-## 実行フロー
+## 内部実行フロー
 
 ### 1. 起動
 
@@ -49,7 +70,7 @@ flowchart TD
 
 インストーラーのショートカットと portable zip の起動ファイルは `start_geo_getter.vbs` を実行する。`start_geo_getter.vbs` は同じフォルダの `GEOGetter.ps1` を `powershell -NoProfile -STA -ExecutionPolicy Bypass -File` で起動する。
 
-### 2. metadata 解決
+### 2. 検索と metadata 解決
 
 GUI の検索処理は、一時ファイルに入力文字列を書き、次の内部 CLI を実行する。
 
@@ -59,15 +80,20 @@ python -m geo_getter.cli resolve-json --input-file <temp-input> --out-json <temp
 
 `resolve-json` は、入力から最初に見つかった対応 accession を primary accession として使う。複数の accession が入力に含まれていても、先頭の 1 件だけを主入力にする。
 
-入力種別ごとの処理:
+`GSE` または `GSM` の場合は GEO SOFT を取得する。`GSE` では record 本体に加えて sample 側の補完のため `targ=gsm`, `view=brief` も取得する。
 
-| 入力 | 処理 |
+GEO SOFT からは次の情報を読む。
+
+| SOFT key | 用途 |
 | --- | --- |
-| `GSE`, `GSM` | GEO SOFT を取得し、関連 SRA / ENA / Project / BioSample accession と supplementary file を探す |
-| `SRP`, `SRX`, `SRR`, `SRS`, `ERP`, `ERX`, `ERR`, `ERS`, `DRP`, `DRX`, `DRR`, `DRS` | その accession を ENA filereport に直接問い合わせる |
-| `PRJNA`, `PRJEB`, `PRJDB`, `SAMN`, `SAMEA`, `SAMD` | その accession を ENA filereport に直接問い合わせる |
+| `Series_title`, `Series_status`, `Series_type`, `Series_summary`, `Series_overall_design` | dataset metadata |
+| `Sample_title`, `Sample_status`, `Sample_organism_ch*`, `Sample_description` | sample metadata / dataset metadata 補完 |
+| `Series_relation`, `Sample_relation` | ENA / SRA / Project / BioSample accession 探索 |
+| `Series_supplementary_file`, `Sample_supplementary_file` | supplementary / processed file 探索 |
 
 GEO record から関連 accession が取れない場合、または ENA direct FASTQ が見つからない場合は、`warnings` に入れる。supplementary file がある場合は FASTQ がなくても表示対象になる。
+
+SRA / ENA / Project / BioSample 系 accession が直接入力された場合は、GEO SOFT を通らず、その accession を ENA Portal API `filereport` に問い合わせる。
 
 ### 3. GUI 表示と選択
 
@@ -87,7 +113,7 @@ FASTQ 表と supplementary 表では、ソート後も元の配列と対応で�
 
 Python 側では、これを `resolve-json` の `fastq_files` / `supplementary_files` 配列 index として扱う。
 
-### 4. ダウンロード
+### 4. 選択ファイルのダウンロード
 
 GUI のダウンロード処理は次の内部 CLI を非同期 subprocess として起動する。
 
@@ -112,7 +138,7 @@ Downloads/GEOGetter/
 
 同名フォルダが存在し空でない場合は、既存成果物を上書きせず `GSE52778_2`, `GSE52778_3` のような suffix 付きフォルダを使う。
 
-### 5. 保存済みFASTQ manifest再確認
+### 5. 保存済み FASTQ manifest 再確認
 
 GUI の `ツール > 保存済みFASTQを確認` は、保存済みの `*_fastq_manifest.tsv` を選び、次の内部 CLI を非同期 subprocess として起動する。
 
@@ -122,19 +148,9 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 
 このコマンドは GUI から呼ぶ内部 JSON bridge であり、ユーザー向けの公開 CLI として扱わない。出力先は manifest と同じフォルダの `verification_report.tsv` である。
 
+`verify-manifest-json` は通常の CLI help には表示しない。GUI が manifest 再確認を実行するときだけ呼び出す。
+
 再確認では、manifest の `local_path` を優先してファイルを探す。フォルダ移動などで絶対パスが古く、同じフォルダに `file_name` のファイルが存在する場合は、manifest と同じフォルダのファイルを確認対象にする。
-
-`verification_report.tsv` の主な status:
-
-| status | 意味 |
-| --- | --- |
-| `md5_verified` | ファイルが存在し、サイズと MD5 が一致した |
-| `md5_unavailable` | ファイルは存在するが、manifest に期待 MD5 がないため MD5 照合できない |
-| `missing` | 確認対象ファイルが存在しない |
-| `size_mismatch` | ファイルサイズが manifest の値と一致しない |
-| `md5_mismatch` | サイズは一致するが MD5 が一致しない |
-
-終了コード `0` は、すべての FASTQ が `md5_verified` の場合だけ返る。それ以外の status がある場合は、レポートを作成したうえで終了コード `1` になる。
 
 ### 6. 進捗と終了
 
@@ -178,24 +194,6 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 
 キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。ただし、次回の GUI 実行では新しい accession suffix フォルダが選ばれることがあるため、同じ `.part` が自動で再利用されるとは限らない。同じ実保存フォルダと同じ local path を使う場合だけ、downloader 側で `.part` を再利用できる。
 
-## 診断情報
-
-GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の zip をローカルに作成できる。自動送信はしない。
-
-診断 zip の標準ファイル:
-
-| ファイル | 内容 |
-| --- | --- |
-| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、最後の download done event |
-| `resolved.json` | 最後に成功した `resolve-json` の結果 |
-| `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
-| `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |
-| `verify_stdout.jsonl`, `verify_stderr.txt` | manifest 再確認 subprocess の JSON Lines と標準エラー |
-| `gui_log.txt` | GUI 下部ログの内容 |
-| `artifacts/*` | 最後の download done event が返した manifest、download log、最後の manifest 再確認レポート |
-
-診断 zip にはローカルパス、入力 accession、保存先、ファイル名が含まれる可能性があるため、ユーザーが必要時に手動で共有する。
-
 ## 外部データソース
 
 ### NCBI GEO SOFT
@@ -216,15 +214,6 @@ https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi
 | `view=full` | 詳細 metadata |
 
 `GSE` では sample 側の補完のため、`targ=gsm`, `view=brief` も取得する。取得に失敗した場合は本体 record の結果を使う。
-
-主に読む SOFT key:
-
-| key | 用途 |
-| --- | --- |
-| `Series_title`, `Series_status`, `Series_type`, `Series_summary`, `Series_overall_design` | dataset metadata |
-| `Sample_title`, `Sample_status`, `Sample_organism_ch*`, `Sample_description` | sample metadata / dataset metadata 補完 |
-| `Series_relation`, `Sample_relation` | ENA / SRA / Project / BioSample accession 探索 |
-| `Series_supplementary_file`, `Sample_supplementary_file` | supplementary / processed file 探索 |
 
 SOFT の relation や supplementary file が欠けている場合は、取得できた値だけを候補、warning、空欄として返す。
 
@@ -261,7 +250,7 @@ FASTQ 候補生成に使う field:
 
 `ftp.sra.ebi.ac.uk/...` と `ftp://ftp.sra.ebi.ac.uk/...` は `https://ftp.sra.ebi.ac.uk/...` に正規化する。それ以外の URL 形式は、明示的な変換対象でない限りそのまま使う。
 
-## データ形式
+## 内部データ形式
 
 ### `resolve-json`
 
@@ -269,7 +258,7 @@ FASTQ 候補生成に使う field:
 
 ```json
 {
-  "app_version": "0.1.3",
+  "app_version": "<version>",
   "input_text": "GSE30567",
   "primary_accession": "GSE30567",
   "query_accessions": ["SRP007461"],
@@ -304,6 +293,7 @@ FASTQ 候補生成に使う field:
 | `url` | ダウンロード URL |
 | `expected_md5` | ENA `fastq_md5`。なければ空文字 |
 | `size_bytes` | ENA `fastq_bytes`。なければ `0` |
+| `experiment_accession`, `sample_accession`, `study_accession` など | ENA filereport 由来の accession metadata |
 | `geo_sample_accession`, `geo_sample_title` | GEO sample と対応付けできた場合だけ入る |
 
 `supplementary_files`:
@@ -320,6 +310,8 @@ FASTQ 候補生成に使う field:
 実保存フォルダの管理ファイル名はフォルダ名を prefix にする。`GSE52778_2` なら `GSE52778_2_download_log.tsv` になる。
 
 同じ保存名の FASTQ が複数選ばれた場合は、`same.fastq.gz`, `same.2.fastq.gz` のように保存名をずらす。supplementary file も同名が複数あれば suffix を付けて衝突を避ける。
+
+Windows 上で同じパスになる名前を避けるため、大文字小文字だけが違うファイル名も衝突として扱う。
 
 | ファイル | 作成条件 | 内容 | 文字コード |
 | --- | --- | --- | --- |
@@ -342,6 +334,17 @@ FASTQ manifest:
 | `local_path` | 保存予定パス |
 | `status` | 初期値 `planned` |
 
+supplementary manifest:
+
+| 列 | 内容 |
+| --- | --- |
+| `source_accession` | 元の GEO accession |
+| `scope` | Series / Sample 由来の区分 |
+| `file_name` | 保存候補名 |
+| `url` | ダウンロード URL |
+| `local_path` | 保存予定パス |
+| `status` | 初期値 `planned` |
+
 download log:
 
 | 列 | 内容 |
@@ -356,16 +359,20 @@ download log:
 | `bytes_downloaded` | 保存済み bytes |
 | `message` | 人間向けメッセージ |
 
-supplementary manifest:
+verification report:
 
 | 列 | 内容 |
 | --- | --- |
-| `source_accession` | 元の GEO accession |
-| `scope` | Series / Sample 由来の区分 |
-| `file_name` | 保存候補名 |
-| `url` | ダウンロード URL |
-| `local_path` | 保存予定パス |
-| `status` | 初期値 `planned` |
+| `source_accession` | 元の GEO / 入力 accession |
+| `query_accession` | ENA query accession |
+| `run_accession` | run accession |
+| `file_index` | run 内 FASTQ index |
+| `file_name` | FASTQ ファイル名 |
+| `local_path` | 確認対象パス |
+| `exists` | ファイルが存在するか |
+| `expected_size_bytes`, `actual_size_bytes` | 期待サイズと実サイズ |
+| `expected_md5`, `actual_md5` | 期待 MD5 と実 MD5 |
+| `status` | 確認結果 |
 
 ## 保存と完全性
 
@@ -374,7 +381,7 @@ FASTQ と supplementary file は完全性の扱いが違う。
 | 種別 | 取得元 | 完全性の扱い | 成功 status |
 | --- | --- | --- | --- |
 | raw FASTQ | ENA `fastq_ftp` | ENA `fastq_md5` がある場合だけ照合する | `md5_verified` |
-| raw FASTQ without MD5 | ENA `fastq_ftp` | 保存するが完全性は照合できない | `md5_unavailable` |
+| 期待 MD5 なし raw FASTQ | ENA `fastq_ftp` | 保存するが完全性は照合できない | `md5_unavailable` |
 | supplementary / processed file | GEO SOFT URL | GEO SOFT から安定した期待 MD5 を得ないため照合しない | `download_complete` |
 
 FASTQ 保存処理:
@@ -392,9 +399,11 @@ FASTQ 保存処理:
 11. MD5 不一致またはサイズ過大なら正式名にせず quarantine 名へ退避する。
 12. 結果を download log に追記する。
 
+quarantine 名には、`bad-md5-existing`、`unverified-existing`、`bad-md5`、`size-mismatch` などの理由と UTC timestamp を含める。
+
 supplementary file は同じ `.part` ダウンロード関数を使うが、FASTQ manifest と MD5 照合は使わない。既存同名ファイルがあれば `.existing`, `.existing.2` のように退避する。
 
-## エラーと状態
+## status とエラー
 
 Python 側の status / error code は英語で統一する。GUI の主要ラベルと GUI 自身の説明文は `GEOGetter.ps1` の翻訳テーブルで日本語 / 英語を管理する。
 
@@ -406,7 +415,28 @@ Python 側の status / error code は英語で統一する。GUI の主要ラベ
 | `md5_unavailable` | FASTQ は保存したが ENA から期待 MD5 を得られなかった |
 | `md5_mismatch` | FASTQ の MD5 が一致せず、正式ファイル名で保存しなかった |
 | `size_mismatch` | 期待サイズと保存サイズが合わなかった |
+| `missing` | manifest に記載された確認対象ファイルが存在しない |
 | `network_failed` | 通信または OS error で保存できなかった |
 | `download_complete` | supplementary / processed file を保存した |
 
+保存済み FASTQ manifest 再確認では、すべての FASTQ が `md5_verified` の場合だけ終了コード `0` を返す。`md5_unavailable`, `missing`, `size_mismatch`, `md5_mismatch` がある場合は、`verification_report.tsv` を作成したうえで終了コード `1` を返す。
+
 ファイル単位の失敗は download log に残し、次のファイル処理へ進む。metadata 解決時に情報が不足した場合は `warnings` に記録し、該当する項目は空欄のまま返す。
+
+## 診断情報
+
+GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の zip をローカルに作成できる。自動送信はしない。
+
+診断 zip の標準ファイル:
+
+| ファイル | 内容 |
+| --- | --- |
+| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、preflight 状態、最後の download / verification done event |
+| `resolved.json` | 最後に成功した `resolve-json` の結果 |
+| `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
+| `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |
+| `verify_stdout.jsonl`, `verify_stderr.txt` | manifest 再確認 subprocess の JSON Lines と標準エラー |
+| `gui_log.txt` | GUI 下部ログの内容 |
+| `artifacts/*` | 最後の download done event が返した manifest、download log、最後の manifest 再確認レポート |
+
+診断 zip にはローカルパス、入力 accession、保存先、ファイル名が含まれる可能性があるため、ユーザーが必要時に手動で共有する。
