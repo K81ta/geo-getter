@@ -15,8 +15,29 @@ class VersionTest(unittest.TestCase):
     def test_pyproject_has_no_console_script(self):
         pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
         text = pyproject.read_text(encoding="utf-8")
-        self.assertNotIn("[project.scripts]", text)
-        self.assertNotIn('geo-getter = "geo_getter.app:main"', text)
+        old_requires_python = 'requires-python = ">=3.' + '10"'
+        project_scripts_header = "[project" + ".scripts]"
+        old_console_script = 'geo-getter = "geo_getter.' + 'app:main"'
+        self.assertIn('requires-python = ">=3.14"', text)
+        self.assertNotIn(old_requires_python, text)
+        self.assertNotIn(project_scripts_header, text)
+        self.assertNotIn(old_console_script, text)
+
+    def test_python_package_gui_launcher_is_removed(self):
+        package_dir = Path(__file__).resolve().parents[1] / "geo_getter"
+        self.assertFalse((package_dir / "app.py").exists())
+        self.assertFalse((package_dir / "__main__.py").exists())
+
+    def test_ci_uses_single_python_runtime(self):
+        workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+        text = workflow.read_text(encoding="utf-8")
+        old_python_version = '"3.' + '10"'
+        matrix_key = "matrix" + ":"
+        codex_branch_pattern = '"codex/' + '**"'
+        self.assertIn('python-version: "3.14"', text)
+        self.assertNotIn(old_python_version, text)
+        self.assertNotIn(matrix_key, text)
+        self.assertNotIn(codex_branch_pattern, text)
 
     def test_installer_requires_release_macros(self):
         installer = Path(__file__).resolve().parents[1] / "installer" / "GEOGetter.iss"
