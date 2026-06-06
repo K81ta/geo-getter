@@ -156,7 +156,7 @@ class CliTest(unittest.TestCase):
 
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
-            run_dir = out_dir / "GSE000001"
+            run_dir = out_dir
             self.assertEqual((run_dir / "supplementary.txt").read_bytes(), data)
             self.assertTrue(supplementary_manifest_path(run_dir).exists())
             self.assertFalse((run_dir / "supplementary_manifest.tsv").exists())
@@ -165,9 +165,11 @@ class CliTest(unittest.TestCase):
 
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
-            second_run_dir = out_dir / "GSE000001_2"
-            self.assertEqual((second_run_dir / "supplementary.txt").read_bytes(), data)
-            self.assertTrue(download_log_path(second_run_dir).exists())
+            self.assertFalse((out_dir / "GSE000001").exists())
+            self.assertFalse((out_dir / "GSE000001_2").exists())
+            self.assertEqual((run_dir / "supplementary.txt").read_bytes(), data)
+            self.assertTrue((run_dir / "supplementary.txt.existing").exists())
+            self.assertTrue(download_log_path(run_dir).exists())
 
     def test_selected_download_sanitizes_supplementary_name(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -194,9 +196,9 @@ class CliTest(unittest.TestCase):
 
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
-            saved = out_dir / "GSE000001" / "geo_supplementary_file"
+            saved = out_dir / "geo_supplementary_file"
             self.assertEqual(saved.read_bytes(), data)
-            saved.resolve().relative_to((out_dir / "GSE000001").resolve())
+            saved.resolve().relative_to(out_dir.resolve())
 
     def test_selected_download_disambiguates_case_only_supplementary_names(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -230,7 +232,7 @@ class CliTest(unittest.TestCase):
 
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(_selected_download_json(input_json, "", "0,1", out_dir), 0)
-            run_dir = out_dir / "GSE000001"
+            run_dir = out_dir
             self.assertEqual((run_dir / "Same.txt").read_bytes(), b"first\n")
             self.assertEqual((run_dir / "same.2.txt").read_bytes(), b"second\n")
             self.assertFalse((run_dir / "Same.txt.existing").exists())
@@ -267,7 +269,7 @@ class CliTest(unittest.TestCase):
             self.assertIn('"event": "done"', output)
             self.assertNotIn('"event": "error"', output)
             self.assertIn('"network_failed"', output)
-            run_dir = root / "out" / "GSE000003"
+            run_dir = root / "out"
             log_text = download_log_path(run_dir).read_text(encoding="utf-8")
             self.assertIn("network_failed", log_text)
             self.assertIn("unknown url type", log_text)
@@ -357,7 +359,7 @@ class CliTest(unittest.TestCase):
             self.assertIn('"event": "done"', output)
             self.assertNotIn('"event": "error"', output)
             self.assertIn('"md5_unavailable"', output)
-            self.assertTrue((out_dir / "GSE000002" / "source.fastq.gz").exists())
+            self.assertTrue((out_dir / "source.fastq.gz").exists())
 
 
 if __name__ == "__main__":

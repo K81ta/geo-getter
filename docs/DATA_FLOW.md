@@ -46,7 +46,7 @@ supplementary / processed file は GEO 側の URL から保存する。raw FASTQ
 
 ## 保存時に作成される情報
 
-選択したファイルは、指定した親フォルダの下に accession 名のフォルダを作って保存する。同じ accession のフォルダが既にあり空でない場合は、既存成果物を上書きせず、suffix 付きの新しいフォルダを使う。
+検索後、GUI の保存先欄には実際に保存する accession フォルダが表示される。選択したファイルは、保存先欄に表示されたフォルダ直下に保存する。
 
 ```text
 Downloads/GEOGetter/
@@ -55,13 +55,6 @@ Downloads/GEOGetter/
     GSE52778_supplementary_manifest.tsv
     GSE52778_download_log.tsv
     SRR1039508_1.fastq.gz
-```
-
-```text
-Downloads/GEOGetter/
-  GSE52778_2/
-    GSE52778_2_fastq_manifest.tsv
-    GSE52778_2_download_log.tsv
 ```
 
 raw FASTQ を選んだ場合は `*_fastq_manifest.tsv` が作成される。manifest には、元の GEO accession、ENA に問い合わせた accession、run accession、FASTQ URL、期待 MD5、期待サイズ、保存予定パスが入る。
