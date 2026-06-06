@@ -73,6 +73,25 @@ class ResolverTest(unittest.TestCase):
         self.assertEqual(result.fastq_files, [])
         self.assertIn("No SRA", result.warnings[0])
 
+    def test_size_unknown_fastq_adds_warning(self):
+        class SizeUnknownEnaProvider:
+            def get_fastq_files(self, accession, source_accession):
+                return [
+                    FastqFile(
+                        source_accession=source_accession,
+                        query_accession=accession,
+                        run_accession="SRR000001",
+                        file_index=1,
+                        file_name="a.fastq.gz",
+                        url="https://example.invalid/a.fastq.gz",
+                        expected_md5="",
+                        size_bytes=0,
+                    )
+                ]
+
+        result = MetadataResolver(FakeGeoProvider(), SizeUnknownEnaProvider()).resolve("GSE000003")
+        self.assertTrue(any("file sizes were unavailable" in warning for warning in result.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,12 +1,12 @@
 #define MyAppName "GEOGetter"
 #ifndef AppVersion
-#define AppVersion "0.1.3"
+#error AppVersion must be defined by tools\build_release.ps1
 #endif
 #ifndef SourceDir
-#define SourceDir "..\dist\GEOGetter-v0.1.3-win-x64-portable"
+#error SourceDir must be defined by tools\build_release.ps1
 #endif
 #ifndef OutputDir
-#define OutputDir "..\dist"
+#error OutputDir must be defined by tools\build_release.ps1
 #endif
 
 [Setup]

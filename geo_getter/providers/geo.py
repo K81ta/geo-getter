@@ -3,7 +3,7 @@ from __future__ import annotations
 import posixpath
 import re
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..accession import find_supported_accessions
 from ..errors import GeoGetterError
@@ -46,6 +46,7 @@ class GeoSoftParseResult:
     supplementary_files: list[SupplementaryFile]
     sample_metadata_by_accession: dict[str, GeoSampleMetadata]
     dataset_metadata: DatasetMetadata
+    warnings: list[str] = field(default_factory=list)
 
 
 class GeoProvider:
@@ -61,7 +62,8 @@ class GeoProvider:
             return primary
         try:
             samples = parse_soft(self.fetch_gsm_soft(accession), accession)
-        except GeoGetterError:
+        except GeoGetterError as exc:
+            primary.warnings.append(f"GEO sample metadata retrieval failed; sample-level details may be incomplete. Detail: {exc.code}")
             return primary
         return _merge_parse_results(primary, samples)
 
@@ -200,6 +202,7 @@ def _merge_parse_results(primary: GeoSoftParseResult, samples: GeoSoftParseResul
             **primary.sample_metadata_by_accession,
         },
         dataset_metadata=_merge_dataset_metadata(primary.dataset_metadata, samples.dataset_metadata),
+        warnings=[*primary.warnings, *samples.warnings],
     )
 
 

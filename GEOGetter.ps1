@@ -144,6 +144,9 @@ $script:LastVerificationExitCode = $null
 $script:DownloadExitObserved = $false
 $script:DownloadStdoutClosed = $false
 $script:DownloadFinalized = $false
+$script:VerifyExitObserved = $false
+$script:VerifyStdoutClosed = $false
+$script:VerifyFinalized = $false
 $script:LastPreflightStatus = ""
 $script:LastPreflightError = ""
 $script:LastPreflightOutputDir = ""
@@ -970,6 +973,9 @@ function Clear-ResolvedState {
     $script:DownloadExitObserved = $false
     $script:DownloadStdoutClosed = $false
     $script:DownloadFinalized = $false
+    $script:VerifyExitObserved = $false
+    $script:VerifyStdoutClosed = $false
+    $script:VerifyFinalized = $false
     $script:LastPreflightStatus = ""
     $script:LastPreflightError = ""
     $script:LastPreflightOutputDir = ""
@@ -1167,15 +1173,19 @@ function ConvertTo-GeoGetterSafeName {
         [string]$DefaultName = "geo_getter_download",
         [switch]$ArtifactPrefix
     )
-    $safe = [regex]::Replace([string]$Value, '[<>:"/\\|?*]', '_')
-    if ($ArtifactPrefix) {
-        $safe = $safe.Trim(" .".ToCharArray())
+    $safe = [regex]::Replace([string]$Value, '[<>:"/\\|?*\x00-\x1F\x7F]', '_')
+    $safe = $safe.Trim(" .".ToCharArray())
+    if ([string]::IsNullOrWhiteSpace($safe) -or $safe -eq "." -or $safe -eq "..") { return $DefaultName }
+    $stem = ($safe -split '\.', 2)[0].ToUpperInvariant()
+    if (@("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9") -contains $stem) {
+        $safe = "_" + $safe
     }
-    else {
-        $safe = $safe.Trim()
-    }
-    if ([string]::IsNullOrWhiteSpace($safe)) { return $DefaultName }
     return $safe
+}
+
+function Get-PreflightNameCollisionKey {
+    param([string]$FileName)
+    return ([string]$FileName).ToLowerInvariant()
 }
 
 function Test-EmptyDirectory {
@@ -1230,6 +1240,16 @@ function Split-PreflightFileName {
     }
 }
 
+function Get-PreflightUniqueNumberedName {
+    param(
+        [string]$FileName,
+        [int]$Count
+    )
+    if ($Count -le 0) { return $FileName }
+    $parts = Split-PreflightFileName $FileName
+    return "{0}.{1}{2}" -f $parts.Stem, ($Count + 1), $parts.Suffix
+}
+
 function Get-SelectedFastqItemsForPreflight {
     $selected = @()
     if ($null -eq $script:Resolved) { return $selected }
@@ -1275,13 +1295,11 @@ function Get-PreflightPlannedPaths {
 
     $fastqCounts = @{}
     foreach ($item in $fastqItems) {
-        $fileName = [string]$item.file_name
-        $count = if ($fastqCounts.ContainsKey($fileName)) { [int]$fastqCounts[$fileName] } else { 0 }
-        $fastqCounts[$fileName] = $count + 1
-        if ($count -gt 0) {
-            $parts = Split-PreflightFileName $fileName
-            $fileName = "{0}.{1}{2}" -f $parts.Stem, ($count + 1), $parts.Suffix
-        }
+        $fileName = ConvertTo-GeoGetterSafeName ([string]$item.file_name) -DefaultName "download.fastq.gz"
+        $key = Get-PreflightNameCollisionKey $fileName
+        $count = if ($fastqCounts.ContainsKey($key)) { [int]$fastqCounts[$key] } else { 0 }
+        $fastqCounts[$key] = $count + 1
+        $fileName = Get-PreflightUniqueNumberedName $fileName $count
         $localPath = Join-Path $RunOutputDir $fileName
         $paths += $localPath
         $paths += ($localPath + ".part")
@@ -1290,13 +1308,10 @@ function Get-PreflightPlannedPaths {
     $suppCounts = @{}
     foreach ($item in $suppItems) {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.name) -DefaultName "geo_supplementary_file"
-        $count = if ($suppCounts.ContainsKey($fileName)) { [int]$suppCounts[$fileName] } else { 0 }
-        $suppCounts[$fileName] = $count + 1
-        if ($count -gt 0) {
-            $stem = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
-            $suffix = [System.IO.Path]::GetExtension($fileName)
-            $fileName = "{0}.{1}{2}" -f $stem, ($count + 1), $suffix
-        }
+        $key = Get-PreflightNameCollisionKey $fileName
+        $count = if ($suppCounts.ContainsKey($key)) { [int]$suppCounts[$key] } else { 0 }
+        $suppCounts[$key] = $count + 1
+        $fileName = Get-PreflightUniqueNumberedName $fileName $count
         $localPath = Join-Path $RunOutputDir $fileName
         $paths += $localPath
         $paths += ($localPath + ".part")
@@ -1497,6 +1512,7 @@ function Handle-ManifestVerificationLine {
             $progressBar.Value = 100
             if ($event.report) { Append-Log ((T "verifyManifestReportLog") -f $event.report) }
             Append-Log ((T "verifyManifestSummaryLog") -f (Format-VerificationStatusCounts $event.status_counts))
+            Complete-ManifestVerificationIfReady
         }
         else {
             Append-Log $Line
@@ -1581,6 +1597,39 @@ function Complete-DownloadIfReady {
     }
 }
 
+function Complete-ManifestVerificationIfReady {
+    if ($script:VerifyFinalized) { return }
+    if (-not $script:VerifyExitObserved -or -not $script:VerifyStdoutClosed) { return }
+
+    $script:VerifyFinalized = $true
+    $progressBar.Style = "Continuous"
+    Set-Busy $false
+    $script:VerifyProcess = $null
+    Update-CancelButton
+    if ($script:VerifyCanceled) {
+        $statusLabel.Text = T "canceled"
+        return
+    }
+    if ($null -eq $script:LastVerificationDoneEvent) {
+        $progressBar.Value = 0
+        $statusLabel.Text = T "error"
+        Append-Log (T "verifyManifestNoReport")
+        return
+    }
+    $message = if ($script:LastVerificationExitCode -eq 0) {
+        $statusLabel.Text = T "complete"
+        (T "verifyManifestCompleteMessage") -f $script:LastVerificationDoneEvent.report
+    }
+    else {
+        $statusLabel.Text = T "completePartial"
+        (T "verifyManifestPartialMessage") -f $script:LastVerificationDoneEvent.report
+    }
+    if (-not $SelfTest) {
+        $icon = if ($script:LastVerificationExitCode -eq 0) { "Information" } else { "Warning" }
+        [System.Windows.Forms.MessageBox]::Show($message, (T "verifyManifestDialogTitle"), "OK", $icon) | Out-Null
+    }
+}
+
 function Start-ResolveProcess {
     param([string]$InputText)
     if ($null -ne $script:ResolveProcess -and -not $script:ResolveProcess.HasExited) {
@@ -1646,6 +1695,9 @@ function Start-ManifestVerificationProcess {
     $script:VerifyStderrText = ""
     $script:LastVerificationDoneEvent = $null
     $script:LastVerificationExitCode = $null
+    $script:VerifyExitObserved = $false
+    $script:VerifyStdoutClosed = $false
+    $script:VerifyFinalized = $false
     Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
 
     $process = New-Object System.Diagnostics.Process
@@ -1675,30 +1727,17 @@ function Start-ManifestVerificationProcess {
             param($code)
             try {
                 $script:LastVerificationExitCode = $code
-                $progressBar.Style = "Continuous"
-                Set-Busy $false
-                $script:VerifyProcess = $null
-                Update-CancelButton
-                if ($script:VerifyCanceled) {
-                    $statusLabel.Text = T "canceled"
-                    return
-                }
-                if ($null -eq $script:LastVerificationDoneEvent) {
-                    $progressBar.Value = 0
-                    $statusLabel.Text = T "error"
-                    Append-Log (T "verifyManifestNoReport")
-                    return
-                }
-                $message = if ($code -eq 0) {
-                    $statusLabel.Text = T "complete"
-                    (T "verifyManifestCompleteMessage") -f $script:LastVerificationDoneEvent.report
-                }
-                else {
-                    $statusLabel.Text = T "completePartial"
-                    (T "verifyManifestPartialMessage") -f $script:LastVerificationDoneEvent.report
-                }
-                $icon = if ($code -eq 0) { "Information" } else { "Warning" }
-                [System.Windows.Forms.MessageBox]::Show($message, (T "verifyManifestDialogTitle"), "OK", $icon) | Out-Null
+                $script:VerifyExitObserved = $true
+                Complete-ManifestVerificationIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }),
+        ([System.Action]{
+            try {
+                $script:VerifyStdoutClosed = $true
+                Complete-ManifestVerificationIfReady
             }
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
@@ -1706,8 +1745,15 @@ function Start-ManifestVerificationProcess {
         })
     )
     $script:VerifyBridge.Attach($process)
-    [void]$process.Start()
     $script:VerifyProcess = $process
+    try {
+        [void]$process.Start()
+    }
+    catch {
+        $script:VerifyProcess = $null
+        Update-CancelButton
+        throw
+    }
     Update-CancelButton
     $process.BeginOutputReadLine()
     $process.BeginErrorReadLine()
@@ -2495,6 +2541,9 @@ function New-MainForm {
 $script:form = New-MainForm
 
 if ($SelfTest) {
+    $selfTestRoot = $null
+    $selfTestSucceeded = $false
+    try {
     Assert-Equal $form.Text "GEOGetter" "window title unchanged"
     Set-Language "en"
     Assert-Equal $settingsMenuItem.Text "Settings" "English settings menu"
@@ -2524,6 +2573,10 @@ if ($SelfTest) {
     Assert-Equal (Format-Bytes ([Int64]2377036173)) "2.21 GB" "Format-Bytes over Int32"
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
     Assert-Equal (Format-Bytes ([Int64]-1)) "0 B" "Format-Bytes negative"
+    Assert-Equal (ConvertTo-GeoGetterSafeName "CON") "_CON" "preflight safe name handles reserved Windows name"
+    Assert-Equal (ConvertTo-GeoGetterSafeName "..") "geo_getter_download" "preflight safe name handles dot-only name"
+    Assert-Equal (Get-PreflightNameCollisionKey "Same.fastq.gz") "same.fastq.gz" "preflight name collision key is case-insensitive"
+    Assert-Equal (Get-PreflightUniqueNumberedName "same.fastq.gz" 1) "same.2.fastq.gz" "preflight duplicate FASTQ numbering"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80
@@ -2726,6 +2779,22 @@ if ($SelfTest) {
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "completeUnverified") "download finalizer handles exit before done processing"
 
+    $script:LastVerificationDoneEvent = $null
+    $script:LastVerificationExitCode = 0
+    $script:VerifyCanceled = $false
+    $script:VerifyExitObserved = $true
+    $script:VerifyStdoutClosed = $false
+    $script:VerifyFinalized = $false
+    $statusLabel.Text = T "verifyingManifest"
+    Complete-ManifestVerificationIfReady
+    Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer waits for stdout close after exit"
+    $script:LastVerificationDoneEvent = [pscustomobject]@{ report = "C:\tmp\verification_report.tsv" }
+    Complete-ManifestVerificationIfReady
+    Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer still waits for stdout close after done"
+    $script:VerifyStdoutClosed = $true
+    Complete-ManifestVerificationIfReady
+    Assert-Equal $statusLabel.Text (T "complete") "verification finalizer handles exit before done processing"
+
     foreach ($row in $fastqGrid.Rows) {
         if (-not $row.IsNewRow) { $row.Cells["selected"].Value = $false }
     }
@@ -2826,6 +2895,22 @@ if ($SelfTest) {
     Assert-Contains $verifyResult.Stdout '"kind": "manifest_verification"' "verify-manifest-json done event"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "verification_report.tsv")) $true "verification report exists"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "verification_report.tsv")) "md5_verified" "verification report md5 success"
+    $progressBar.Value = 0
+    $statusLabel.Text = T "verifyingManifest"
+    [void]$form.Handle
+    Set-Busy $true
+    Start-ManifestVerificationProcess (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ($null -ne $script:VerifyProcess -and [DateTime]::UtcNow -lt $deadline) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 50
+    }
+    for ($i = 0; $i -lt 20; $i++) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 50
+    }
+    Assert-Equal $script:VerifyProcess $null "async manifest verification process finished"
+    Assert-Equal $statusLabel.Text (T "complete") "async manifest verification status"
     $diagnosticsZip = Join-Path $selfTestRoot "diagnostics.zip"
     Save-DiagnosticsZip $diagnosticsZip | Out-Null
     Assert-Equal (Test-Path -LiteralPath $diagnosticsZip) $true "diagnostics zip exists"
@@ -2836,6 +2921,20 @@ if ($SelfTest) {
     Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "resolved.json")) $true "diagnostics resolved JSON exists"
     Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "diagnostics includes download log"
     Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "verification_report.tsv").Count -gt 0) $true "diagnostics includes verification report"
+    $originalPythonExe = $PythonExe
+    $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
+    $threwVerifyStart = $false
+    try {
+        Start-ManifestVerificationProcess (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")
+    }
+    catch {
+        $threwVerifyStart = $true
+    }
+    finally {
+        $PythonExe = $originalPythonExe
+    }
+    Assert-Equal $threwVerifyStart $true "manifest verification start failure throws"
+    Assert-Equal $script:VerifyProcess $null "manifest verification start failure clears process"
 
     $outputBox.Text = Join-Path $selfTestRoot "async out folder"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
@@ -2858,8 +2957,18 @@ if ($SelfTest) {
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path (Join-Path $outputBox.Text "SELFTEST") "SELFTEST_download_log.tsv")) "md5_verified" "async download log md5 success"
 
     Write-Output "PowerShell WinForms self test OK"
-    $form.Dispose()
-    exit 0
+    $selfTestSucceeded = $true
+    }
+    finally {
+        if ($form -and -not $form.IsDisposed) { $form.Dispose() }
+        if ($script:ResolvedJsonPath -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
+            Remove-Item -LiteralPath $script:ResolvedJsonPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($selfTestRoot -and (Test-Path -LiteralPath $selfTestRoot)) {
+            Remove-Item -LiteralPath $selfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($selfTestSucceeded) { exit 0 }
 }
 
 if ($SmokeTest) {

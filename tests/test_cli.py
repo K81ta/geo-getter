@@ -93,6 +93,108 @@ class CliTest(unittest.TestCase):
             self.assertEqual((second_run_dir / "supplementary.txt").read_bytes(), data)
             self.assertTrue(download_log_path(second_run_dir).exists())
 
+    def test_selected_download_sanitizes_supplementary_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "supplementary.txt"
+            data = b"supplementary fixture\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "..",
+                        "url": source.as_uri(),
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
+            saved = out_dir / "GSE000001" / "geo_supplementary_file"
+            self.assertEqual(saved.read_bytes(), data)
+            saved.resolve().relative_to((out_dir / "GSE000001").resolve())
+
+    def test_selected_download_disambiguates_case_only_supplementary_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source1 = root / "source1.txt"
+            source2 = root / "source2.txt"
+            source1.write_bytes(b"first\n")
+            source2.write_bytes(b"second\n")
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "Same.txt",
+                        "url": source1.as_uri(),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.txt",
+                        "url": source2.as_uri(),
+                    },
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "", "0,1", out_dir), 0)
+            run_dir = out_dir / "GSE000001"
+            self.assertEqual((run_dir / "Same.txt").read_bytes(), b"first\n")
+            self.assertEqual((run_dir / "same.2.txt").read_bytes(), b"second\n")
+            self.assertFalse((run_dir / "Same.txt.existing").exists())
+
+    def test_selected_download_reports_unsupported_fastq_url_without_losing_done_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = {
+                "input_text": "GSE000003",
+                "primary_accession": "GSE000003",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000003",
+                        "query_accession": "SRP000003",
+                        "run_accession": "SRR000003",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": "fasp.sra.ebi.ac.uk/vol1/source.fastq.gz",
+                        "expected_md5": "1" * 32,
+                        "size_bytes": 1,
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = _selected_download_json(input_json, "0", "", root / "out")
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 1)
+            self.assertIn('"event": "done"', output)
+            self.assertIn('"network_failed"', output)
+            run_dir = root / "out" / "GSE000003"
+            log_text = download_log_path(run_dir).read_text(encoding="utf-8")
+            self.assertIn("network_failed", log_text)
+            self.assertIn("unknown url type", log_text)
+
     def test_internal_manifest_verification_bridge_writes_json_event(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

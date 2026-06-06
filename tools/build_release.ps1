@@ -119,6 +119,33 @@ function Get-PythonEmbedArchiveName {
     return "python-$Version-embed-amd64.zip"
 }
 
+function Get-PythonEmbedArchiveSha256 {
+    param([string]$Version, [string]$Arch)
+    $knownHashes = @{
+        "3.14.5|x64" = "ba6bd811c4eedb19195cf275770ef127e893d63701e24152606e2cb76f6d876a"
+    }
+    $key = "$Version|$Arch"
+    if (-not $knownHashes.ContainsKey($key)) {
+        throw "No trusted SHA256 is configured for CPython embeddable package $Version ($Arch)."
+    }
+    return $knownHashes[$key]
+}
+
+function Assert-FileSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    if (-not (Test-Path $Path)) {
+        throw "Cannot verify checksum because file was not found: $Path"
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    $expected = $ExpectedSha256.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "SHA256 mismatch for $Path. Expected $expected, got $actual."
+    }
+}
+
 function Ensure-PythonRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$Version,
@@ -141,6 +168,8 @@ function Ensure-PythonRuntime {
         Invoke-WebRequest -Uri $uri -OutFile $archivePath
     }
 
+    $expectedSha256 = Get-PythonEmbedArchiveSha256 -Version $Version -Arch $Arch
+    Assert-FileSha256 -Path $archivePath -ExpectedSha256 $expectedSha256
     Expand-Archive -LiteralPath $archivePath -DestinationPath $runtimeDir -Force
 
     $majorMinor = ($Version -split "\.")[0..1] -join ""
@@ -181,25 +210,11 @@ function Get-IsccPath {
     return $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
 
-function Write-Sha256File {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ShaPath
-    )
-    if (-not (Test-Path $Path)) {
-        throw "Cannot create checksum because file was not found: $Path"
-    }
-    $hash = Get-FileHash -Algorithm SHA256 -Path $Path
-    Set-Content -Encoding ASCII -Path $ShaPath -Value ("{0}  {1}" -f $hash.Hash.ToLowerInvariant(), (Split-Path -Leaf $Path))
-}
-
 $version = Get-AppVersion
 $packageName = "GEOGetter-v$version-win-$Architecture-portable"
 $payloadDir = Join-Path $DistRoot $packageName
 $zipPath = Join-Path $DistRoot "$packageName.zip"
-$zipShaPath = "$zipPath.sha256"
 $installerPath = Join-Path $DistRoot "GEOGetter-Setup-v$version.exe"
-$installerShaPath = "$installerPath.sha256"
 
 New-Item -ItemType Directory -Path $DistRoot -Force | Out-Null
 Reset-Directory -Path $payloadDir
@@ -240,10 +255,8 @@ if (Test-Path $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
 Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -Force
-Write-Sha256File -Path $zipPath -ShaPath $zipShaPath
 
 Write-Host "Created portable zip: $zipPath"
-Write-Host "Created checksum: $zipShaPath"
 
 if ($BuildInstaller) {
     $iscc = Get-IsccPath
@@ -253,10 +266,8 @@ if ($BuildInstaller) {
     if (-not (Test-Path $InstallerScript)) {
         throw "Installer script not found: $InstallerScript"
     }
-    foreach ($path in @($installerPath, $installerShaPath)) {
-        if (Test-Path $path) {
-            Remove-Item -LiteralPath $path -Force
-        }
+    if (Test-Path $installerPath) {
+        Remove-Item -LiteralPath $installerPath -Force
     }
     & $iscc "/DAppVersion=$version" "/DSourceDir=$payloadDir" "/DOutputDir=$DistRoot" $InstallerScript
     if ($LASTEXITCODE -ne 0) {
@@ -265,7 +276,5 @@ if ($BuildInstaller) {
     if (-not (Test-Path $installerPath)) {
         throw "Expected installer was not created: $installerPath"
     }
-    Write-Sha256File -Path $installerPath -ShaPath $installerShaPath
     Write-Host "Created installer: $installerPath"
-    Write-Host "Created checksum: $installerShaPath"
 }

@@ -11,6 +11,7 @@ from . import __version__
 from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
 from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED
 from .models import FastqFile
+from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
 from .planner import (
     append_download_log,
     build_download_plan,
@@ -129,13 +130,14 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
 
 
 def _new_accession_output_dir(output_root: Path, primary_accession: str) -> Path:
-    base_name = _safe_file_name(primary_accession.strip() or "geo_getter_download")
-    candidate = output_root / base_name
+    base_name = safe_file_name(primary_accession.strip() or "geo_getter_download", "geo_getter_download")
+    output_root = output_root.resolve()
+    candidate = child_path(output_root, base_name)
     if not candidate.exists() or _is_empty_directory(candidate):
         return candidate
     counter = 2
     while True:
-        candidate = output_root / f"{base_name}_{counter}"
+        candidate = child_path(output_root, f"{base_name}_{counter}")
         if not candidate.exists() or _is_empty_directory(candidate):
             return candidate
         counter += 1
@@ -245,7 +247,7 @@ def _write_supplementary_manifest(output_dir: Path, selected_supp: list[dict]) -
 def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -> list[str]:
     statuses: list[str] = []
     for item, local_path in _planned_supplementary_files(output_dir, selected_supp):
-        file_name = item.get("name", "") or local_path.name
+        file_name = local_path.name
         url = item.get("url", "")
         downloaded = 0
         print(json.dumps({"event": "message", "message": f"supplementary_download_started: {file_name}"}, ensure_ascii=False), flush=True)
@@ -277,7 +279,7 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -
             finalize_downloaded_part(local_path)
             status = DOWNLOAD_COMPLETE
             message = "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, ValueError) as exc:
             status = NETWORK_FAILED
             message = str(exc)
         append_download_log(
@@ -300,19 +302,13 @@ def _planned_supplementary_files(output_dir: Path, selected_supp: list[dict]) ->
     counts: dict[str, int] = {}
     planned: list[tuple[dict, Path]] = []
     for item in selected_supp:
-        file_name = _safe_file_name(item.get("name", "") or "geo_supplementary_file")
-        count = counts.get(file_name, 0)
-        counts[file_name] = count + 1
-        if count:
-            path = Path(file_name)
-            file_name = f"{path.stem}.{count + 1}{path.suffix}"
-        planned.append((item, output_dir / file_name))
+        file_name = safe_file_name(item.get("name", "") or "geo_supplementary_file", "geo_supplementary_file")
+        key = name_collision_key(file_name)
+        count = counts.get(key, 0)
+        counts[key] = count + 1
+        file_name = unique_numbered_name(file_name, count)
+        planned.append((item, child_path(output_dir, file_name)))
     return planned
-
-
-def _safe_file_name(value: str) -> str:
-    safe = "".join("_" if char in '<>:"/\\|?*' else char for char in value).strip()
-    return safe or "geo_supplementary_file"
 
 
 def _unique_existing_path(path: Path) -> Path:

@@ -279,6 +279,49 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(plan.files[0].local_path.name, "same.fastq.gz")
             self.assertEqual(plan.files[1].local_path.name, "same.2.fastq.gz")
 
+    def test_case_only_duplicate_output_names_are_disambiguated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fastq1 = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR1",
+                file_index=1,
+                file_name="Same.fastq.gz",
+                url="https://example.invalid/a.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=1,
+            )
+            fastq2 = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR2",
+                file_index=1,
+                file_name="same.fastq.gz",
+                url="https://example.invalid/b.fastq.gz",
+                expected_md5="2" * 32,
+                size_bytes=1,
+            )
+            plan = build_download_plan("GSE", "GSE", [fastq1, fastq2], temp)
+            self.assertEqual(plan.files[0].local_path.name, "Same.fastq.gz")
+            self.assertEqual(plan.files[1].local_path.name, "same.2.fastq.gz")
+
+    def test_unsafe_fastq_file_name_stays_inside_output_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR1",
+                file_index=1,
+                file_name="../escape.fastq.gz",
+                url="https://example.invalid/escape.fastq.gz",
+                expected_md5="",
+                size_bytes=0,
+            )
+            plan = build_download_plan("GSE", "GSE", [fastq], output_dir)
+            self.assertEqual(plan.files[0].local_path.name, "_escape.fastq.gz")
+            plan.files[0].local_path.resolve().relative_to(output_dir.resolve())
+
     def test_verify_fastq_manifest_writes_report_with_expected_statuses(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"

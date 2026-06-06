@@ -9,6 +9,7 @@ from pathlib import Path
 from . import __version__
 from .errors import INVALID_MANIFEST, MD5_MISMATCH, MD5_UNAVAILABLE, MD5_VERIFIED, MISSING, SIZE_MISMATCH, GeoGetterError
 from .models import DownloadPlan, FastqFile, PlannedFile
+from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
 
 
 FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
@@ -251,29 +252,20 @@ def _artifact_path(output_dir: str | Path, suffix: str) -> Path:
 
 
 def _artifact_prefix(value: str) -> str:
-    safe = "".join("_" if char in '<>:"/\\|?*' else char for char in value).strip(" .")
-    return safe or "geo_getter_download"
+    return safe_file_name(value, "geo_getter_download")
 
 
 def _planned_files(files: list[FastqFile], output_dir: Path) -> list[PlannedFile]:
     counts: dict[str, int] = {}
     planned: list[PlannedFile] = []
     for item in files:
-        file_name = item.file_name
-        count = counts.get(file_name, 0)
-        counts[file_name] = count + 1
-        if count:
-            stem, suffix = _split_name(file_name)
-            file_name = f"{stem}.{count + 1}{suffix}"
-        planned.append(PlannedFile(fastq=item, local_path=output_dir / file_name))
+        file_name = safe_file_name(item.file_name, "download.fastq.gz")
+        key = name_collision_key(file_name)
+        count = counts.get(key, 0)
+        counts[key] = count + 1
+        file_name = unique_numbered_name(file_name, count)
+        planned.append(PlannedFile(fastq=item, local_path=child_path(output_dir, file_name)))
     return planned
-
-
-def _split_name(file_name: str) -> tuple[str, str]:
-    if file_name.endswith(".fastq.gz"):
-        return file_name[:-9], ".fastq.gz"
-    path = Path(file_name)
-    return path.stem, path.suffix
 
 
 def _validate_fastq_manifest_columns(fieldnames: list[str] | None) -> None:

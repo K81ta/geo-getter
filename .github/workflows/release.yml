@@ -15,6 +15,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
 
       - name: Validate tag version
         shell: pwsh
@@ -40,6 +47,18 @@ jobs:
           if ($packageVersion -ne $tagVersion) {
             throw "Tag version $tagVersion does not match geo_getter.__version__ $packageVersion"
           }
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not fetch origin/main for release tag ancestry validation."
+          }
+          $tagCommit = (git rev-list -n 1 $tag).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $tagCommit) {
+            throw "Could not resolve release tag commit: $tag"
+          }
+          git merge-base --is-ancestor $tagCommit origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag $tag must point to a commit reachable from origin/main."
+          }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -58,6 +77,4 @@ jobs:
         with:
           files: |
             dist/GEOGetter-Setup-v*.exe
-            dist/GEOGetter-Setup-v*.exe.sha256
             dist/GEOGetter-v*-win-x64-portable.zip
-            dist/GEOGetter-v*-win-x64-portable.zip.sha256
