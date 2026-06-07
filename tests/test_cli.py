@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
-from geo_getter.planner import download_log_path, supplementary_manifest_path
+from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path
 
 
 class CliTest(unittest.TestCase):
@@ -154,9 +154,15 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
                 self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
             run_dir = out_dir
+            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(done["output_dir"], str(run_dir.resolve()))
+            self.assertEqual(done["fastq_manifest"], "")
+            self.assertEqual(done["supplementary_manifest"], str(supplementary_manifest_path(run_dir)))
+            self.assertEqual(done["download_log"], str(download_log_path(run_dir)))
             self.assertEqual((run_dir / "supplementary.txt").read_bytes(), data)
             self.assertTrue(supplementary_manifest_path(run_dir).exists())
             self.assertFalse((run_dir / "supplementary_manifest.tsv").exists())
@@ -359,6 +365,11 @@ class CliTest(unittest.TestCase):
             self.assertIn('"event": "done"', output)
             self.assertNotIn('"event": "error"', output)
             self.assertIn('"md5_unavailable"', output)
+            done = json.loads(output.splitlines()[-1])
+            self.assertEqual(done["output_dir"], str(out_dir.resolve()))
+            self.assertEqual(done["fastq_manifest"], str(fastq_manifest_path(out_dir)))
+            self.assertEqual(done["supplementary_manifest"], "")
+            self.assertEqual(done["download_log"], str(download_log_path(out_dir)))
             self.assertTrue((out_dir / "source.fastq.gz").exists())
 
 

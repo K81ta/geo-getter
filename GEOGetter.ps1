@@ -1007,7 +1007,6 @@ function Save-DiagnosticsZip {
             selected_fastq_indices = Get-SelectedFastqIndicesOrEmpty
             selected_supplementary_indices = Get-SelectedSuppIndicesOrEmpty
             output_dir = if ($outputBox) { [string]$outputBox.Text } else { "" }
-            output_parent = if ($outputBox) { [string]$outputBox.Text } else { "" }
             output_free_bytes = Get-OutputFreeSpaceOrNull
             last_error = $script:LastDiagnosticError
             last_resolve_exit_code = $script:LastResolveExitCode
