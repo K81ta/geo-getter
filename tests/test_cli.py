@@ -212,8 +212,10 @@ class CliTest(unittest.TestCase):
             root = Path(temp)
             source1 = root / "source1.txt"
             source2 = root / "source2.txt"
+            source3 = root / "source3.txt"
             source1.write_bytes(b"first\n")
             source2.write_bytes(b"second\n")
+            source3.write_bytes(b"third\n")
             payload = {
                 "input_text": "GSE000001",
                 "primary_accession": "GSE000001",
@@ -228,8 +230,14 @@ class CliTest(unittest.TestCase):
                     {
                         "source_accession": "GSE000001",
                         "scope": "GEO Series supplementary/processed",
-                        "name": "same.txt",
+                        "name": "same.2.txt",
                         "url": source2.as_uri(),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.txt",
+                        "url": source3.as_uri(),
                     },
                 ],
             }
@@ -238,10 +246,11 @@ class CliTest(unittest.TestCase):
             out_dir = root / "out"
 
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "", "0,1", out_dir), 0)
+                self.assertEqual(_selected_download_json(input_json, "", "0,1,2", out_dir), 0)
             run_dir = out_dir
             self.assertEqual((run_dir / "Same.txt").read_bytes(), b"first\n")
             self.assertEqual((run_dir / "same.2.txt").read_bytes(), b"second\n")
+            self.assertEqual((run_dir / "same.3.txt").read_bytes(), b"third\n")
             self.assertFalse((run_dir / "Same.txt.existing").exists())
 
     def test_selected_download_reports_unsupported_fastq_url_without_losing_done_event(self):

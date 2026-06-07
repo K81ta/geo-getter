@@ -40,6 +40,16 @@ def unique_numbered_name(file_name: str, count: int) -> str:
     return f"{stem}.{count + 1}{suffix}"
 
 
+def reserve_unique_name(file_name: str, used_keys: set[str]) -> str:
+    count = 0
+    candidate = file_name
+    while name_collision_key(candidate) in used_keys:
+        count += 1
+        candidate = unique_numbered_name(file_name, count)
+    used_keys.add(name_collision_key(candidate))
+    return candidate
+
+
 def name_collision_key(file_name: str) -> str:
     return file_name.casefold()
 

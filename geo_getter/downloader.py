@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -142,7 +144,7 @@ def download_plan(
             )
             _emit(message_callback, f"{status}: {planned.fastq.file_name}")
             results.append((planned, status, str(exc)))
-        except (urllib.error.URLError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, ValueError) as exc:
             status = NETWORK_FAILED
             message = ERROR_MESSAGES[status]
             append_download_log(
@@ -219,7 +221,7 @@ def download_url_to_part(
             )
         except DownloadSizeMismatchError:
             raise
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
             last_error = exc
             if attempt >= max_retries:
                 raise
@@ -252,6 +254,8 @@ def _download_url_to_part_once(
     with urllib.request.urlopen(request, timeout=120) as response:
         status = _status_code(response)
         appending = resume_from > 0 and status == 206
+        if appending:
+            _validate_content_range(response, resume_from)
         if not appending:
             resume_from = 0
         total = _content_length(response)
@@ -285,6 +289,23 @@ def _content_length(response: object) -> int:
         return int(headers.get("Content-Length") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _validate_content_range(response: object, expected_start: int) -> None:
+    headers = getattr(response, "headers", {})
+    content_range = headers.get("Content-Range") if headers is not None else None
+    start = _content_range_start(content_range)
+    if start != expected_start:
+        raise OSError(f"Invalid Content-Range for resume: expected_start={expected_start} content_range={content_range!r}")
+
+
+def _content_range_start(value: object) -> int | None:
+    if not value:
+        return None
+    match = re.match(r"^bytes\s+(\d+)-\d+/(?:\d+|\*)$", str(value).strip(), re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _status_code(response: object) -> int:
@@ -338,7 +359,7 @@ def _reuse_or_quarantine_complete_part(
     message_callback: MessageCallback | None = None,
 ) -> tuple[str, str, str, int] | None:
     part_path = _part_path(planned.local_path)
-    if not part_path.exists() or not planned.fastq.expected_md5:
+    if not part_path.exists():
         return None
     part_size = _existing_size(part_path)
     if planned.fastq.size_bytes > 0 and part_size < planned.fastq.size_bytes:
@@ -347,6 +368,17 @@ def _reuse_or_quarantine_complete_part(
         raise DownloadSizeMismatchError(
             f"Partial file size exceeds expected size: expected={planned.fastq.size_bytes} actual={part_size}"
         )
+    if not planned.fastq.expected_md5:
+        if planned.fastq.size_bytes > 0 and part_size == planned.fastq.size_bytes:
+            actual_md5 = calculate_md5(part_path)
+            _finalize_part(part_path, planned.local_path)
+            return (
+                MD5_UNAVAILABLE,
+                "Previous partial file size matched, so it was promoted to the final file name without MD5 verification.",
+                actual_md5,
+                part_size,
+            )
+        return None
     ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
     if ok:
         _finalize_part(part_path, planned.local_path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import sys
 import urllib.error
@@ -11,7 +12,7 @@ from . import __version__
 from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
 from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED, GeoGetterError
 from .models import FastqFile
-from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
+from .path_safety import child_path, reserve_unique_name, safe_file_name
 from .planner import (
     append_download_log,
     build_download_plan,
@@ -300,7 +301,7 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -
             finalize_downloaded_part(local_path)
             status = DOWNLOAD_COMPLETE
             message = "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             status = NETWORK_FAILED
             message = str(exc)
         append_download_log(
@@ -320,14 +321,11 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -
 
 
 def _planned_supplementary_files(output_dir: Path, selected_supp: list[dict]) -> list[tuple[dict, Path]]:
-    counts: dict[str, int] = {}
+    used_keys: set[str] = set()
     planned: list[tuple[dict, Path]] = []
     for item in selected_supp:
         file_name = safe_file_name(item.get("name", "") or "geo_supplementary_file", "geo_supplementary_file")
-        key = name_collision_key(file_name)
-        count = counts.get(key, 0)
-        counts[key] = count + 1
-        file_name = unique_numbered_name(file_name, count)
+        file_name = reserve_unique_name(file_name, used_keys)
         planned.append((item, child_path(output_dir, file_name)))
     return planned
 
