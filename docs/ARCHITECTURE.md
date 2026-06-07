@@ -122,10 +122,10 @@ python -m geo_getter.cli selected-download-json `
   --input-json <resolved-json> `
   --fastq-indices <selected-fastq-indices> `
   --supp-indices <selected-supp-indices> `
-  --out <output-parent>
+  --out <output-dir>
 ```
 
-`--out` は実保存フォルダではなく、ユーザーが選んだ親フォルダである。CLI はその下に `primary_accession` 名の実保存フォルダを作る。
+`--out` は実保存フォルダである。GUI は検索成功後に `Downloads\GEOGetter\<primary_accession>` を保存先欄に表示し、ユーザーが保存先を変更した場合も、そのフォルダを実保存フォルダとして CLI に渡す。
 
 ```text
 Downloads/GEOGetter/
@@ -135,8 +135,6 @@ Downloads/GEOGetter/
     GSE52778_download_log.tsv
     SRR1039508_1.fastq.gz
 ```
-
-同名フォルダが存在し空でない場合は、既存成果物を上書きせず `GSE52778_2`, `GSE52778_3` のような suffix 付きフォルダを使う。
 
 ### 5. 保存済み FASTQ manifest 再確認
 
@@ -206,7 +204,7 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 
 ファイル単位の保存失敗は `event: error` ではなく、従来どおり `done.statuses` と download log に残す。
 
-キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。ただし、次回の GUI 実行では新しい accession suffix フォルダが選ばれることがあるため、同じ `.part` が自動で再利用されるとは限らない。同じ実保存フォルダと同じ local path を使う場合だけ、downloader 側で `.part` を再利用できる。
+キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。同じ実保存フォルダと同じ local path を使う場合は、downloader 側で `.part` を再利用できる。
 
 ## 外部データソース
 
@@ -321,7 +319,7 @@ FASTQ 候補生成に使う field:
 
 ### 出力ファイル
 
-実保存フォルダの管理ファイル名はフォルダ名を prefix にする。`GSE52778_2` なら `GSE52778_2_download_log.tsv` になる。
+実保存フォルダの管理ファイル名はフォルダ名を prefix にする。`GSE52778` フォルダなら `GSE52778_download_log.tsv` になる。
 
 同じ保存名の FASTQ が複数選ばれた場合は、`same.fastq.gz`, `same.2.fastq.gz` のように保存名をずらす。supplementary file も同名が複数あれば suffix を付けて衝突を避ける。
 

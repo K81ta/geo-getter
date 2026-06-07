@@ -124,8 +124,7 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
     _ensure_any_selected(selected_fastq, selected_supp)
 
     statuses: list[str] = []
-    output_dir.mkdir(parents=True, exist_ok=True)
-    run_output_dir = _new_accession_output_dir(output_dir, str(payload.get("primary_accession", "")))
+    run_output_dir = output_dir.expanduser().resolve()
     run_output_dir.mkdir(parents=True, exist_ok=True)
     if selected_fastq:
         plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
@@ -175,20 +174,6 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
     return 0 if statuses and all(status in ok_statuses for status in statuses) else 1
 
 
-def _new_accession_output_dir(output_root: Path, primary_accession: str) -> Path:
-    base_name = safe_file_name(primary_accession.strip() or "geo_getter_download", "geo_getter_download")
-    output_root = output_root.resolve()
-    candidate = child_path(output_root, base_name)
-    if not candidate.exists() or _is_empty_directory(candidate):
-        return candidate
-    counter = 2
-    while True:
-        candidate = child_path(output_root, f"{base_name}_{counter}")
-        if not candidate.exists() or _is_empty_directory(candidate):
-            return candidate
-        counter += 1
-
-
 def _verify_manifest_json(manifest_path: Path) -> int:
     result = verify_fastq_manifest(manifest_path)
     payload = {
@@ -201,16 +186,6 @@ def _verify_manifest_json(manifest_path: Path) -> int:
     }
     print(json.dumps(payload, ensure_ascii=False), flush=True)
     return 0 if result["total"] and result["status_counts"].get(MD5_VERIFIED, 0) == result["total"] else 1
-
-
-def _is_empty_directory(path: Path) -> bool:
-    if not path.is_dir():
-        return False
-    try:
-        next(path.iterdir())
-    except StopIteration:
-        return True
-    return False
 
 
 def _read_input_text(input_text: str | None, input_file: str | None) -> str:

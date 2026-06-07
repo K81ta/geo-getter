@@ -36,7 +36,7 @@ GEOGetter は、GEO accession、GEO ページ URL、SRA / ENA / Project / BioSam
 5. 保存先を確認します。
 6. `選択ファイルをダウンロード` を押します。
 
-初期保存先は `Downloads\GEOGetter` です。
+初期保存先は `Downloads\GEOGetter` です。ファイル検索後は、保存先欄に `Downloads\GEOGetter\<accession>` が表示されます。
 
 ## 入力例
 
@@ -48,7 +48,7 @@ GEOGetter は、GEO accession、GEO ページ URL、SRA / ENA / Project / BioSam
 
 ## 保存先
 
-選択した保存先フォルダの下に、accession 名のフォルダを作成します。同じ accession のフォルダが既にあり空でない場合は、`GSE52778_2`、`GSE52778_3` のような新しいフォルダを使います。
+保存先欄に表示されたフォルダに、manifest、download log、選択したファイルを保存します。別の場所に保存したい場合は、保存先欄で実際に使うフォルダを選びます。
 
 ```text
 Downloads/GEOGetter/

@@ -26,6 +26,13 @@ function Get-DefaultOutputFolder {
     return (Join-Path $AppRoot "downloads")
 }
 
+function Get-DefaultOutputFolderForAccession {
+    param([string]$PrimaryAccession)
+    $baseSource = if ([string]::IsNullOrWhiteSpace($PrimaryAccession)) { "geo_getter_download" } else { $PrimaryAccession.Trim() }
+    $baseName = ConvertTo-GeoGetterSafeName $baseSource
+    return [System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) $baseName))
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 if (-not ([System.Management.Automation.PSTypeName]"GeoGetterProcessUiBridge").Type) {
@@ -239,7 +246,8 @@ $script:Translations = @{
             "FASTQ表のGEO Sampleとサンプル名は、GEO由来のサンプル情報を確認するための列です。件数は各表の見出しに表示されます。"
         ) -join [Environment]::NewLine)
         helpOutputFilesText = (@(
-            "保存先として選んだ親フォルダの下に、accession名のフォルダを作成します。"
+            "検索後、保存先には実際に保存する accession フォルダが表示されます。"
+            "別の場所に保存したい場合は、保存先で実際に使うフォルダを選びます。"
             ""
             "例:"
             "downloads\GSE52778\"
@@ -247,8 +255,6 @@ $script:Translations = @{
             "  GSE52778_supplementary_manifest.tsv"
             "  GSE52778_download_log.tsv"
             "  SRR1039508_1.fastq.gz"
-            ""
-            "同じ accession のフォルダが既にあり空でない場合は、GSE52778_2、GSE52778_3 のように新しいフォルダを作ります。"
             ""
             "download logには、FASTQとsupplementary fileの保存結果を記録します。FASTQを選んだ場合はfastq manifest、supplementary fileを選んだ場合はsupplementary manifestも作成します。"
         ) -join [Environment]::NewLine)
@@ -404,7 +410,8 @@ $script:Translations = @{
             "The GEO Sample and Sample title columns in the FASTQ table help confirm the source sample. Counts are shown in each table title."
         ) -join [Environment]::NewLine)
         helpOutputFilesText = (@(
-            "GEOGetter creates an accession-named folder under the output parent folder you select."
+            "After search, the output field shows the accession folder that GEOGetter will write to."
+            "To save somewhere else, choose the actual folder you want to use."
             ""
             "Example:"
             "downloads\GSE52778\"
@@ -412,8 +419,6 @@ $script:Translations = @{
             "  GSE52778_supplementary_manifest.tsv"
             "  GSE52778_download_log.tsv"
             "  SRR1039508_1.fastq.gz"
-            ""
-            "If a non-empty folder with the same accession already exists, GEOGetter creates a new folder such as GSE52778_2 or GSE52778_3."
             ""
             "The download log records save results for FASTQ and supplementary files. A FASTQ manifest is created when FASTQ files are selected, and a supplementary manifest is created when supplementary files are selected."
         ) -join [Environment]::NewLine)
@@ -1001,7 +1006,7 @@ function Save-DiagnosticsZip {
             supplementary_count = if ($script:Resolved) { @($script:Resolved.supplementary_files).Count } else { 0 }
             selected_fastq_indices = Get-SelectedFastqIndicesOrEmpty
             selected_supplementary_indices = Get-SelectedSuppIndicesOrEmpty
-            output_parent = if ($outputBox) { [string]$outputBox.Text } else { "" }
+            output_dir = if ($outputBox) { [string]$outputBox.Text } else { "" }
             output_free_bytes = Get-OutputFreeSpaceOrNull
             last_error = $script:LastDiagnosticError
             last_resolve_exit_code = $script:LastResolveExitCode
@@ -1171,6 +1176,9 @@ function Apply-ResolvedResult {
     param([object]$Resolved)
     $script:Resolved = $Resolved
     $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
+    if ($outputBox) {
+        $outputBox.Text = Get-DefaultOutputFolderForAccession ([string]$script:Resolved.primary_accession)
+    }
     $items = @($script:Resolved.fastq_files)
     Add-FastqRowsFromResolved
     Add-SupplementaryRowsFromResolved
@@ -1353,44 +1361,6 @@ function Get-PreflightNameCollisionKey {
     return ([string]$FileName).ToLowerInvariant()
 }
 
-function Test-EmptyDirectory {
-    param([string]$Path)
-    if (-not [System.IO.Directory]::Exists($Path)) { return $false }
-    try {
-        $items = [System.IO.Directory]::EnumerateFileSystemEntries($Path).GetEnumerator()
-        try {
-            return -not $items.MoveNext()
-        }
-        finally {
-            if ($items -is [System.IDisposable]) { $items.Dispose() }
-        }
-    }
-    catch {
-        return $false
-    }
-}
-
-function Get-PreflightRunOutputDir {
-    param(
-        [string]$OutputRoot,
-        [string]$PrimaryAccession
-    )
-    $baseSource = if ([string]::IsNullOrWhiteSpace($PrimaryAccession)) { "geo_getter_download" } else { $PrimaryAccession.Trim() }
-    $baseName = ConvertTo-GeoGetterSafeName $baseSource
-    $candidate = Join-Path $OutputRoot $baseName
-    if (-not (Test-Path -LiteralPath $candidate) -or (Test-EmptyDirectory $candidate)) {
-        return [System.IO.Path]::GetFullPath($candidate)
-    }
-    $counter = 2
-    while ($true) {
-        $candidate = Join-Path $OutputRoot ("{0}_{1}" -f $baseName, $counter)
-        if (-not (Test-Path -LiteralPath $candidate) -or (Test-EmptyDirectory $candidate)) {
-            return [System.IO.Path]::GetFullPath($candidate)
-        }
-        $counter += 1
-    }
-}
-
 function Split-PreflightFileName {
     param([string]$FileName)
     if ($FileName.EndsWith(".fastq.gz", [System.StringComparison]::Ordinal)) {
@@ -1509,28 +1479,20 @@ function Test-DownloadPreflight {
         if (-not $outputBox -or [string]::IsNullOrWhiteSpace($outputBox.Text)) {
             throw (T "preflightOutputRequired")
         }
-        $outputRoot = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
-        if ([System.IO.File]::Exists($outputRoot)) {
-            throw ((T "preflightOutputIsFile") -f $outputRoot)
-        }
-        try {
-            [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
-        }
-        catch {
-            throw ((T "preflightCannotCreateOutput") -f ("{0} ({1})" -f $outputRoot, $_.Exception.Message))
+        $runOutputDir = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
+        if ([System.IO.File]::Exists($runOutputDir)) {
+            throw ((T "preflightOutputIsFile") -f $runOutputDir)
         }
 
-        $primary = if ($script:Resolved) { [string]$script:Resolved.primary_accession } else { "" }
-        $runOutputDir = Get-PreflightRunOutputDir $outputRoot $primary
         $script:LastPreflightOutputDir = $runOutputDir
+        Assert-PreflightPathLength @(Get-PreflightPlannedPaths $runOutputDir)
+
         try {
             [System.IO.Directory]::CreateDirectory($runOutputDir) | Out-Null
         }
         catch {
             throw ((T "preflightCannotCreateOutput") -f ("{0} ({1})" -f $runOutputDir, $_.Exception.Message))
         }
-
-        Assert-PreflightPathLength @(Get-PreflightPlannedPaths $runOutputDir)
 
         $probePath = Join-Path $runOutputDir (".geo_getter_preflight_" + [System.Guid]::NewGuid().ToString("N") + ".tmp")
         try {
@@ -2592,7 +2554,10 @@ function New-MainForm {
 
     $browseButton.Add_Click({
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.SelectedPath = $outputBox.Text
+        $initialDir = Get-ExistingDirectoryForPath $outputBox.Text
+        if (-not [string]::IsNullOrWhiteSpace($initialDir)) {
+            $dialog.SelectedPath = $initialDir
+        }
         if ($dialog.ShowDialog() -eq "OK") {
             $outputBox.Text = $dialog.SelectedPath
             Update-Capacity
@@ -2887,13 +2852,10 @@ if ($SelfTest) {
             }
         )
     }
-    $script:Resolved = $resolvedFixture
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($script:Resolved | ConvertTo-Json -Depth 10), $utf8NoBom)
-    $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
-    Add-FastqRowsFromResolved
-    Add-SupplementaryRowsFromResolved
-    Update-ResultTitles
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
+    Apply-ResolvedResult $resolvedFixture
+    Assert-Equal $outputBox.Text (Get-DefaultOutputFolderForAccession "SELFTEST") "search success sets accession output folder"
     Assert-Equal $fastqGrid.Rows[0].Cells["run"].Value "SRR1" "fastq display defaults to SRR order"
     Assert-Equal $fastqGrid.Rows[0].Cells["size"].Value "16 B" "fastq display keeps SRR1 row data"
     $fastqGrid.Sort($fastqGrid.Columns["run"], [System.ComponentModel.ListSortDirection]::Descending)
@@ -3093,10 +3055,14 @@ if ($SelfTest) {
     Assert-Contains $hugePreflightMessage "空き容量" "preflight rejects insufficient FASTQ capacity"
     Assert-Equal $script:LastDiagnosticError.code "insufficient_space" "preflight records insufficient space code"
 
-    $outputBox.Text = Join-Path $selfTestRoot "out folder"
+    $outputBox.Text = Join-Path $selfTestRoot "SELFTEST"
     Set-GridSelection $fastqGrid "selected" $false
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
+    $downloadPreflight = Test-DownloadPreflight
+    $selfTestRunOutput = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
+    Assert-Equal $script:LastPreflightOutputDir $selfTestRunOutput "preflight output dir matches output field"
+    Assert-Equal $downloadPreflight.OutputDir $selfTestRunOutput "preflight result output dir matches output field"
 
     $downloadResult = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
     $script:DownloadStdoutText = Limit-DiagnosticText $downloadResult.Stdout
@@ -3110,7 +3076,8 @@ if ($SelfTest) {
     Assert-Contains $downloadResult.Stdout '"event": "done"' "selected-download-json done event"
     Assert-Contains $downloadResult.Stdout '"md5_verified"' "selected-download-json md5 success"
     Assert-Contains $downloadResult.Stdout '"download_complete"' "selected-download-json supplementary success"
-    $selfTestRunOutput = Join-Path $outputBox.Text "SELFTEST"
+    Assert-Equal ([System.IO.Path]::GetFullPath([string]$script:LastDownloadDoneEvent.output_dir)) $selfTestRunOutput "download done output dir matches output field"
+    Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST")) $false "download does not create nested accession folder"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")) $true "fastq manifest exists"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST_supplementary_manifest.tsv")) $true "supplementary manifest exists"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) $true "download log exists"
@@ -3267,7 +3234,9 @@ if ($SelfTest) {
     }
     Assert-Equal $script:DownloadProcess $null "async download process finished"
     Assert-Equal $statusLabel.Text (T "complete") "async download status"
-    Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path (Join-Path $outputBox.Text "SELFTEST") "SELFTEST_download_log.tsv")) "md5_verified" "async download log md5 success"
+    $asyncOutputDir = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
+    $asyncPrefix = ConvertTo-GeoGetterSafeName ([System.IO.Path]::GetFileName($asyncOutputDir)) -ArtifactPrefix
+    Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $asyncOutputDir ("{0}_download_log.tsv" -f $asyncPrefix))) "md5_verified" "async download log md5 success"
 
     Write-Output "PowerShell WinForms self test OK"
     $selfTestSucceeded = $true
