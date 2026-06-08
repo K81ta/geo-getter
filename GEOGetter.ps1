@@ -272,6 +272,8 @@ $script:Translations = @{
             ""
             "GEO supplementary / processed file:"
             "GEOページに登録されている補足ファイルやprocessed fileです。raw FASTQとは別の保存対象です。"
+            "推定種別はファイル名や拡張子からの目安です。ファイル内容を解析して判定するものではありません。"
+            "FASTQ風 supplementary も raw FASTQ とは別扱いで、FASTQ manifest やMD5検証の対象にはなりません。"
             ""
             "FASTQ表のGEO Sampleとサンプル名は、GEO由来のサンプル情報を確認するための列です。件数は各表の見出しに表示されます。"
         ) -join [Environment]::NewLine)
@@ -458,6 +460,8 @@ $script:Translations = @{
             ""
             "GEO supplementary / processed files:"
             "Supplementary or processed files registered on the GEO page. These are saved separately from raw FASTQ files."
+            "Estimated type is a filename and extension based hint. GEOGetter does not inspect file contents to classify it."
+            "FASTQ-like supplementary files are still separate from raw FASTQ and are not included in the FASTQ manifest or MD5 verification."
             ""
             "The GEO Sample and Sample title columns in the FASTQ table help confirm the source sample. Counts are shown in each table title."
         ) -join [Environment]::NewLine)
@@ -738,6 +742,7 @@ function Update-StaticTexts {
     if ($null -ne $capacityLabel) { Update-Capacity }
     Update-SelectionSummary
     Update-GridHeaders
+    Refresh-SupplementaryDisplayRows
     Update-DatasetInfo
 }
 
@@ -1587,6 +1592,31 @@ function Get-SupplementaryVerificationDisplay {
         return T "suppVerificationNotApplicable"
     }
     return $verificationStatus
+}
+
+function Update-SupplementaryRowDisplay {
+    param(
+        [System.Windows.Forms.DataGridViewRow]$Row,
+        $Item
+    )
+    $Row.Cells["supp_origin"].Value = Get-SupplementaryOriginDisplay $Item
+    $Row.Cells["supp_extension"].Value = Get-SupplementaryExtensionDisplay $Item
+    $Row.Cells["supp_type"].Value = Get-SupplementaryTypeDisplay $Item
+    $Row.Cells["supp_size"].Value = Get-SupplementarySizeDisplay $Item
+    $Row.Cells["supp_verification"].Value = Get-SupplementaryVerificationDisplay $Item
+    $Row.Cells["supp_name"].Value = $Item.name
+    $Row.Cells["supp_url"].Value = $Item.url
+}
+
+function Refresh-SupplementaryDisplayRows {
+    if ($null -eq $suppGrid -or $null -eq $script:Resolved) { return }
+    $items = @($script:Resolved.supplementary_files)
+    foreach ($row in $suppGrid.Rows) {
+        if ($row.IsNewRow -or $null -eq $row.Tag) { continue }
+        $index = [int]$row.Tag
+        if ($index -lt 0 -or $index -ge $items.Count) { continue }
+        Update-SupplementaryRowDisplay $row $items[$index]
+    }
 }
 
 function Update-SelectionSummary {
@@ -2762,6 +2792,22 @@ function Compare-GridString {
     return [string]::Compare(([string]$Left), ([string]$Right), $true)
 }
 
+function Set-ResultSplitDistance {
+    if ($null -eq $mainSplit -or $mainSplit.Height -le 0) { return }
+    $splitterWidth = [Math]::Max(1, [int]$mainSplit.SplitterWidth)
+    $minFastqPanelHeight = 150
+    $minSupplementaryPanelHeight = 170
+    $targetFastqPanelHeight = 180
+    $maxDistance = [int]$mainSplit.Height - $splitterWidth - [int]$mainSplit.Panel2MinSize
+    if ($maxDistance -lt [int]$mainSplit.Panel1MinSize) { return }
+    $distance = [Math]::Min($targetFastqPanelHeight, ([int]$mainSplit.Height - $splitterWidth - $minSupplementaryPanelHeight))
+    $distance = [Math]::Max($minFastqPanelHeight, $distance)
+    $distance = [Math]::Min($distance, $maxDistance)
+    if ($distance -ge [int]$mainSplit.Panel1MinSize -and $mainSplit.SplitterDistance -ne $distance) {
+        $mainSplit.SplitterDistance = $distance
+    }
+}
+
 function Save-FormScreenshot {
     param([string]$Path)
     $fullPath = [System.IO.Path]::GetFullPath($Path)
@@ -2798,7 +2844,7 @@ function New-MainForm {
     [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 26)))
     [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 138)))
     [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 160)))
+    [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 130)))
     $formLocal.Controls.Add($rootLayout)
 
     $script:menuStrip = New-Object System.Windows.Forms.MenuStrip
@@ -2929,7 +2975,8 @@ function New-MainForm {
     $split = New-Object System.Windows.Forms.SplitContainer
     $split.Dock = "Fill"
     $split.Orientation = "Horizontal"
-    $split.SplitterDistance = 260
+    $split.SplitterDistance = 180
+    $script:mainSplit = $split
     $rootLayout.Controls.Add($split, 0, 2)
 
     $fastqPanel = New-Object System.Windows.Forms.TableLayoutPanel
@@ -3080,13 +3127,13 @@ function New-MainForm {
     $suppSelectCol.SortMode = "NotSortable"
     [void]$suppGrid.Columns.Add($suppSelectCol)
     foreach ($col in @(
-        @("supp_origin", "Origin", 140),
-        @("supp_extension", "Extension", 90),
-        @("supp_type", "Estimated type", 170),
-        @("supp_size", "Size", 95),
-        @("supp_verification", "Verification", 120),
-        @("supp_name", "File name", 280),
-        @("supp_url", "GEO URL", 430)
+        @("supp_origin", "Origin", 130),
+        @("supp_extension", "Extension", 75),
+        @("supp_type", "Estimated type", 150),
+        @("supp_size", "Size", 80),
+        @("supp_verification", "Verification", 100),
+        @("supp_name", "File name", 330),
+        @("supp_url", "GEO URL", 240)
     )) {
         $textCol = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
         $textCol.Name = $col[0]
@@ -3104,7 +3151,8 @@ function New-MainForm {
 
     $bottom = New-Object System.Windows.Forms.Panel
     $bottom.Dock = "Fill"
-    $bottom.Height = 160
+    $bottom.Height = 130
+    $script:bottomPanel = $bottom
     $rootLayout.Controls.Add($bottom, 0, 3)
 
     $script:downloadButton = New-Object System.Windows.Forms.Button
@@ -3148,7 +3196,7 @@ function New-MainForm {
 
     $script:logBox = New-Object System.Windows.Forms.TextBox
     $logBox.Location = New-Object System.Drawing.Point(10, 80)
-    $logBox.Size = New-Object System.Drawing.Size(1120, 70)
+    $logBox.Size = New-Object System.Drawing.Size(1120, 40)
     $logBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $logBox.Multiline = $true
     $logBox.ScrollBars = "Vertical"
@@ -3272,6 +3320,8 @@ function New-MainForm {
     $formLocal.add_FormClosing({
         Stop-RunningGuiProcessesForShutdown
     })
+    $formLocal.add_Shown({ Set-ResultSplitDistance })
+    $formLocal.add_SizeChanged({ Set-ResultSplitDistance })
 
     $script:form = $formLocal
     Update-StaticTexts
@@ -3314,6 +3364,8 @@ if ($SelfTest) {
     Assert-Equal $fastqGrid.Columns["run"].ReadOnly $true "FASTQ run column readonly"
     Assert-Equal $fastqGrid.Columns["url"].ReadOnly $true "FASTQ URL column readonly"
     Assert-Equal $fastqGrid.Columns["selected"].ReadOnly $false "FASTQ select column editable"
+    Assert-Equal ($bottomPanel.Height -le 130) $true "bottom panel leaves more room for result tables"
+    Assert-Equal ($suppGrid.Columns["supp_name"].Width -ge 300) $true "supplementary file name column remains prominent"
     Assert-Equal ((Get-Variable -Name planButton -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "save-list button removed from main UI"
     Assert-Equal (Format-Bytes ([Int64]2377036173)) "2.21 GB" "Format-Bytes over Int32"
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
@@ -3589,6 +3641,16 @@ if ($SelfTest) {
     Assert-Equal $suppGrid.Rows[0].Cells["supp_type"].Value "table/text" "supplementary estimated type display"
     Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "不明" "supplementary unknown size display"
     Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5対象外" "supplementary verification display"
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
+    Set-Language "en"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "Unknown" "supplementary size redisplays in English"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5 N/A" "supplementary verification redisplays in English"
+    Assert-Equal ([bool]$suppGrid.Rows[0].Cells["supp_selected"].Value) $true "supplementary selection survives English language switch"
+    Set-Language "ja"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "不明" "supplementary size redisplays in Japanese"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5対象外" "supplementary verification redisplays in Japanese"
+    Assert-Equal ([bool]$suppGrid.Rows[0].Cells["supp_selected"].Value) $true "supplementary selection survives Japanese language switch"
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
     Assert-Contains $fastqTitle.Text "3件" "FASTQ title includes count"
     Assert-Contains $suppTitle.Text "1件" "supplementary title includes count"
     Assert-Contains $selectionSummaryLabel.Text "FASTQ 0 件" "selection summary default fastq count"
