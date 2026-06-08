@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import sys
 import urllib.error
@@ -11,13 +12,14 @@ from . import __version__
 from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
 from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED, GeoGetterError
 from .models import FastqFile
-from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
+from .path_safety import child_path, name_collision_key, reserve_unique_download_name, reserved_download_names, safe_file_name
 from .planner import (
     append_download_log,
     build_download_plan,
     download_log_path,
     fastq_manifest_path,
     initialize_log,
+    reserved_download_artifact_names,
     supplementary_manifest_path,
     verify_fastq_manifest,
 )
@@ -126,8 +128,13 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
     statuses: list[str] = []
     run_output_dir = output_dir.expanduser().resolve()
     run_output_dir.mkdir(parents=True, exist_ok=True)
+    reserved_output_names = reserved_download_artifact_names(run_output_dir)
     if selected_fastq:
         plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
+        reserved_output_names = [
+            *reserved_output_names,
+            *(name for planned in plan.files for name in reserved_download_names(planned.local_path.name)),
+        ]
 
         def progress(planned, downloaded: int, total: int) -> None:
             print(
@@ -153,8 +160,8 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
         initialize_log(run_output_dir)
 
     if selected_supp:
-        _write_supplementary_manifest(run_output_dir, selected_supp)
-        statuses.extend(_download_supplementary_files(run_output_dir, selected_supp))
+        _write_supplementary_manifest(run_output_dir, selected_supp, reserved_output_names)
+        statuses.extend(_download_supplementary_files(run_output_dir, selected_supp, reserved_output_names))
 
     print(
         json.dumps(
@@ -244,13 +251,13 @@ def _ensure_any_selected(selected_fastq: list[FastqFile], selected_supp: list[di
         raise ValueError("Select at least one FASTQ or GEO supplementary/processed file.")
 
 
-def _write_supplementary_manifest(output_dir: Path, selected_supp: list[dict]) -> Path:
+def _write_supplementary_manifest(output_dir: Path, selected_supp: list[dict], reserved_names: list[str] | None = None) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = supplementary_manifest_path(output_dir)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
         writer.writerow(["source_accession", "scope", "file_name", "url", "local_path", "status"])
-        for item, local_path in _planned_supplementary_files(output_dir, selected_supp):
+        for item, local_path in _planned_supplementary_files(output_dir, selected_supp, reserved_names):
             writer.writerow(
                 [
                     item.get("source_accession", ""),
@@ -265,9 +272,9 @@ def _write_supplementary_manifest(output_dir: Path, selected_supp: list[dict]) -
     return path
 
 
-def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -> list[str]:
+def _download_supplementary_files(output_dir: Path, selected_supp: list[dict], reserved_names: list[str] | None = None) -> list[str]:
     statuses: list[str] = []
-    for item, local_path in _planned_supplementary_files(output_dir, selected_supp):
+    for item, local_path in _planned_supplementary_files(output_dir, selected_supp, reserved_names):
         file_name = local_path.name
         url = item.get("url", "")
         downloaded = 0
@@ -277,6 +284,8 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -
                 local_path.replace(_unique_existing_path(local_path))
 
             def progress(current: int, total: int) -> None:
+                nonlocal downloaded
+                downloaded = current
                 print(
                     json.dumps(
                         {
@@ -300,9 +309,10 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -
             finalize_downloaded_part(local_path)
             status = DOWNLOAD_COMPLETE
             message = "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             status = NETWORK_FAILED
             message = str(exc)
+            downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
         append_download_log(
             output_dir,
             "GEO_SUPPLEMENTARY",
@@ -319,17 +329,25 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict]) -
     return statuses
 
 
-def _planned_supplementary_files(output_dir: Path, selected_supp: list[dict]) -> list[tuple[dict, Path]]:
-    counts: dict[str, int] = {}
+def _planned_supplementary_files(
+    output_dir: Path,
+    selected_supp: list[dict],
+    reserved_names: list[str] | None = None,
+) -> list[tuple[dict, Path]]:
+    used_keys = {name_collision_key(name) for name in reserved_names or []}
     planned: list[tuple[dict, Path]] = []
     for item in selected_supp:
         file_name = safe_file_name(item.get("name", "") or "geo_supplementary_file", "geo_supplementary_file")
-        key = name_collision_key(file_name)
-        count = counts.get(key, 0)
-        counts[key] = count + 1
-        file_name = unique_numbered_name(file_name, count)
+        file_name = reserve_unique_download_name(file_name, used_keys)
         planned.append((item, child_path(output_dir, file_name)))
     return planned
+
+
+def _existing_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _unique_existing_path(path: Path) -> Path:

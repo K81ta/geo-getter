@@ -9,7 +9,7 @@ from pathlib import Path
 from . import __version__
 from .errors import INVALID_MANIFEST, MD5_MISMATCH, MD5_UNAVAILABLE, MD5_VERIFIED, MISSING, SIZE_MISMATCH, GeoGetterError
 from .models import DownloadPlan, FastqFile, PlannedFile
-from .path_safety import child_path, name_collision_key, safe_file_name, unique_numbered_name
+from .path_safety import child_path, name_collision_key, reserve_unique_download_name, safe_file_name
 
 
 FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
@@ -181,6 +181,14 @@ def download_log_path(output_dir: str | Path) -> Path:
     return _artifact_path(output_dir, DOWNLOAD_LOG_SUFFIX)
 
 
+def reserved_download_artifact_names(output_dir: str | Path) -> list[str]:
+    return [
+        fastq_manifest_path(output_dir).name,
+        supplementary_manifest_path(output_dir).name,
+        download_log_path(output_dir).name,
+    ]
+
+
 def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> dict:
     manifest = Path(manifest_path).expanduser()
     output = Path(report_path).expanduser() if report_path else manifest.parent / VERIFICATION_REPORT_NAME
@@ -256,14 +264,11 @@ def _artifact_prefix(value: str) -> str:
 
 
 def _planned_files(files: list[FastqFile], output_dir: Path) -> list[PlannedFile]:
-    counts: dict[str, int] = {}
+    used_keys = {name_collision_key(name) for name in reserved_download_artifact_names(output_dir)}
     planned: list[PlannedFile] = []
     for item in files:
         file_name = safe_file_name(item.file_name, "download.fastq.gz")
-        key = name_collision_key(file_name)
-        count = counts.get(key, 0)
-        counts[key] = count + 1
-        file_name = unique_numbered_name(file_name, count)
+        file_name = reserve_unique_download_name(file_name, used_keys)
         planned.append(PlannedFile(fastq=item, local_path=child_path(output_dir, file_name)))
     return planned
 
