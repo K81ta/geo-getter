@@ -3,6 +3,7 @@ import http.client
 import tempfile
 import unittest
 import hashlib
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -340,6 +341,39 @@ class PlannerDownloaderTest(unittest.TestCase):
 
                     self.assertEqual(part.read_bytes(), b"abc")
 
+    def test_transient_transfer_errors_retry_and_succeed(self):
+        for error in (urllib.error.URLError("temporary failure"), OSError("temporary failure")):
+            with self.subTest(error=type(error).__name__):
+                with tempfile.TemporaryDirectory() as temp:
+                    local_path = Path(temp) / "fixture.fastq.gz"
+                    messages = []
+                    responses = [
+                        error,
+                        FakeUrlopenResponse(data=b"abcdef", status=200, headers={"Content-Length": "6"}),
+                    ]
+
+                    def urlopen_retry(_request, timeout):
+                        item = responses.pop(0)
+                        if isinstance(item, BaseException):
+                            raise item
+                        return item
+
+                    with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
+                        part_path, downloaded = download_url_to_part(
+                            "https://example.invalid/fixture.fastq.gz",
+                            local_path,
+                            expected_size=6,
+                            message_callback=messages.append,
+                            chunk_size=2,
+                            max_retries=2,
+                        )
+
+                    self.assertEqual(part_path, local_path.with_name("fixture.fastq.gz.part"))
+                    self.assertEqual(downloaded, 6)
+                    self.assertEqual(part_path.read_bytes(), b"abcdef")
+                    self.assertEqual(len(responses), 0)
+                    self.assertTrue(any("network_retry" in message for message in messages))
+
     def test_incomplete_read_is_logged_as_network_failed(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
@@ -417,6 +451,41 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(plan.files[0].local_path.name, "same.fastq.gz")
             self.assertEqual(plan.files[1].local_path.name, "same.2.fastq.gz")
             self.assertEqual(plan.files[2].local_path.name, "same.3.fastq.gz")
+
+    def test_pre_numbered_output_names_are_reserved_before_numbering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fastq1 = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR1",
+                file_index=1,
+                file_name="same.fastq.gz",
+                url="https://example.invalid/a.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=1,
+            )
+            fastq2 = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR2",
+                file_index=1,
+                file_name="same.2.fastq.gz",
+                url="https://example.invalid/b.fastq.gz",
+                expected_md5="2" * 32,
+                size_bytes=1,
+            )
+            fastq3 = FastqFile(
+                source_accession="GSE",
+                query_accession="SRP",
+                run_accession="SRR3",
+                file_index=1,
+                file_name="same.fastq.gz",
+                url="https://example.invalid/c.fastq.gz",
+                expected_md5="3" * 32,
+                size_bytes=1,
+            )
+            plan = build_download_plan("GSE", "GSE", [fastq1, fastq2, fastq3], temp)
+            self.assertEqual([file.local_path.name for file in plan.files], ["same.fastq.gz", "same.2.fastq.gz", "same.3.fastq.gz"])
 
     def test_case_only_duplicate_output_names_are_disambiguated(self):
         with tempfile.TemporaryDirectory() as temp:

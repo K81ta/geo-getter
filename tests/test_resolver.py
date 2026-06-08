@@ -57,6 +57,31 @@ class EmptyGeoProvider:
         )
 
 
+class FailingGeoProvider:
+    def get_related(self, accession):
+        raise AssertionError(f"GEO provider should not be called for direct ENA input: {accession}")
+
+
+class RecordingEnaProvider:
+    def __init__(self):
+        self.calls = []
+
+    def get_fastq_files(self, accession, source_accession):
+        self.calls.append((accession, source_accession))
+        return [
+            FastqFile(
+                source_accession=source_accession,
+                query_accession=accession,
+                run_accession="SRR000001",
+                file_index=1,
+                file_name="a.fastq.gz",
+                url="https://example.invalid/a.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+        ]
+
+
 class ResolverTest(unittest.TestCase):
     def test_resolver_deduplicates_fastq_and_keeps_supplementary(self):
         result = MetadataResolver(FakeGeoProvider(), FakeEnaProvider()).resolve("GSE000001")
@@ -91,6 +116,20 @@ class ResolverTest(unittest.TestCase):
 
         result = MetadataResolver(FakeGeoProvider(), SizeUnknownEnaProvider()).resolve("GSE000003")
         self.assertTrue(any("file sizes were unavailable" in warning for warning in result.warnings))
+
+    def test_direct_ena_accessions_skip_geo_and_query_ena_directly(self):
+        for accession in ("SRR000001", "SRX000001", "PRJNA000001", "SAMN000001"):
+            with self.subTest(accession=accession):
+                ena_provider = RecordingEnaProvider()
+                result = MetadataResolver(FailingGeoProvider(), ena_provider).resolve(accession)
+
+                self.assertEqual(result.primary_accession, accession)
+                self.assertEqual(result.query_accessions, [accession])
+                self.assertEqual(ena_provider.calls, [(accession, accession)])
+                self.assertEqual(len(result.fastq_files), 1)
+                self.assertEqual(result.fastq_files[0].source_accession, accession)
+                self.assertEqual(result.fastq_files[0].query_accession, accession)
+                self.assertEqual(result.supplementary_files, [])
 
 
 if __name__ == "__main__":
