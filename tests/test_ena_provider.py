@@ -61,6 +61,26 @@ class EnaProviderTest(unittest.TestCase):
         files = parse_file_report(rows, source_accession="GSE000004", query_accession="SRP000004")
         self.assertEqual(files[0].file_name, "_escape.fastq.gz")
 
+    def test_submitted_ftp_without_fastq_ftp_is_not_fastq_candidate(self):
+        for submitted_ftp in (
+            "ftp.sra.ebi.ac.uk/vol1/run/SRR000/SRR000005/submitted.bam",
+            "ftp.sra.ebi.ac.uk/vol1/run/SRR000/SRR000005/submitted.fastq.gz",
+        ):
+            with self.subTest(submitted_ftp=submitted_ftp):
+                rows = [
+                    {
+                        "run_accession": "SRR000005",
+                        "fastq_ftp": "",
+                        "fastq_md5": "",
+                        "fastq_bytes": "",
+                        "submitted_ftp": submitted_ftp,
+                        "submitted_md5": "1" * 32,
+                        "submitted_bytes": "123",
+                    }
+                ]
+                files = parse_file_report(rows, source_accession="GSE000005", query_accession="SRP000005")
+                self.assertEqual(files, [])
+
 
 if __name__ == "__main__":
     unittest.main()

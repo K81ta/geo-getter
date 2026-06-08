@@ -48,19 +48,26 @@ public sealed class GeoGetterProcessUiBridge
     private readonly Action<string> error;
     private readonly Action<int> exited;
     private readonly Action outputClosed;
+    private readonly Action errorClosed;
 
     public GeoGetterProcessUiBridge(Control control, Action<string> output, Action<string> error, Action<int> exited)
-        : this(control, output, error, exited, null)
+        : this(control, output, error, exited, null, null)
     {
     }
 
     public GeoGetterProcessUiBridge(Control control, Action<string> output, Action<string> error, Action<int> exited, Action outputClosed)
+        : this(control, output, error, exited, outputClosed, null)
+    {
+    }
+
+    public GeoGetterProcessUiBridge(Control control, Action<string> output, Action<string> error, Action<int> exited, Action outputClosed, Action errorClosed)
     {
         this.control = control;
         this.output = output;
         this.error = error;
         this.exited = exited;
         this.outputClosed = outputClosed;
+        this.errorClosed = errorClosed;
     }
 
     public void Attach(Process process)
@@ -74,7 +81,15 @@ public sealed class GeoGetterProcessUiBridge
             }
             InvokeString(output, args.Data);
         };
-        process.ErrorDataReceived += (sender, args) => InvokeString(error, args.Data);
+        process.ErrorDataReceived += (sender, args) =>
+        {
+            if (args.Data == null)
+            {
+                InvokeAction(errorClosed);
+                return;
+            }
+            InvokeString(error, args.Data);
+        };
         process.Exited += (sender, args) =>
         {
             try
@@ -131,6 +146,7 @@ $script:SuppDefaultSorted = $false
 $script:ResolveProcess = $null
 $script:ResolveBridge = $null
 $script:ResolveInputPath = $null
+$script:ResolveCanceled = $false
 $script:ResolveStdoutText = ""
 $script:ResolveStderrText = ""
 $script:DownloadProcess = $null
@@ -147,18 +163,26 @@ $script:DiagnosticProcessOutputLimitBytes = 1048576
 $script:LastDiagnosticError = $null
 $script:LastResolveExitCode = $null
 $script:LastResolveArguments = @()
+$script:LastResolveStartError = ""
 $script:LastDownloadArguments = @()
 $script:LastVerificationArguments = @()
 $script:LastDownloadStartError = ""
+$script:LastVerificationStartError = ""
 $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
 $script:LastVerificationDoneEvent = $null
 $script:LastVerificationExitCode = $null
+$script:ResolveExitObserved = $false
+$script:ResolveStdoutClosed = $false
+$script:ResolveStderrClosed = $false
+$script:ResolveFinalized = $false
 $script:DownloadExitObserved = $false
 $script:DownloadStdoutClosed = $false
+$script:DownloadStderrClosed = $false
 $script:DownloadFinalized = $false
 $script:VerifyExitObserved = $false
 $script:VerifyStdoutClosed = $false
+$script:VerifyStderrClosed = $false
 $script:VerifyFinalized = $false
 $script:LastPreflightStatus = ""
 $script:LastPreflightError = ""
@@ -272,7 +296,7 @@ $script:Translations = @{
         ) -join [Environment]::NewLine)
         helpCancelRetryText = (@(
             "キャンセル:"
-            "実行中のダウンロードは [キャンセル] で停止できます。停止時点の途中ファイルが残ることがあります。"
+            "metadata取得、ダウンロード、manifest確認は [キャンセル] で停止できます。ダウンロード停止時は途中ファイルが .part として残ることがあります。"
             ""
             "再試行:"
             "通信失敗時は自動で再試行します。再試行しても失敗したファイルはdownload logに失敗として記録されます。"
@@ -315,6 +339,7 @@ $script:Translations = @{
         verifyManifestCompleteMessage = "確認レポートを作成しました: {0}"
         verifyManifestPartialMessage = "確認レポートを作成しました（一部要確認）: {0}"
         verifyManifestNoReport = "確認レポートが作成されませんでした。"
+        resolveCancelRequestLog = "キャンセル要求: metadata取得を停止します。"
         verifyCancelRequestLog = "キャンセル要求: manifest確認を停止します。"
         progressDisplayError = "進捗表示エラー: {0}"
         exitHandlerError = "終了処理エラー: {0}"
@@ -436,7 +461,7 @@ $script:Translations = @{
         ) -join [Environment]::NewLine)
         helpCancelRetryText = (@(
             "Cancel:"
-            "Use [Cancel] to stop a running download. A partial file may remain after cancellation."
+            "Use [Cancel] to stop metadata retrieval, download, or manifest verification. During download cancellation, partial files may remain as .part files."
             ""
             "Retry:"
             "Network failures are retried automatically. Files that still fail after retry are recorded as failures in the download log."
@@ -479,6 +504,7 @@ $script:Translations = @{
         verifyManifestCompleteMessage = "Verification report created: {0}"
         verifyManifestPartialMessage = "Verification report created with issues: {0}"
         verifyManifestNoReport = "No verification report was created."
+        resolveCancelRequestLog = "Cancel requested: stopping metadata retrieval."
         verifyCancelRequestLog = "Cancel requested: stopping manifest verification."
         progressDisplayError = "Progress display error: {0}"
         exitHandlerError = "Exit handler error: {0}"
@@ -739,6 +765,7 @@ function Append-Log {
 function Show-AppError {
     param([string]$Message)
     Append-Log $Message
+    if ($SelfTest) { return }
     [System.Windows.Forms.MessageBox]::Show($Message, (T "appTitle"), "OK", "Error") | Out-Null
 }
 
@@ -904,6 +931,20 @@ function Add-DiagnosticProcessOutput {
     $script:DownloadStderrText = Limit-DiagnosticText ($script:DownloadStderrText + $value)
 }
 
+function Add-DiagnosticResolveOutput {
+    param(
+        [ValidateSet("stdout", "stderr")]
+        [string]$Stream,
+        [string]$Line
+    )
+    $value = $Line + [Environment]::NewLine
+    if ($Stream -eq "stdout") {
+        $script:ResolveStdoutText = Limit-DiagnosticText ($script:ResolveStdoutText + $value)
+        return
+    }
+    $script:ResolveStderrText = Limit-DiagnosticText ($script:ResolveStderrText + $value)
+}
+
 function Add-DiagnosticVerificationOutput {
     param(
         [ValidateSet("stdout", "stderr")]
@@ -1011,6 +1052,12 @@ function Save-DiagnosticsZip {
             last_error = $script:LastDiagnosticError
             last_resolve_exit_code = $script:LastResolveExitCode
             last_resolve_arguments = @($script:LastResolveArguments)
+            last_resolve_start_error = $script:LastResolveStartError
+            resolve_canceled = $script:ResolveCanceled
+            resolve_exit_observed = $script:ResolveExitObserved
+            resolve_stdout_closed = $script:ResolveStdoutClosed
+            resolve_stderr_closed = $script:ResolveStderrClosed
+            resolve_finalized = $script:ResolveFinalized
             last_preflight_status = $script:LastPreflightStatus
             last_preflight_error = $script:LastPreflightError
             preflight_output_dir = $script:LastPreflightOutputDir
@@ -1020,9 +1067,20 @@ function Save-DiagnosticsZip {
             last_download_start_error = $script:LastDownloadStartError
             last_download_exit_code = $script:LastDownloadExitCode
             last_download_done = $script:LastDownloadDoneEvent
+            download_canceled = $script:DownloadCanceled
+            download_exit_observed = $script:DownloadExitObserved
+            download_stdout_closed = $script:DownloadStdoutClosed
+            download_stderr_closed = $script:DownloadStderrClosed
+            download_finalized = $script:DownloadFinalized
             last_verification_arguments = @($script:LastVerificationArguments)
+            last_verification_start_error = $script:LastVerificationStartError
             last_verification_exit_code = $script:LastVerificationExitCode
             last_verification_done = $script:LastVerificationDoneEvent
+            verify_canceled = $script:VerifyCanceled
+            verify_exit_observed = $script:VerifyExitObserved
+            verify_stdout_closed = $script:VerifyStdoutClosed
+            verify_stderr_closed = $script:VerifyStderrClosed
+            verify_finalized = $script:VerifyFinalized
         }
         Write-DiagnosticTextFile $stagingRoot "diagnostics.json" ($diagnostics | ConvertTo-Json -Depth 12)
         Write-DiagnosticTextFile $stagingRoot "resolve_stdout.txt" $script:ResolveStdoutText
@@ -1094,13 +1152,52 @@ function New-ResolveInputFile {
     return $inputPath
 }
 
+function Remove-ResolveInputFile {
+    $inputPath = $script:ResolveInputPath
+    $script:ResolveInputPath = $null
+    if ($inputPath) {
+        Remove-Item -LiteralPath $inputPath -ErrorAction SilentlyContinue
+    }
+}
+
 function Normalize-InputText {
     param([string]$Value)
     if ($null -eq $Value) { return "" }
     return $Value.Trim()
 }
 
+function Test-ProcessRunning {
+    param([System.Diagnostics.Process]$Process)
+    if ($null -eq $Process) { return $false }
+    try {
+        return -not $Process.HasExited
+    }
+    catch {
+        return $false
+    }
+}
+
+function Dispose-ProcessQuietly {
+    param([System.Diagnostics.Process]$Process)
+    if ($null -eq $Process) { return }
+    try { $Process.Dispose() } catch { }
+}
+
+function Clear-ResolveDiagnosticState {
+    $script:ResolveCanceled = $false
+    $script:ResolveStdoutText = ""
+    $script:ResolveStderrText = ""
+    $script:LastResolveExitCode = $null
+    $script:LastResolveArguments = @()
+    $script:LastResolveStartError = ""
+    $script:ResolveExitObserved = $false
+    $script:ResolveStdoutClosed = $false
+    $script:ResolveStderrClosed = $false
+    $script:ResolveFinalized = $false
+}
+
 function Clear-DownloadDiagnosticState {
+    $script:DownloadCanceled = $false
     $script:DownloadStdoutText = ""
     $script:DownloadStderrText = ""
     $script:LastDownloadDoneEvent = $null
@@ -1109,17 +1206,21 @@ function Clear-DownloadDiagnosticState {
     $script:LastDownloadStartError = ""
     $script:DownloadExitObserved = $false
     $script:DownloadStdoutClosed = $false
+    $script:DownloadStderrClosed = $false
     $script:DownloadFinalized = $false
 }
 
 function Clear-VerificationDiagnosticState {
+    $script:VerifyCanceled = $false
     $script:VerifyStdoutText = ""
     $script:VerifyStderrText = ""
     $script:LastVerificationDoneEvent = $null
     $script:LastVerificationExitCode = $null
     $script:LastVerificationArguments = @()
+    $script:LastVerificationStartError = ""
     $script:VerifyExitObserved = $false
     $script:VerifyStdoutClosed = $false
+    $script:VerifyStderrClosed = $false
     $script:VerifyFinalized = $false
 }
 
@@ -1131,10 +1232,7 @@ function Clear-ResolvedState {
     $script:Resolved = $null
     $script:LastResolvedInputText = ""
     if (-not $PreserveResolveDiagnostics) {
-        $script:ResolveStdoutText = ""
-        $script:ResolveStderrText = ""
-        $script:LastResolveExitCode = $null
-        $script:LastResolveArguments = @()
+        Clear-ResolveDiagnosticState
         $script:LastDiagnosticError = $null
     }
     Clear-DownloadDiagnosticState
@@ -1191,24 +1289,41 @@ function Apply-ResolvedResult {
     Update-Capacity
 }
 
-function Complete-ResolveProcess {
-    param([int]$ExitCode)
+function Complete-ResolveIfReady {
+    if ($script:ResolveFinalized) { return }
+    if (-not $script:ResolveExitObserved -or -not $script:ResolveStdoutClosed -or -not $script:ResolveStderrClosed) { return }
+
+    $script:ResolveFinalized = $true
+    $process = $script:ResolveProcess
     try {
         $script:ResolveProcess = $null
-        $script:LastResolveExitCode = $ExitCode
-        $inputPath = $script:ResolveInputPath
-        $script:ResolveInputPath = $null
-        if ($inputPath) {
-            Remove-Item -LiteralPath $inputPath -ErrorAction SilentlyContinue
-        }
+        Update-CancelButton
+        Remove-ResolveInputFile
         $progressBar.Style = "Continuous"
         $progressBar.Value = 0
-        if ($ExitCode -eq 0) {
-            Apply-ResolvedResult (Get-Content -Raw -Encoding UTF8 $script:ResolvedJsonPath | ConvertFrom-Json)
+        if ($script:ResolveCanceled) {
+            Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
+            $statusLabel.Text = T "canceled"
+            return
+        }
+        if ($script:LastResolveExitCode -eq 0) {
+            try {
+                if (-not (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
+                    throw "resolve-json completed without writing resolved JSON."
+                }
+                Apply-ResolvedResult (Get-Content -Raw -Encoding UTF8 $script:ResolvedJsonPath | ConvertFrom-Json)
+            }
+            catch {
+                $detail = $_.Exception.Message
+                Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
+                $script:LastDiagnosticError = New-DiagnosticError "resolve" "resolve-json" "resolve_output_invalid" $detail (T "metadataFailed") "gui_resolve_output" $script:LastResolveExitCode
+                $statusLabel.Text = T "error"
+                Show-AppError (T "metadataFailed")
+            }
         }
         else {
             Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
-            Set-DiagnosticErrorFromProcessOutput "resolve" "resolve-json" $ExitCode $script:ResolveStdoutText $script:ResolveStderrText "resolve_failed" (T "metadataFailed")
+            Set-DiagnosticErrorFromProcessOutput "resolve" "resolve-json" $script:LastResolveExitCode $script:ResolveStdoutText $script:ResolveStderrText "resolve_failed" (T "metadataFailed")
             $message = (($script:ResolveStdoutText + $script:ResolveStderrText).Trim())
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = T "metadataFailed"
@@ -1221,6 +1336,7 @@ function Complete-ResolveProcess {
         }
     }
     finally {
+        Dispose-ProcessQuietly $process
         Set-Busy $false
     }
 }
@@ -1654,9 +1770,66 @@ function Set-Busy {
 function Update-CancelButton {
     if ($null -eq $cancelButton) { return }
     $cancelButton.Enabled = (
-        ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) -or
-        ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited)
+        (Test-ProcessRunning $script:ResolveProcess) -or
+        (Test-ProcessRunning $script:DownloadProcess) -or
+        (Test-ProcessRunning $script:VerifyProcess)
     )
+}
+
+function Stop-RunningGuiProcesses {
+    $canceledAny = $false
+    if (Test-ProcessRunning $script:ResolveProcess) {
+        $canceledAny = $true
+        $script:ResolveCanceled = $true
+        Append-Log (T "resolveCancelRequestLog")
+        try {
+            $script:ResolveProcess.Kill()
+        }
+        catch {
+            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
+        }
+    }
+    if (Test-ProcessRunning $script:DownloadProcess) {
+        $canceledAny = $true
+        $script:DownloadCanceled = $true
+        Append-Log (T "cancelRequestLog")
+        try {
+            $script:DownloadProcess.Kill()
+        }
+        catch {
+            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
+        }
+    }
+    if (Test-ProcessRunning $script:VerifyProcess) {
+        $canceledAny = $true
+        $script:VerifyCanceled = $true
+        Append-Log (T "verifyCancelRequestLog")
+        try {
+            $script:VerifyProcess.Kill()
+        }
+        catch {
+            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
+        }
+    }
+    if ($canceledAny) { Update-CancelButton }
+    return $canceledAny
+}
+
+function Stop-RunningGuiProcessesForShutdown {
+    if (Test-ProcessRunning $script:ResolveProcess) {
+        $script:ResolveCanceled = $true
+        try { $script:ResolveProcess.Kill() } catch { }
+    }
+    Remove-ResolveInputFile
+    if (Test-ProcessRunning $script:DownloadProcess) {
+        $script:DownloadCanceled = $true
+        try { $script:DownloadProcess.Kill() } catch { }
+    }
+    if (Test-ProcessRunning $script:VerifyProcess) {
+        $script:VerifyCanceled = $true
+        try { $script:VerifyProcess.Kill() } catch { }
+    }
+    Update-CancelButton
 }
 
 function Handle-DownloadLine {
@@ -1793,12 +1966,14 @@ function Get-DownloadFinalStatusKey {
 
 function Complete-DownloadIfReady {
     if ($script:DownloadFinalized) { return }
-    if (-not $script:DownloadExitObserved -or -not $script:DownloadStdoutClosed) { return }
+    if (-not $script:DownloadExitObserved -or -not $script:DownloadStdoutClosed -or -not $script:DownloadStderrClosed) { return }
 
     $script:DownloadFinalized = $true
+    $process = $script:DownloadProcess
     Set-Busy $false
     $script:DownloadProcess = $null
     Update-CancelButton
+    Dispose-ProcessQuietly $process
     $statusKey = Get-DownloadFinalStatusKey $script:LastDownloadDoneEvent $script:LastDownloadExitCode $script:DownloadCanceled
     $statusLabel.Text = T $statusKey
     if ($statusKey -eq "error") {
@@ -1811,13 +1986,15 @@ function Complete-DownloadIfReady {
 
 function Complete-ManifestVerificationIfReady {
     if ($script:VerifyFinalized) { return }
-    if (-not $script:VerifyExitObserved -or -not $script:VerifyStdoutClosed) { return }
+    if (-not $script:VerifyExitObserved -or -not $script:VerifyStdoutClosed -or -not $script:VerifyStderrClosed) { return }
 
     $script:VerifyFinalized = $true
+    $process = $script:VerifyProcess
     $progressBar.Style = "Continuous"
     Set-Busy $false
     $script:VerifyProcess = $null
     Update-CancelButton
+    Dispose-ProcessQuietly $process
     if ($script:VerifyCanceled) {
         $statusLabel.Text = T "canceled"
         return
@@ -1847,15 +2024,13 @@ function Complete-ManifestVerificationIfReady {
 
 function Start-ResolveProcess {
     param([string]$InputText)
-    if ($null -ne $script:ResolveProcess -and -not $script:ResolveProcess.HasExited) {
+    if (Test-ProcessRunning $script:ResolveProcess) {
         throw (T "resolveAlreadyRunning")
     }
     $script:LastInputText = $InputText
-    $script:ResolveInputPath = New-ResolveInputFile $InputText
-    $script:ResolveStdoutText = ""
-    $script:ResolveStderrText = ""
-    $script:LastResolveExitCode = $null
+    Clear-ResolveDiagnosticState
     $script:LastDiagnosticError = $null
+    $script:ResolveInputPath = New-ResolveInputFile $InputText
     $process = New-Object System.Diagnostics.Process
     try {
         $script:LastResolveArguments = Get-ResolvePythonArguments $script:ResolveInputPath
@@ -1865,16 +2040,18 @@ function Start-ResolveProcess {
             $form,
             ([System.Action[string]]{
                 param($line)
-                $script:ResolveStdoutText += $line + [Environment]::NewLine
+                Add-DiagnosticResolveOutput "stdout" $line
             }),
             ([System.Action[string]]{
                 param($line)
-                $script:ResolveStderrText += $line + [Environment]::NewLine
+                Add-DiagnosticResolveOutput "stderr" $line
             }),
             ([System.Action[int]]{
                 param($code)
                 try {
-                    Complete-ResolveProcess $code
+                    $script:LastResolveExitCode = $code
+                    $script:ResolveExitObserved = $true
+                    Complete-ResolveIfReady
                 }
                 catch {
                     try {
@@ -1885,27 +2062,50 @@ function Start-ResolveProcess {
                     }
                     catch { }
                 }
+            }),
+            ([System.Action]{
+                try {
+                    $script:ResolveStdoutClosed = $true
+                    Complete-ResolveIfReady
+                }
+                catch {
+                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+                }
+            }),
+            ([System.Action]{
+                try {
+                    $script:ResolveStderrClosed = $true
+                    Complete-ResolveIfReady
+                }
+                catch {
+                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+                }
             })
         )
         $script:ResolveBridge.Attach($process)
         $script:ResolveProcess = $process
         [void]$process.Start()
+        Update-CancelButton
         $process.BeginOutputReadLine()
         $process.BeginErrorReadLine()
     }
     catch {
-        if ($script:ResolveInputPath) {
-            Remove-Item -LiteralPath $script:ResolveInputPath -ErrorAction SilentlyContinue
+        if (Test-ProcessRunning $process) {
+            try { $process.Kill() } catch { }
         }
-        $script:ResolveInputPath = $null
+        Remove-ResolveInputFile
         $script:ResolveProcess = $null
+        $script:LastResolveStartError = $_.Exception.Message
+        $script:LastDiagnosticError = New-DiagnosticError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
+        Dispose-ProcessQuietly $process
+        Update-CancelButton
         throw
     }
 }
 
 function Start-ManifestVerificationProcess {
     param([string]$ManifestPath)
-    if ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited) {
+    if (Test-ProcessRunning $script:VerifyProcess) {
         throw (T "verifyManifestAlreadyRunning")
     }
     $script:VerifyCanceled = $false
@@ -1956,21 +2156,36 @@ function Start-ManifestVerificationProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
+        }),
+        ([System.Action]{
+            try {
+                $script:VerifyStderrClosed = $true
+                Complete-ManifestVerificationIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
         })
     )
     $script:VerifyBridge.Attach($process)
     $script:VerifyProcess = $process
     try {
         [void]$process.Start()
+        Update-CancelButton
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
     }
     catch {
+        if (Test-ProcessRunning $process) {
+            try { $process.Kill() } catch { }
+        }
         $script:VerifyProcess = $null
+        $script:LastVerificationStartError = $_.Exception.Message
+        $script:LastDiagnosticError = New-DiagnosticError "verification_process_start" "verify-manifest-json" "process_start_failed" $script:LastVerificationStartError $script:LastVerificationStartError "process_start" $null
+        Dispose-ProcessQuietly $process
         Update-CancelButton
         throw
     }
-    Update-CancelButton
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
 }
 
 function Start-DownloadProcess {
@@ -2038,23 +2253,36 @@ function Start-DownloadProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
+        }),
+        ([System.Action]{
+            try {
+                $script:DownloadStderrClosed = $true
+                Complete-DownloadIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
         })
     )
     $script:DownloadBridge.Attach($process)
+    $script:DownloadProcess = $process
     try {
         [void]$process.Start()
+        Update-CancelButton
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
     }
     catch {
+        if (Test-ProcessRunning $process) {
+            try { $process.Kill() } catch { }
+        }
         $script:DownloadProcess = $null
         $script:LastDownloadStartError = $_.Exception.Message
         $script:LastDiagnosticError = New-DiagnosticError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
+        Dispose-ProcessQuietly $process
         Update-CancelButton
         throw
     }
-    $script:DownloadProcess = $process
-    Update-CancelButton
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
 }
 
 function New-ResolveProcessStartInfo {
@@ -2186,13 +2414,45 @@ function Invoke-VerifyManifestJsonForSelfTest {
 
 function ConvertTo-ProcessArgument {
     param([string]$Value)
+    if ($null -eq $Value) { $Value = "" }
     if ($Value -eq "") {
         return '""'
     }
     if ($Value -notmatch '[\s"]') {
         return $Value
     }
-    return '"' + ($Value -replace '"', '\"') + '"'
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    $backslashChar = [char]92
+    $quoteChar = [char]34
+    foreach ($char in $Value.ToCharArray()) {
+        if ($char -eq $backslashChar) {
+            $backslashes += 1
+            continue
+        }
+        if ($char -eq $quoteChar) {
+            if ($backslashes -gt 0) {
+                [void]$builder.Append(('\' * (($backslashes * 2) + 1)))
+            }
+            else {
+                [void]$builder.Append('\')
+            }
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append(('\' * $backslashes))
+            $backslashes = 0
+        }
+        [void]$builder.Append($char)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append(('\' * ($backslashes * 2)))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
 }
 
 function Assert-Equal {
@@ -2204,6 +2464,31 @@ function Assert-Equal {
     if ($Actual -ne $Expected) {
         throw "$Name failed. expected=[$Expected] actual=[$Actual]"
     }
+}
+
+function Assert-SequenceEqual {
+    param(
+        [object[]]$Actual,
+        [object[]]$Expected,
+        [string]$Name
+    )
+    Assert-Equal $Actual.Count $Expected.Count "$Name count"
+    for ($index = 0; $index -lt $Expected.Count; $index++) {
+        Assert-Equal ([string]$Actual[$index]) ([string]$Expected[$index]) "$Name item $index"
+    }
+}
+
+function Assert-PythonArgumentRoundTrip {
+    param(
+        [string[]]$Values,
+        [string]$Name
+    )
+    $result = Invoke-PythonCli -Arguments (@("-c", "import json, sys; print(json.dumps(sys.argv[1:], ensure_ascii=False))") + $Values)
+    Assert-Equal $result.ExitCode 0 "$Name exit code"
+    $parsed = ConvertFrom-Json -InputObject $result.Stdout.Trim()
+    $actual = foreach ($item in $parsed) { [string]$item }
+    $actual = @($actual)
+    Assert-SequenceEqual $actual $Values $Name
 }
 
 function Assert-Contains {
@@ -2742,44 +3027,11 @@ function New-MainForm {
     $diagnosticsButton.Add_Click({ Show-DiagnosticsSaveDialog })
 
     $cancelButton.Add_Click({
-        $canceledAny = $false
-        if ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) {
-            $canceledAny = $true
-            $script:DownloadCanceled = $true
-            Append-Log (T "cancelRequestLog")
-            try {
-                $script:DownloadProcess.Kill()
-            }
-            catch {
-                Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
-            }
-        }
-        if ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited) {
-            $canceledAny = $true
-            $script:VerifyCanceled = $true
-            Append-Log (T "verifyCancelRequestLog")
-            try {
-                $script:VerifyProcess.Kill()
-            }
-            catch {
-                Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
-            }
-        }
-        if ($canceledAny) { Update-CancelButton }
+        Stop-RunningGuiProcesses | Out-Null
     })
 
     $formLocal.add_FormClosing({
-        if ($null -ne $script:ResolveProcess -and -not $script:ResolveProcess.HasExited) {
-            try { $script:ResolveProcess.Kill() } catch { }
-        }
-        if ($null -ne $script:DownloadProcess -and -not $script:DownloadProcess.HasExited) {
-            $script:DownloadCanceled = $true
-            try { $script:DownloadProcess.Kill() } catch { }
-        }
-        if ($null -ne $script:VerifyProcess -and -not $script:VerifyProcess.HasExited) {
-            $script:VerifyCanceled = $true
-            try { $script:VerifyProcess.Kill() } catch { }
-        }
+        Stop-RunningGuiProcessesForShutdown
     })
 
     $script:form = $formLocal
@@ -2846,6 +3098,7 @@ if ($SelfTest) {
     Assert-Equal ($suppRuntimeNames -contains "processed.txt.existing") $true "preflight runtime includes supplementary existing path"
     Assert-Equal ($suppRuntimeNames -contains "processed.txt.existing.2") $true "preflight runtime includes supplementary numbered existing path"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
+    Assert-PythonArgumentRoundTrip @("", 'C:\tmp\geo getter\a.txt', 'C:\tmp\日本語 path\manifest.tsv', 'C:\tmp\space path\', 'quote"name', 'C:\tmp\backslash\"quote') "process argument round trip"
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80
     $script:DownloadStdoutText = ""
@@ -3145,6 +3398,155 @@ if ($SelfTest) {
     Update-ResultTitles
     Update-DatasetInfo
     Update-Capacity
+
+    Clear-ResolvedState -DeleteResolvedJson
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $resolveSuccessInput = New-ResolveInputFile "SELFTEST"
+    $script:ResolveInputPath = $resolveSuccessInput
+    $script:LastResolveExitCode = 0
+    $script:ResolveCanceled = $false
+    $script:ResolveExitObserved = $true
+    $script:ResolveStdoutClosed = $false
+    $script:ResolveStderrClosed = $false
+    $script:ResolveFinalized = $false
+    $statusLabel.Text = T "fetching"
+    Set-Busy $true
+    Complete-ResolveIfReady
+    Assert-Equal $statusLabel.Text (T "fetching") "resolve finalizer waits for stdout close after exit"
+    $script:ResolveStdoutClosed = $true
+    Complete-ResolveIfReady
+    Assert-Equal $statusLabel.Text (T "fetching") "resolve finalizer waits for stderr close after stdout close"
+    $script:ResolveStderrClosed = $true
+    Complete-ResolveIfReady
+    Assert-Equal $statusLabel.Text (T "complete") "resolve finalizer applies result after stream close"
+    Assert-Equal (Test-Path -LiteralPath $resolveSuccessInput) $false "resolve finalizer removes temp input"
+
+    Clear-ResolvedState -DeleteResolvedJson
+    $script:ResolveStderrText = '{"event":"error","command":"resolve-json","code":"invalid_input","detail":"late stderr","message":"late stderr"}'
+    $script:LastResolveExitCode = 1
+    $script:ResolveCanceled = $false
+    $script:ResolveExitObserved = $true
+    $script:ResolveStdoutClosed = $true
+    $script:ResolveStderrClosed = $false
+    $script:ResolveFinalized = $false
+    $script:LastDiagnosticError = $null
+    $statusLabel.Text = T "fetching"
+    Set-Busy $true
+    Complete-ResolveIfReady
+    Assert-Equal $script:LastDiagnosticError $null "resolve finalizer does not diagnose before stderr close"
+    $script:ResolveStderrClosed = $true
+    Complete-ResolveIfReady
+    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "resolve finalizer parses stderr error after close"
+    Assert-Equal $statusLabel.Text (T "error") "resolve finalizer marks failed resolve"
+
+    $resolveCancelInput = New-ResolveInputFile "SELFTEST"
+    $script:ResolveInputPath = $resolveCancelInput
+    $script:LastResolveExitCode = 1
+    $script:ResolveCanceled = $true
+    $script:ResolveExitObserved = $true
+    $script:ResolveStdoutClosed = $true
+    $script:ResolveStderrClosed = $true
+    $script:ResolveFinalized = $false
+    $statusLabel.Text = T "fetching"
+    Set-Busy $true
+    Complete-ResolveIfReady
+    Assert-Equal $statusLabel.Text (T "canceled") "resolve finalizer reports cancellation"
+    Assert-Equal (Test-Path -LiteralPath $resolveCancelInput) $false "resolve cancel removes temp input"
+    Assert-Equal $fetchButton.Enabled $true "resolve cancel clears busy state"
+
+    Clear-ResolvedState -DeleteResolvedJson
+    [void]$form.Handle
+    Set-Busy $true
+    $statusLabel.Text = T "fetching"
+    $resolveAsyncInputPath = $null
+    try {
+        Start-ResolveProcess ""
+        $resolveAsyncInputPath = $script:ResolveInputPath
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while ($null -ne $script:ResolveProcess -and [DateTime]::UtcNow -lt $deadline) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 50
+        }
+        for ($i = 0; $i -lt 20; $i++) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    finally {
+        if (Test-ProcessRunning $script:ResolveProcess) {
+            try { $script:ResolveProcess.Kill() } catch { }
+            try { [void]$script:ResolveProcess.WaitForExit(5000) } catch { }
+        }
+    }
+    Assert-Equal $script:ResolveProcess $null "async resolve process finished after invalid input"
+    Assert-Equal $script:ResolveFinalized $true "async resolve finalizer ran"
+    Assert-Equal $script:ResolveStdoutClosed $true "async resolve stdout closed"
+    Assert-Equal $script:ResolveStderrClosed $true "async resolve stderr closed"
+    Assert-Equal $statusLabel.Text (T "error") "async resolve invalid input status"
+    Assert-Equal $script:LastDiagnosticError.phase "resolve" "async resolve error records phase"
+    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "async resolve error records code"
+    Assert-Equal $script:ResolveInputPath $null "async resolve clears temp input path"
+    Assert-Equal (Test-Path -LiteralPath $resolveAsyncInputPath) $false "async resolve removes temp input"
+    Assert-Equal $fetchButton.Enabled $true "async resolve failure clears busy state"
+
+    $cancelProbe = New-Object System.Diagnostics.Process
+    $cancelProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
+    try {
+        [void]$cancelProbe.Start()
+        $script:ResolveProcess = $cancelProbe
+        $script:ResolveCanceled = $false
+        Update-CancelButton
+        Assert-Equal $cancelButton.Enabled $true "cancel button enabled for resolve process"
+        Stop-RunningGuiProcesses | Out-Null
+        [void]$cancelProbe.WaitForExit(5000)
+        Assert-Equal $cancelProbe.HasExited $true "cancel button kills resolve process"
+        Assert-Equal $script:ResolveCanceled $true "cancel button marks resolve canceled"
+    }
+    finally {
+        if (Test-ProcessRunning $cancelProbe) {
+            try { $cancelProbe.Kill() } catch { }
+            try { [void]$cancelProbe.WaitForExit(5000) } catch { }
+        }
+        Dispose-ProcessQuietly $cancelProbe
+        $script:ResolveProcess = $null
+        Update-CancelButton
+    }
+
+    $shutdownProbe = New-Object System.Diagnostics.Process
+    $shutdownProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
+    $shutdownInput = New-ResolveInputFile "SELFTEST"
+    try {
+        [void]$shutdownProbe.Start()
+        $script:ResolveProcess = $shutdownProbe
+        $script:ResolveInputPath = $shutdownInput
+        $script:ResolveCanceled = $false
+        Stop-RunningGuiProcessesForShutdown
+        [void]$shutdownProbe.WaitForExit(5000)
+        Assert-Equal $shutdownProbe.HasExited $true "shutdown kills resolve process"
+        Assert-Equal $script:ResolveCanceled $true "shutdown marks resolve canceled"
+        Assert-Equal $script:ResolveInputPath $null "shutdown clears resolve temp input path"
+        Assert-Equal (Test-Path -LiteralPath $shutdownInput) $false "shutdown removes resolve temp input"
+    }
+    finally {
+        if (Test-ProcessRunning $shutdownProbe) {
+            try { $shutdownProbe.Kill() } catch { }
+            try { [void]$shutdownProbe.WaitForExit(5000) } catch { }
+        }
+        Dispose-ProcessQuietly $shutdownProbe
+        $script:ResolveProcess = $null
+        Remove-ResolveInputFile
+        Update-CancelButton
+    }
+
+    Clear-ResolvedState -DeleteResolvedJson
+    $script:Resolved = $resolvedFixture
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($script:Resolved | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
+    Add-FastqRowsFromResolved
+    Add-SupplementaryRowsFromResolved
+    Update-ResultTitles
+    Update-DatasetInfo
+    Update-Capacity
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress label remains process state"
     $script:DownloadExitObserved = $false
@@ -3161,12 +3563,19 @@ if ($SelfTest) {
     Assert-Equal (Get-DownloadFinalStatusKey $null 0 $false) "error" "final state missing done event with zero exit"
     Assert-Equal (Get-DownloadFinalStatusKey $null 1 $false) "error" "final state missing done event with nonzero exit"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified") }) 1 $true) "canceled" "final state canceled wins"
+    $script:DownloadCanceled = $true
+    Clear-DownloadDiagnosticState
+    Assert-Equal $script:DownloadCanceled $false "download diagnostics clear resets canceled flag"
+    $script:VerifyCanceled = $true
+    Clear-VerificationDiagnosticState
+    Assert-Equal $script:VerifyCanceled $false "verification diagnostics clear resets canceled flag"
 
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = 1
     $script:DownloadCanceled = $false
     $script:DownloadExitObserved = $true
     $script:DownloadStdoutClosed = $false
+    $script:DownloadStderrClosed = $false
     $script:DownloadFinalized = $false
     $statusLabel.Text = T "downloading"
     Complete-DownloadIfReady
@@ -3176,6 +3585,9 @@ if ($SelfTest) {
     Assert-Equal $statusLabel.Text (T "downloading") "download finalizer still waits for stdout close after done"
     $script:DownloadStdoutClosed = $true
     Complete-DownloadIfReady
+    Assert-Equal $statusLabel.Text (T "downloading") "download finalizer waits for stderr close after stdout close"
+    $script:DownloadStderrClosed = $true
+    Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "completeUnverified") "download finalizer handles exit before done processing"
 
     $script:LastVerificationDoneEvent = $null
@@ -3183,6 +3595,7 @@ if ($SelfTest) {
     $script:VerifyCanceled = $false
     $script:VerifyExitObserved = $true
     $script:VerifyStdoutClosed = $false
+    $script:VerifyStderrClosed = $false
     $script:VerifyFinalized = $false
     $statusLabel.Text = T "verifyingManifest"
     Complete-ManifestVerificationIfReady
@@ -3191,6 +3604,9 @@ if ($SelfTest) {
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer still waits for stdout close after done"
     $script:VerifyStdoutClosed = $true
+    Complete-ManifestVerificationIfReady
+    Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer waits for stderr close after stdout close"
+    $script:VerifyStderrClosed = $true
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "complete") "verification finalizer handles exit before done processing"
 
@@ -3317,6 +3733,7 @@ if ($SelfTest) {
     $script:DownloadCanceled = $false
     $script:DownloadExitObserved = $true
     $script:DownloadStdoutClosed = $true
+    $script:DownloadStderrClosed = $true
     $script:DownloadFinalized = $false
     $script:DownloadStdoutText = ""
     $script:DownloadStderrText = '{"event":"error","command":"selected-download-json","code":"invalid_json","detail":"fixture","message":"fixture"}'
@@ -3389,6 +3806,38 @@ if ($SelfTest) {
     $inputBox.Text = "SELFTEST"
 
     $originalPythonExe = $PythonExe
+    $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
+    $threwResolveStart = $false
+    $resolveStartInputPath = $null
+    $resolveFailureMarker = "SELFTEST_RESOLVE_START_FAILURE_" + [System.Guid]::NewGuid().ToString("N")
+    $resolveFailureStartedAt = [DateTime]::UtcNow.AddSeconds(-1)
+    try {
+        Start-ResolveProcess $resolveFailureMarker
+        $resolveStartInputPath = $script:ResolveInputPath
+    }
+    catch {
+        $threwResolveStart = $true
+        $resolveStartInputPath = $script:ResolveInputPath
+    }
+    finally {
+        $PythonExe = $originalPythonExe
+    }
+    Assert-Equal $threwResolveStart $true "resolve start failure throws"
+    Assert-Equal $script:ResolveProcess $null "resolve start failure clears process"
+    Assert-Equal $script:ResolveInputPath $null "resolve start failure clears temp input path"
+    Assert-Equal $resolveStartInputPath $null "resolve start failure removes temp input path before returning"
+    $leakedResolveInputs = @(
+        Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "geo_getter_input_*.txt" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -ge $resolveFailureStartedAt } |
+        Where-Object {
+            try { (Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName) -eq $resolveFailureMarker }
+            catch { $false }
+        }
+    )
+    Assert-Equal $leakedResolveInputs.Count 0 "resolve start failure removes temp input file"
+    Assert-Equal $script:LastDiagnosticError.phase "resolve_process_start" "resolve start failure records phase"
+    Assert-Equal $script:LastDiagnosticError.code "process_start_failed" "resolve start failure records code"
+
     $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
     $threwVerifyStart = $false
     try {
