@@ -222,10 +222,11 @@ $script:Translations = @{
         browseButton = "参照..."
         datasetTitleLabel = "GEO情報"
         capacityInitial = "必要容量: - / 空き容量: -"
-        capacityText = "必要容量(FASTQ): {0} / 空き容量: {1}{2}"
+        capacityText = "必要容量(FASTQ): {0} / 空き容量: {1}"
         capacityUnknown = "必要容量(FASTQ): {0} / 空き容量: 取得不可"
-        supplementarySuffix = " / 補足ファイル: {0} 件（サイズ不明）"
-        selectionSummary = "選択内容: FASTQ {0} 件 / {1}、GEO supplementary {2} 件、保存先: {3}"
+        selectionSummary = "選択内容: FASTQ {0} 件 / {1}、GEO supplementary/processed {2}、保存先: {3}"
+        supplementaryNoneSummary = "{0} 件"
+        supplementarySelectedSummary = "{0} 件（サイズ不明・MD5対象外）"
         fastqTitle = "raw FASTQ（ENA direct FASTQ）: {0}件"
         supplementaryTitle = "GEO supplementary / processed file（raw FASTQ以外）: {0}件"
         downloadButton = "選択ファイルをダウンロード"
@@ -271,6 +272,8 @@ $script:Translations = @{
             ""
             "GEO supplementary / processed file:"
             "GEOページに登録されている補足ファイルやprocessed fileです。raw FASTQとは別の保存対象です。"
+            "推定種別はファイル名や拡張子からの目安です。ファイル内容を解析して判定するものではありません。"
+            "FASTQ風 supplementary も raw FASTQ とは別扱いで、FASTQ manifest やMD5検証の対象にはなりません。"
             ""
             "FASTQ表のGEO Sampleとサンプル名は、GEO由来のサンプル情報を確認するための列です。件数は各表の見出しに表示されます。"
         ) -join [Environment]::NewLine)
@@ -323,7 +326,23 @@ $script:Translations = @{
         colMd5 = "MD5"
         colFastqUrl = "FASTQ URL"
         colScope = "区分"
+        colOrigin = "由来"
+        colExtension = "拡張子"
+        colEstimatedType = "推定種別"
+        colVerification = "検証"
         colGeoUrl = "GEO URL"
+        suppOriginSeries = "Series: {0}"
+        suppOriginSample = "Sample: {0}"
+        suppOriginUnknown = "GEO: {0}"
+        suppTypeGeoRawArchive = "GEO RAW archive"
+        suppTypeFastqLike = "FASTQ風 supplementary"
+        suppTypeCountMatrix = "count matrix"
+        suppTypeGenomeTrack = "genome track"
+        suppTypeTableText = "table/text"
+        suppTypeArchive = "archive"
+        suppTypeOther = "その他"
+        suppSizeUnknown = "不明"
+        suppVerificationNotApplicable = "MD5対象外"
         metadataFailed = "metadata取得に失敗しました。"
         searchRequiredBeforeDownload = "現在の入力に対する検索結果がありません。もう一度ファイルを検索してください。"
         inputChangedAfterResolve = "入力内容が変更されています。現在の入力で再度ファイルを検索してください。"
@@ -391,10 +410,11 @@ $script:Translations = @{
         browseButton = "Browse"
         datasetTitleLabel = "GEO info"
         capacityInitial = "Required: - / Free: -"
-        capacityText = "Required (FASTQ): {0} / Free: {1}{2}"
+        capacityText = "Required (FASTQ): {0} / Free: {1}"
         capacityUnknown = "Required (FASTQ): {0} / Free: unavailable"
-        supplementarySuffix = " / supplementary files: {0} selected (size unknown)"
-        selectionSummary = "Selection: FASTQ {0} files / {1}, GEO supplementary {2} files, output: {3}"
+        selectionSummary = "Selection: FASTQ {0} files / {1}, GEO supplementary/processed {2}, output: {3}"
+        supplementaryNoneSummary = "{0} files"
+        supplementarySelectedSummary = "{0} files (size unknown, MD5 N/A)"
         fastqTitle = "raw FASTQ (ENA direct FASTQ): {0} files"
         supplementaryTitle = "GEO supplementary / processed files (not raw FASTQ): {0} files"
         downloadButton = "Download selected files"
@@ -440,6 +460,8 @@ $script:Translations = @{
             ""
             "GEO supplementary / processed files:"
             "Supplementary or processed files registered on the GEO page. These are saved separately from raw FASTQ files."
+            "Estimated type is a filename and extension based hint. GEOGetter does not inspect file contents to classify it."
+            "FASTQ-like supplementary files are still separate from raw FASTQ and are not included in the FASTQ manifest or MD5 verification."
             ""
             "The GEO Sample and Sample title columns in the FASTQ table help confirm the source sample. Counts are shown in each table title."
         ) -join [Environment]::NewLine)
@@ -492,7 +514,23 @@ $script:Translations = @{
         colMd5 = "MD5"
         colFastqUrl = "FASTQ URL"
         colScope = "Type"
+        colOrigin = "Origin"
+        colExtension = "Extension"
+        colEstimatedType = "Estimated type"
+        colVerification = "Verification"
         colGeoUrl = "GEO URL"
+        suppOriginSeries = "Series: {0}"
+        suppOriginSample = "Sample: {0}"
+        suppOriginUnknown = "GEO: {0}"
+        suppTypeGeoRawArchive = "GEO RAW archive"
+        suppTypeFastqLike = "FASTQ-like supplementary"
+        suppTypeCountMatrix = "Count matrix"
+        suppTypeGenomeTrack = "Genome track"
+        suppTypeTableText = "Table/text"
+        suppTypeArchive = "Archive"
+        suppTypeOther = "Other"
+        suppSizeUnknown = "Unknown"
+        suppVerificationNotApplicable = "MD5 N/A"
         metadataFailed = "Metadata retrieval failed."
         searchRequiredBeforeDownload = "No search result is available for the current input. Search files again."
         inputChangedAfterResolve = "The input has changed. Search files again for the current input."
@@ -704,6 +742,7 @@ function Update-StaticTexts {
     if ($null -ne $capacityLabel) { Update-Capacity }
     Update-SelectionSummary
     Update-GridHeaders
+    Refresh-SupplementaryDisplayRows
     Update-DatasetInfo
 }
 
@@ -722,7 +761,11 @@ function Update-GridHeaders {
     }
     if ($suppGrid -and $suppGrid.Columns.Count -gt 0) {
         $suppGrid.Columns["supp_selected"].HeaderText = T "colSelect"
-        $suppGrid.Columns["supp_scope"].HeaderText = T "colScope"
+        $suppGrid.Columns["supp_origin"].HeaderText = T "colOrigin"
+        $suppGrid.Columns["supp_extension"].HeaderText = T "colExtension"
+        $suppGrid.Columns["supp_type"].HeaderText = T "colEstimatedType"
+        $suppGrid.Columns["supp_size"].HeaderText = T "colSize"
+        $suppGrid.Columns["supp_verification"].HeaderText = T "colVerification"
         $suppGrid.Columns["supp_name"].HeaderText = T "colFileName"
         $suppGrid.Columns["supp_url"].HeaderText = T "colGeoUrl"
     }
@@ -1466,9 +1509,7 @@ function Update-Capacity {
     $total = Get-SelectedTotalBytes
     $freeBytes = if ($outputBox) { Get-FreeSpaceForPathOrNull ([string]$outputBox.Text) } else { $null }
     if ($null -ne $freeBytes) {
-        $suppCount = Get-SelectedSuppCount
-        $suffix = if ($suppCount -gt 0) { (T "supplementarySuffix") -f $suppCount } else { "" }
-        $capacityLabel.Text = (T "capacityText") -f (Format-Bytes $total), (Format-Bytes ([Int64]$freeBytes)), $suffix
+        $capacityLabel.Text = (T "capacityText") -f (Format-Bytes $total), (Format-Bytes ([Int64]$freeBytes))
     }
     else {
         $capacityLabel.Text = (T "capacityUnknown") -f (Format-Bytes $total)
@@ -1476,12 +1517,115 @@ function Update-Capacity {
     Update-SelectionSummary
 }
 
+function Get-ObjectPropertyString {
+    param(
+        $Object,
+        [string]$Name
+    )
+    if ($null -eq $Object) { return "" }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) { return "" }
+    return [string]$property.Value
+}
+
+function Get-SupplementarySelectionSummary {
+    param([int]$Count)
+    if ($Count -gt 0) {
+        return (T "supplementarySelectedSummary") -f $Count
+    }
+    return (T "supplementaryNoneSummary") -f $Count
+}
+
+function Get-SupplementaryOriginDisplay {
+    param($Item)
+    $level = (Get-ObjectPropertyString $Item "origin_level").ToLowerInvariant()
+    $accession = Get-ObjectPropertyString $Item "origin_accession"
+    if ([string]::IsNullOrWhiteSpace($accession)) {
+        $accession = Get-ObjectPropertyString $Item "source_accession"
+    }
+    if ([string]::IsNullOrWhiteSpace($accession)) {
+        $accession = "-"
+    }
+    if ($level -eq "series") { return (T "suppOriginSeries") -f $accession }
+    if ($level -eq "sample") { return (T "suppOriginSample") -f $accession }
+    return (T "suppOriginUnknown") -f $accession
+}
+
+function Get-SupplementaryExtensionDisplay {
+    param($Item)
+    $extension = Get-ObjectPropertyString $Item "extension"
+    if ([string]::IsNullOrWhiteSpace($extension)) { return "-" }
+    return $extension
+}
+
+function Get-SupplementaryTypeDisplay {
+    param($Item)
+    $estimatedType = (Get-ObjectPropertyString $Item "estimated_type").ToLowerInvariant()
+    if ($estimatedType -eq "geo_raw_archive") { return T "suppTypeGeoRawArchive" }
+    if ($estimatedType -eq "fastq_like_supplementary") { return T "suppTypeFastqLike" }
+    if ($estimatedType -eq "count_matrix") { return T "suppTypeCountMatrix" }
+    if ($estimatedType -eq "genome_track") { return T "suppTypeGenomeTrack" }
+    if ($estimatedType -eq "table_text") { return T "suppTypeTableText" }
+    if ($estimatedType -eq "archive") { return T "suppTypeArchive" }
+    return T "suppTypeOther"
+}
+
+function Get-SupplementarySizeDisplay {
+    param($Item)
+    $sizeStatus = (Get-ObjectPropertyString $Item "size_status").ToLowerInvariant()
+    $sizeBytes = Get-ObjectPropertyString $Item "size_bytes"
+    if ($sizeStatus -ne "unknown" -and -not [string]::IsNullOrWhiteSpace($sizeBytes)) {
+        try {
+            $bytes = [Int64]$sizeBytes
+            if ($bytes -gt 0) { return Format-Bytes $bytes }
+        }
+        catch {
+        }
+    }
+    return T "suppSizeUnknown"
+}
+
+function Get-SupplementaryVerificationDisplay {
+    param($Item)
+    $verificationStatus = (Get-ObjectPropertyString $Item "verification_status").ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($verificationStatus) -or $verificationStatus -eq "not_applicable") {
+        return T "suppVerificationNotApplicable"
+    }
+    return $verificationStatus
+}
+
+function Update-SupplementaryRowDisplay {
+    param(
+        [System.Windows.Forms.DataGridViewRow]$Row,
+        $Item
+    )
+    $Row.Cells["supp_origin"].Value = Get-SupplementaryOriginDisplay $Item
+    $Row.Cells["supp_extension"].Value = Get-SupplementaryExtensionDisplay $Item
+    $Row.Cells["supp_type"].Value = Get-SupplementaryTypeDisplay $Item
+    $Row.Cells["supp_size"].Value = Get-SupplementarySizeDisplay $Item
+    $Row.Cells["supp_verification"].Value = Get-SupplementaryVerificationDisplay $Item
+    $Row.Cells["supp_name"].Value = $Item.name
+    $Row.Cells["supp_url"].Value = $Item.url
+}
+
+function Refresh-SupplementaryDisplayRows {
+    if ($null -eq $suppGrid -or $null -eq $script:Resolved) { return }
+    $items = @($script:Resolved.supplementary_files)
+    foreach ($row in $suppGrid.Rows) {
+        if ($row.IsNewRow -or $null -eq $row.Tag) { continue }
+        $index = [int]$row.Tag
+        if ($index -lt 0 -or $index -ge $items.Count) { continue }
+        Update-SupplementaryRowDisplay $row $items[$index]
+    }
+}
+
 function Update-SelectionSummary {
     if ($null -eq $selectionSummaryLabel) { return }
     $fastqCount = Get-SelectedFastqCount
     $suppCount = Get-SelectedSuppCount
+    $suppSummary = Get-SupplementarySelectionSummary $suppCount
     $output = if ($outputBox) { [string]$outputBox.Text } else { "" }
-    $selectionSummaryLabel.Text = (T "selectionSummary") -f $fastqCount, (Format-Bytes (Get-SelectedTotalBytes)), $suppCount, $output
+    $selectionSummaryLabel.Text = (T "selectionSummary") -f $fastqCount, (Format-Bytes (Get-SelectedTotalBytes)), $suppSummary, $output
 }
 
 function ConvertTo-GeoGetterSafeName {
@@ -1815,7 +1959,17 @@ function Add-SupplementaryRowsFromResolved {
     $items = @($script:Resolved.supplementary_files)
     for ($i = 0; $i -lt $items.Count; $i++) {
         $item = $items[$i]
-        $rowIndex = $suppGrid.Rows.Add($false, $item.scope, $item.name, $item.url, $i)
+        $rowIndex = $suppGrid.Rows.Add(
+            $false,
+            (Get-SupplementaryOriginDisplay $item),
+            (Get-SupplementaryExtensionDisplay $item),
+            (Get-SupplementaryTypeDisplay $item),
+            (Get-SupplementarySizeDisplay $item),
+            (Get-SupplementaryVerificationDisplay $item),
+            $item.name,
+            $item.url,
+            $i
+        )
         $suppGrid.Rows[$rowIndex].Tag = $i
     }
     if ($suppGrid.Rows.Count -gt 0) {
@@ -2638,6 +2792,22 @@ function Compare-GridString {
     return [string]::Compare(([string]$Left), ([string]$Right), $true)
 }
 
+function Set-ResultSplitDistance {
+    if ($null -eq $mainSplit -or $mainSplit.Height -le 0) { return }
+    $splitterWidth = [Math]::Max(1, [int]$mainSplit.SplitterWidth)
+    $minFastqPanelHeight = 150
+    $minSupplementaryPanelHeight = 170
+    $targetFastqPanelHeight = 180
+    $maxDistance = [int]$mainSplit.Height - $splitterWidth - [int]$mainSplit.Panel2MinSize
+    if ($maxDistance -lt [int]$mainSplit.Panel1MinSize) { return }
+    $distance = [Math]::Min($targetFastqPanelHeight, ([int]$mainSplit.Height - $splitterWidth - $minSupplementaryPanelHeight))
+    $distance = [Math]::Max($minFastqPanelHeight, $distance)
+    $distance = [Math]::Min($distance, $maxDistance)
+    if ($distance -ge [int]$mainSplit.Panel1MinSize -and $mainSplit.SplitterDistance -ne $distance) {
+        $mainSplit.SplitterDistance = $distance
+    }
+}
+
 function Save-FormScreenshot {
     param([string]$Path)
     $fullPath = [System.IO.Path]::GetFullPath($Path)
@@ -2674,7 +2844,7 @@ function New-MainForm {
     [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 26)))
     [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 138)))
     [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 160)))
+    [void]$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 130)))
     $formLocal.Controls.Add($rootLayout)
 
     $script:menuStrip = New-Object System.Windows.Forms.MenuStrip
@@ -2805,7 +2975,8 @@ function New-MainForm {
     $split = New-Object System.Windows.Forms.SplitContainer
     $split.Dock = "Fill"
     $split.Orientation = "Horizontal"
-    $split.SplitterDistance = 380
+    $split.SplitterDistance = 180
+    $script:mainSplit = $split
     $rootLayout.Controls.Add($split, 0, 2)
 
     $fastqPanel = New-Object System.Windows.Forms.TableLayoutPanel
@@ -2956,9 +3127,13 @@ function New-MainForm {
     $suppSelectCol.SortMode = "NotSortable"
     [void]$suppGrid.Columns.Add($suppSelectCol)
     foreach ($col in @(
-        @("supp_scope", "Type", 230),
-        @("supp_name", "File name", 310),
-        @("supp_url", "GEO URL", 560)
+        @("supp_origin", "Origin", 130),
+        @("supp_extension", "Extension", 75),
+        @("supp_type", "Estimated type", 150),
+        @("supp_size", "Size", 80),
+        @("supp_verification", "Verification", 100),
+        @("supp_name", "File name", 330),
+        @("supp_url", "GEO URL", 240)
     )) {
         $textCol = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
         $textCol.Name = $col[0]
@@ -2976,7 +3151,8 @@ function New-MainForm {
 
     $bottom = New-Object System.Windows.Forms.Panel
     $bottom.Dock = "Fill"
-    $bottom.Height = 160
+    $bottom.Height = 130
+    $script:bottomPanel = $bottom
     $rootLayout.Controls.Add($bottom, 0, 3)
 
     $script:downloadButton = New-Object System.Windows.Forms.Button
@@ -3013,14 +3189,14 @@ function New-MainForm {
 
     $script:selectionSummaryLabel = New-Object System.Windows.Forms.Label
     $selectionSummaryLabel.Location = New-Object System.Drawing.Point(10, 43)
-    $selectionSummaryLabel.Size = New-Object System.Drawing.Size(1120, 20)
+    $selectionSummaryLabel.Size = New-Object System.Drawing.Size(1120, 34)
     $selectionSummaryLabel.Anchor = $anchorTopLeftRight
     $selectionSummaryLabel.AutoEllipsis = $true
     $bottom.Controls.Add($selectionSummaryLabel)
 
     $script:logBox = New-Object System.Windows.Forms.TextBox
-    $logBox.Location = New-Object System.Drawing.Point(10, 66)
-    $logBox.Size = New-Object System.Drawing.Size(1120, 84)
+    $logBox.Location = New-Object System.Drawing.Point(10, 80)
+    $logBox.Size = New-Object System.Drawing.Size(1120, 40)
     $logBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $logBox.Multiline = $true
     $logBox.ScrollBars = "Vertical"
@@ -3144,6 +3320,8 @@ function New-MainForm {
     $formLocal.add_FormClosing({
         Stop-RunningGuiProcessesForShutdown
     })
+    $formLocal.add_Shown({ Set-ResultSplitDistance })
+    $formLocal.add_SizeChanged({ Set-ResultSplitDistance })
 
     $script:form = $formLocal
     Update-StaticTexts
@@ -3167,6 +3345,7 @@ if ($SelfTest) {
     Assert-Equal $browseButton.Text "Browse" "English browse button"
     Assert-Equal $diagnosticsButton.Text "Save diagnostics" "English diagnostics button"
     Assert-Equal $fastqGrid.Columns["geo_title"].HeaderText "Sample title" "English FASTQ header"
+    Assert-Equal $suppGrid.Columns["supp_type"].HeaderText "Estimated type" "English supplementary type header"
     Set-Language "ja"
     Assert-Equal $helpOpenMenuItem.Text "ヘルプを開く" "Japanese open help menu"
     Assert-Equal $toolsMenuItem.Text "ツール" "Japanese tools menu"
@@ -3176,11 +3355,17 @@ if ($SelfTest) {
     Assert-Equal $browseButton.Text "参照..." "Japanese browse button"
     Assert-Equal $diagnosticsButton.Text "診断情報を保存" "Japanese diagnostics button"
     Assert-Equal $suppTitle.Text "GEO supplementary / processed file（raw FASTQ以外）: 0件" "Japanese supplementary title"
+    Assert-Equal $suppGrid.Columns["supp_origin"].HeaderText "由来" "Japanese supplementary origin header"
+    Assert-Equal $suppGrid.Columns["supp_extension"].HeaderText "拡張子" "Japanese supplementary extension header"
+    Assert-Equal $suppGrid.Columns["supp_type"].HeaderText "推定種別" "Japanese supplementary type header"
+    Assert-Equal $suppGrid.Columns["supp_verification"].HeaderText "検証" "Japanese supplementary verification header"
     Assert-Equal $outputBox.ReadOnly $true "output folder is browse-only"
     Assert-Equal $outputBox.Text (Get-DefaultOutputFolder) "default output folder"
     Assert-Equal $fastqGrid.Columns["run"].ReadOnly $true "FASTQ run column readonly"
     Assert-Equal $fastqGrid.Columns["url"].ReadOnly $true "FASTQ URL column readonly"
     Assert-Equal $fastqGrid.Columns["selected"].ReadOnly $false "FASTQ select column editable"
+    Assert-Equal ($bottomPanel.Height -le 130) $true "bottom panel leaves more room for result tables"
+    Assert-Equal ($suppGrid.Columns["supp_name"].Width -ge 300) $true "supplementary file name column remains prominent"
     Assert-Equal ((Get-Variable -Name planButton -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "save-list button removed from main UI"
     Assert-Equal (Format-Bytes ([Int64]2377036173)) "2.21 GB" "Format-Bytes over Int32"
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
@@ -3290,6 +3475,12 @@ if ($SelfTest) {
                 scope = "GEO Series supplementary/processed"
                 name = "processed.txt"
                 url = $sourceUri
+                origin_level = "series"
+                origin_accession = "SELFTEST"
+                extension = ".txt"
+                estimated_type = "table_text"
+                size_status = "unknown"
+                verification_status = "not_applicable"
             }
         )
         fastq_files = @(
@@ -3445,6 +3636,21 @@ if ($SelfTest) {
     Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "" "no default FASTQ selection"
     Assert-Equal (Get-SelectedTotalBytes) ([Int64]0) "no default capacity"
     Assert-Equal $suppGrid.Rows.Count 1 "supplementary row count"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_origin"].Value "Series: SELFTEST" "supplementary origin display"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_extension"].Value ".txt" "supplementary extension display"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_type"].Value "table/text" "supplementary estimated type display"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "不明" "supplementary unknown size display"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5対象外" "supplementary verification display"
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
+    Set-Language "en"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "Unknown" "supplementary size redisplays in English"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5 N/A" "supplementary verification redisplays in English"
+    Assert-Equal ([bool]$suppGrid.Rows[0].Cells["supp_selected"].Value) $true "supplementary selection survives English language switch"
+    Set-Language "ja"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "不明" "supplementary size redisplays in Japanese"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5対象外" "supplementary verification redisplays in Japanese"
+    Assert-Equal ([bool]$suppGrid.Rows[0].Cells["supp_selected"].Value) $true "supplementary selection survives Japanese language switch"
+    $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
     Assert-Contains $fastqTitle.Text "3件" "FASTQ title includes count"
     Assert-Contains $suppTitle.Text "1件" "supplementary title includes count"
     Assert-Contains $selectionSummaryLabel.Text "FASTQ 0 件" "selection summary default fastq count"
@@ -3467,7 +3673,10 @@ if ($SelfTest) {
     Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "" "bulk clear fastq selection"
     Set-GridSelection $suppGrid "supp_selected" $true
     Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "0" "bulk supplementary selection"
-    Assert-Contains $selectionSummaryLabel.Text "GEO supplementary 1 件" "selection summary selected supplementary"
+    Assert-Contains $capacityLabel.Text "必要容量(FASTQ): 0 B /" "capacity label stays FASTQ-only for supplementary selection"
+    Assert-Contains $selectionSummaryLabel.Text "GEO supplementary/processed 1 件" "selection summary selected supplementary"
+    Assert-Contains $selectionSummaryLabel.Text "サイズ不明" "selection summary supplementary unknown size"
+    Assert-Contains $selectionSummaryLabel.Text "MD5対象外" "selection summary supplementary MD5 not applicable"
     Set-GridSelection $suppGrid "supp_selected" $false
     Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "" "bulk clear supplementary selection"
     $inputBox.Text = "SELFTEST"

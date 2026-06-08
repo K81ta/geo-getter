@@ -321,6 +321,12 @@ FASTQ 候補生成に使う field:
 | `scope` | Series / Sample 由来の区分 |
 | `name` | URL から得た保存候補名 |
 | `url` | GEO supplementary / processed file URL |
+| `origin_level` | `series`, `sample`, `unknown` のいずれか |
+| `origin_accession` | 由来の GEO accession。Sample 由来なら GSM accession |
+| `extension` | 表示用に推定した拡張子。なければ空文字 |
+| `estimated_type` | 表示用に推定した種別。`geo_raw_archive`, `fastq_like_supplementary`, `count_matrix`, `genome_track`, `table_text`, `archive`, `other` のいずれか |
+| `size_status` | supplementary / processed file は事前サイズを確定しないため `unknown` |
+| `verification_status` | supplementary / processed file は FASTQ MD5 検証対象外のため `not_applicable` |
 
 ### 出力ファイル
 
