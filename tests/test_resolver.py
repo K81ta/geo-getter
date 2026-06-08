@@ -1,5 +1,6 @@
 import unittest
 
+from geo_getter.accession import ENA_QUERY_PREFIXES
 from geo_getter.models import DatasetMetadata, FastqFile, SupplementaryFile
 from geo_getter.providers.geo import GeoSampleMetadata, GeoSoftParseResult
 from geo_getter.providers.resolver import MetadataResolver
@@ -118,7 +119,8 @@ class ResolverTest(unittest.TestCase):
         self.assertTrue(any("file sizes were unavailable" in warning for warning in result.warnings))
 
     def test_direct_ena_accessions_skip_geo_and_query_ena_directly(self):
-        for accession in ("SRR000001", "SRX000001", "PRJNA000001", "SAMN000001"):
+        for prefix in ENA_QUERY_PREFIXES:
+            accession = f"{prefix}000001"
             with self.subTest(accession=accession):
                 ena_provider = RecordingEnaProvider()
                 result = MetadataResolver(FailingGeoProvider(), ena_provider).resolve(accession)

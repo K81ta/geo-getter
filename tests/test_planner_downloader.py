@@ -43,6 +43,19 @@ class FakeUrlopenResponse:
         return chunk
 
 
+class FailAfterFirstChunkResponse(FakeUrlopenResponse):
+    def __init__(self, data: bytes, error: Exception):
+        super().__init__(data=data, status=200, headers={"Content-Length": str(len(data))})
+        self.error_after_first_chunk = error
+        self.first_chunk_returned = False
+
+    def read(self, size: int = -1):
+        if self.first_chunk_returned:
+            raise self.error_after_first_chunk
+        self.first_chunk_returned = True
+        return super().read(size)
+
+
 class PlannerDownloaderTest(unittest.TestCase):
     def test_plan_and_manifest_are_written(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -373,6 +386,41 @@ class PlannerDownloaderTest(unittest.TestCase):
                     self.assertEqual(part_path.read_bytes(), b"abcdef")
                     self.assertEqual(len(responses), 0)
                     self.assertTrue(any("network_retry" in message for message in messages))
+
+    def test_transient_transfer_error_after_partial_write_resumes_and_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            messages = []
+            range_headers = []
+            responses = [
+                FailAfterFirstChunkResponse(b"abc", OSError("temporary failure after partial write")),
+                FakeUrlopenResponse(
+                    data=b"def",
+                    status=206,
+                    headers={"Content-Length": "3", "Content-Range": "bytes 3-5/6"},
+                ),
+            ]
+
+            def urlopen_retry(request, timeout):
+                range_headers.append(request.get_header("Range"))
+                return responses.pop(0)
+
+            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
+                part_path, downloaded = download_url_to_part(
+                    "https://example.invalid/fixture.fastq.gz",
+                    local_path,
+                    expected_size=6,
+                    message_callback=messages.append,
+                    chunk_size=3,
+                    max_retries=2,
+                )
+
+            self.assertEqual(part_path, local_path.with_name("fixture.fastq.gz.part"))
+            self.assertEqual(downloaded, 6)
+            self.assertEqual(part_path.read_bytes(), b"abcdef")
+            self.assertEqual(range_headers, [None, "bytes=3-"])
+            self.assertEqual(len(responses), 0)
+            self.assertTrue(any("network_retry" in message for message in messages))
 
     def test_incomplete_read_is_logged_as_network_failed(self):
         with tempfile.TemporaryDirectory() as temp:

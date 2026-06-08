@@ -1152,6 +1152,14 @@ function New-ResolveInputFile {
     return $inputPath
 }
 
+function Remove-ResolveInputFile {
+    $inputPath = $script:ResolveInputPath
+    $script:ResolveInputPath = $null
+    if ($inputPath) {
+        Remove-Item -LiteralPath $inputPath -ErrorAction SilentlyContinue
+    }
+}
+
 function Normalize-InputText {
     param([string]$Value)
     if ($null -eq $Value) { return "" }
@@ -1189,6 +1197,7 @@ function Clear-ResolveDiagnosticState {
 }
 
 function Clear-DownloadDiagnosticState {
+    $script:DownloadCanceled = $false
     $script:DownloadStdoutText = ""
     $script:DownloadStderrText = ""
     $script:LastDownloadDoneEvent = $null
@@ -1202,6 +1211,7 @@ function Clear-DownloadDiagnosticState {
 }
 
 function Clear-VerificationDiagnosticState {
+    $script:VerifyCanceled = $false
     $script:VerifyStdoutText = ""
     $script:VerifyStderrText = ""
     $script:LastVerificationDoneEvent = $null
@@ -1288,11 +1298,7 @@ function Complete-ResolveIfReady {
     try {
         $script:ResolveProcess = $null
         Update-CancelButton
-        $inputPath = $script:ResolveInputPath
-        $script:ResolveInputPath = $null
-        if ($inputPath) {
-            Remove-Item -LiteralPath $inputPath -ErrorAction SilentlyContinue
-        }
+        Remove-ResolveInputFile
         $progressBar.Style = "Continuous"
         $progressBar.Value = 0
         if ($script:ResolveCanceled) {
@@ -1809,6 +1815,23 @@ function Stop-RunningGuiProcesses {
     return $canceledAny
 }
 
+function Stop-RunningGuiProcessesForShutdown {
+    if (Test-ProcessRunning $script:ResolveProcess) {
+        $script:ResolveCanceled = $true
+        try { $script:ResolveProcess.Kill() } catch { }
+    }
+    Remove-ResolveInputFile
+    if (Test-ProcessRunning $script:DownloadProcess) {
+        $script:DownloadCanceled = $true
+        try { $script:DownloadProcess.Kill() } catch { }
+    }
+    if (Test-ProcessRunning $script:VerifyProcess) {
+        $script:VerifyCanceled = $true
+        try { $script:VerifyProcess.Kill() } catch { }
+    }
+    Update-CancelButton
+}
+
 function Handle-DownloadLine {
     param([string]$Line)
     if ([string]::IsNullOrWhiteSpace($Line)) { return }
@@ -2070,10 +2093,7 @@ function Start-ResolveProcess {
         if (Test-ProcessRunning $process) {
             try { $process.Kill() } catch { }
         }
-        if ($script:ResolveInputPath) {
-            Remove-Item -LiteralPath $script:ResolveInputPath -ErrorAction SilentlyContinue
-        }
-        $script:ResolveInputPath = $null
+        Remove-ResolveInputFile
         $script:ResolveProcess = $null
         $script:LastResolveStartError = $_.Exception.Message
         $script:LastDiagnosticError = New-DiagnosticError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
@@ -2151,6 +2171,9 @@ function Start-ManifestVerificationProcess {
     $script:VerifyProcess = $process
     try {
         [void]$process.Start()
+        Update-CancelButton
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
     }
     catch {
         if (Test-ProcessRunning $process) {
@@ -2163,9 +2186,6 @@ function Start-ManifestVerificationProcess {
         Update-CancelButton
         throw
     }
-    Update-CancelButton
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
 }
 
 function Start-DownloadProcess {
@@ -2245,8 +2265,12 @@ function Start-DownloadProcess {
         })
     )
     $script:DownloadBridge.Attach($process)
+    $script:DownloadProcess = $process
     try {
         [void]$process.Start()
+        Update-CancelButton
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
     }
     catch {
         if (Test-ProcessRunning $process) {
@@ -2259,10 +2283,6 @@ function Start-DownloadProcess {
         Update-CancelButton
         throw
     }
-    $script:DownloadProcess = $process
-    Update-CancelButton
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
 }
 
 function New-ResolveProcessStartInfo {
@@ -3011,18 +3031,7 @@ function New-MainForm {
     })
 
     $formLocal.add_FormClosing({
-        if (Test-ProcessRunning $script:ResolveProcess) {
-            $script:ResolveCanceled = $true
-            try { $script:ResolveProcess.Kill() } catch { }
-        }
-        if (Test-ProcessRunning $script:DownloadProcess) {
-            $script:DownloadCanceled = $true
-            try { $script:DownloadProcess.Kill() } catch { }
-        }
-        if (Test-ProcessRunning $script:VerifyProcess) {
-            $script:VerifyCanceled = $true
-            try { $script:VerifyProcess.Kill() } catch { }
-        }
+        Stop-RunningGuiProcessesForShutdown
     })
 
     $script:form = $formLocal
@@ -3445,6 +3454,41 @@ if ($SelfTest) {
     Assert-Equal (Test-Path -LiteralPath $resolveCancelInput) $false "resolve cancel removes temp input"
     Assert-Equal $fetchButton.Enabled $true "resolve cancel clears busy state"
 
+    Clear-ResolvedState -DeleteResolvedJson
+    [void]$form.Handle
+    Set-Busy $true
+    $statusLabel.Text = T "fetching"
+    $resolveAsyncInputPath = $null
+    try {
+        Start-ResolveProcess ""
+        $resolveAsyncInputPath = $script:ResolveInputPath
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while ($null -ne $script:ResolveProcess -and [DateTime]::UtcNow -lt $deadline) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 50
+        }
+        for ($i = 0; $i -lt 20; $i++) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    finally {
+        if (Test-ProcessRunning $script:ResolveProcess) {
+            try { $script:ResolveProcess.Kill() } catch { }
+            try { [void]$script:ResolveProcess.WaitForExit(5000) } catch { }
+        }
+    }
+    Assert-Equal $script:ResolveProcess $null "async resolve process finished after invalid input"
+    Assert-Equal $script:ResolveFinalized $true "async resolve finalizer ran"
+    Assert-Equal $script:ResolveStdoutClosed $true "async resolve stdout closed"
+    Assert-Equal $script:ResolveStderrClosed $true "async resolve stderr closed"
+    Assert-Equal $statusLabel.Text (T "error") "async resolve invalid input status"
+    Assert-Equal $script:LastDiagnosticError.phase "resolve" "async resolve error records phase"
+    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "async resolve error records code"
+    Assert-Equal $script:ResolveInputPath $null "async resolve clears temp input path"
+    Assert-Equal (Test-Path -LiteralPath $resolveAsyncInputPath) $false "async resolve removes temp input"
+    Assert-Equal $fetchButton.Enabled $true "async resolve failure clears busy state"
+
     $cancelProbe = New-Object System.Diagnostics.Process
     $cancelProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
     try {
@@ -3465,6 +3509,32 @@ if ($SelfTest) {
         }
         Dispose-ProcessQuietly $cancelProbe
         $script:ResolveProcess = $null
+        Update-CancelButton
+    }
+
+    $shutdownProbe = New-Object System.Diagnostics.Process
+    $shutdownProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
+    $shutdownInput = New-ResolveInputFile "SELFTEST"
+    try {
+        [void]$shutdownProbe.Start()
+        $script:ResolveProcess = $shutdownProbe
+        $script:ResolveInputPath = $shutdownInput
+        $script:ResolveCanceled = $false
+        Stop-RunningGuiProcessesForShutdown
+        [void]$shutdownProbe.WaitForExit(5000)
+        Assert-Equal $shutdownProbe.HasExited $true "shutdown kills resolve process"
+        Assert-Equal $script:ResolveCanceled $true "shutdown marks resolve canceled"
+        Assert-Equal $script:ResolveInputPath $null "shutdown clears resolve temp input path"
+        Assert-Equal (Test-Path -LiteralPath $shutdownInput) $false "shutdown removes resolve temp input"
+    }
+    finally {
+        if (Test-ProcessRunning $shutdownProbe) {
+            try { $shutdownProbe.Kill() } catch { }
+            try { [void]$shutdownProbe.WaitForExit(5000) } catch { }
+        }
+        Dispose-ProcessQuietly $shutdownProbe
+        $script:ResolveProcess = $null
+        Remove-ResolveInputFile
         Update-CancelButton
     }
 
@@ -3493,6 +3563,12 @@ if ($SelfTest) {
     Assert-Equal (Get-DownloadFinalStatusKey $null 0 $false) "error" "final state missing done event with zero exit"
     Assert-Equal (Get-DownloadFinalStatusKey $null 1 $false) "error" "final state missing done event with nonzero exit"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified") }) 1 $true) "canceled" "final state canceled wins"
+    $script:DownloadCanceled = $true
+    Clear-DownloadDiagnosticState
+    Assert-Equal $script:DownloadCanceled $false "download diagnostics clear resets canceled flag"
+    $script:VerifyCanceled = $true
+    Clear-VerificationDiagnosticState
+    Assert-Equal $script:VerifyCanceled $false "verification diagnostics clear resets canceled flag"
 
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = 1
@@ -3730,6 +3806,38 @@ if ($SelfTest) {
     $inputBox.Text = "SELFTEST"
 
     $originalPythonExe = $PythonExe
+    $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
+    $threwResolveStart = $false
+    $resolveStartInputPath = $null
+    $resolveFailureMarker = "SELFTEST_RESOLVE_START_FAILURE_" + [System.Guid]::NewGuid().ToString("N")
+    $resolveFailureStartedAt = [DateTime]::UtcNow.AddSeconds(-1)
+    try {
+        Start-ResolveProcess $resolveFailureMarker
+        $resolveStartInputPath = $script:ResolveInputPath
+    }
+    catch {
+        $threwResolveStart = $true
+        $resolveStartInputPath = $script:ResolveInputPath
+    }
+    finally {
+        $PythonExe = $originalPythonExe
+    }
+    Assert-Equal $threwResolveStart $true "resolve start failure throws"
+    Assert-Equal $script:ResolveProcess $null "resolve start failure clears process"
+    Assert-Equal $script:ResolveInputPath $null "resolve start failure clears temp input path"
+    Assert-Equal $resolveStartInputPath $null "resolve start failure removes temp input path before returning"
+    $leakedResolveInputs = @(
+        Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "geo_getter_input_*.txt" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -ge $resolveFailureStartedAt } |
+        Where-Object {
+            try { (Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName) -eq $resolveFailureMarker }
+            catch { $false }
+        }
+    )
+    Assert-Equal $leakedResolveInputs.Count 0 "resolve start failure removes temp input file"
+    Assert-Equal $script:LastDiagnosticError.phase "resolve_process_start" "resolve start failure records phase"
+    Assert-Equal $script:LastDiagnosticError.code "process_start_failed" "resolve start failure records code"
+
     $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
     $threwVerifyStart = $false
     try {
