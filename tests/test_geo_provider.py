@@ -35,7 +35,17 @@ class GeoProviderTest(unittest.TestCase):
         self.assertEqual(parsed.related_accessions, ["SRP007461"])
         self.assertEqual(len(parsed.supplementary_files), 2)
         self.assertEqual(parsed.supplementary_files[0].name, "GSE30567_RAW.tar")
+        self.assertEqual(parsed.supplementary_files[0].origin_level, "series")
+        self.assertEqual(parsed.supplementary_files[0].origin_accession, "GSE30567")
+        self.assertEqual(parsed.supplementary_files[0].extension, ".tar")
+        self.assertEqual(parsed.supplementary_files[0].estimated_type, "geo_raw_archive")
+        self.assertEqual(parsed.supplementary_files[0].size_status, "unknown")
+        self.assertEqual(parsed.supplementary_files[0].verification_status, "not_applicable")
         self.assertIn("supplementary", parsed.supplementary_files[1].scope)
+        self.assertEqual(parsed.supplementary_files[1].origin_level, "sample")
+        self.assertEqual(parsed.supplementary_files[1].origin_accession, "GSM758559")
+        self.assertEqual(parsed.supplementary_files[1].extension, ".bigwig")
+        self.assertEqual(parsed.supplementary_files[1].estimated_type, "genome_track")
         metadata = parsed.sample_metadata_by_accession["SRX082565"]
         self.assertEqual(metadata.geo_sample_accession, "GSM758559")
         self.assertEqual(metadata.geo_sample_title, "adipose sample 1")
@@ -100,6 +110,25 @@ class GeoProviderTest(unittest.TestCase):
         parsed = FailingSampleGeoProvider().get_related("GSE000001")
         self.assertEqual(parsed.related_accessions, ["SRP000001"])
         self.assertIn("sample metadata retrieval failed", parsed.warnings[0])
+
+    def test_supplementary_display_metadata_handles_common_names(self):
+        parsed = parse_soft(
+            """
+^SERIES = GSE000001
+!Series_supplementary_file = ftp://example.invalid/GSE000001_count%20matrix.tsv.gz?download=1
+!Series_supplementary_file_1 = ftp://example.invalid/reads.fastq.gz
+!Series_supplementary_file_2 = ftp://example.invalid/no_extension
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(parsed.supplementary_files[0].name, "GSE000001_count matrix.tsv.gz")
+        self.assertEqual(parsed.supplementary_files[0].extension, ".tsv.gz")
+        self.assertEqual(parsed.supplementary_files[0].estimated_type, "count_matrix")
+        self.assertEqual(parsed.supplementary_files[1].extension, ".fastq.gz")
+        self.assertEqual(parsed.supplementary_files[1].estimated_type, "fastq_like_supplementary")
+        self.assertEqual(parsed.supplementary_files[2].extension, "")
+        self.assertEqual(parsed.supplementary_files[2].estimated_type, "other")
 
 
 if __name__ == "__main__":

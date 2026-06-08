@@ -149,6 +149,12 @@ class CliTest(unittest.TestCase):
                         "scope": "GEO Series supplementary/processed",
                         "name": "supplementary.txt",
                         "url": source.as_uri(),
+                        "origin_level": "series",
+                        "origin_accession": "GSE000001",
+                        "extension": ".txt",
+                        "estimated_type": "table_text",
+                        "size_status": "unknown",
+                        "verification_status": "not_applicable",
                     }
                 ],
             }
@@ -169,8 +175,12 @@ class CliTest(unittest.TestCase):
             self.assertEqual((run_dir / "supplementary.txt").read_bytes(), data)
             self.assertTrue(supplementary_manifest_path(run_dir).exists())
             self.assertFalse((run_dir / "supplementary_manifest.tsv").exists())
+            manifest = supplementary_manifest_path(run_dir).read_text(encoding="utf-8-sig")
+            self.assertIn("source_accession\tscope\tfile_name\turl\tlocal_path\tstatus", manifest)
+            self.assertNotIn("estimated_type", manifest)
             log = download_log_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertIn("download_complete", log)
+            self.assertNotIn("not_applicable", log)
 
     def test_selected_download_rejects_nonempty_output_without_resume(self):
         with tempfile.TemporaryDirectory() as temp:
