@@ -122,10 +122,13 @@ python -m geo_getter.cli selected-download-json `
   --input-json <resolved-json> `
   --fastq-indices <selected-fastq-indices> `
   --supp-indices <selected-supp-indices> `
-  --out <output-dir>
+  --out <output-dir> `
+  [--resume-existing]
 ```
 
 `--out` は実保存フォルダである。GUI は検索成功後に `Downloads\GEOGetter\<primary_accession>` を保存先欄に表示し、ユーザーが保存先を変更した場合も、そのフォルダを実保存フォルダとして CLI に渡す。
+
+`--resume-existing` は、既存ファイルがある実保存フォルダで FASTQ ダウンロードを再開する場合だけ GUI が付ける。通常の新規保存では付けない。
 
 ```text
 Downloads/GEOGetter/
@@ -184,7 +187,9 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
   "output_dir": "C:\\path\\GSE52778",
   "fastq_manifest": "C:\\path\\GSE52778\\GSE52778_fastq_manifest.tsv",
   "supplementary_manifest": "C:\\path\\GSE52778\\GSE52778_supplementary_manifest.tsv",
-  "download_log": "C:\\path\\GSE52778\\GSE52778_download_log.tsv"
+  "download_log": "C:\\path\\GSE52778\\GSE52778_download_log.tsv",
+  "resume_existing": false,
+  "resume_required_bytes": null
 }
 ```
 
@@ -399,21 +404,23 @@ FASTQ と supplementary file は完全性の扱いが違う。
 FASTQ 保存処理:
 
 1. 保存先フォルダを作る。
-2. 選択 FASTQ の合計 `size_bytes` と保存先空き容量を比較する。
-3. FASTQ manifest と download log を準備する。
-4. 完成済み同名ファイルがある場合、期待 MD5 が一致すれば再利用する。
-5. 完成済み同名ファイルの MD5 が不一致、または期待 MD5 がない場合は quarantine 名に退避して取り直す。
-6. 期待 MD5 がある完成済み `.part` は、サイズと MD5 が妥当なら正式ファイル名へ昇格する。
-7. 途中 `.part` がある場合、HTTP `Range` で再開を試みる。期待 MD5 がない場合も、同じ local path の `.part` であれば Range 再開の対象になる。
-8. 保存後、期待 MD5 があれば照合する。
-9. MD5 一致なら `.part` を正式ファイル名へ置き換える。
-10. 期待 MD5 がなければ正式ファイル名へ置き換え、`md5_unavailable` を記録する。
-11. MD5 不一致またはサイズ過大なら正式名にせず quarantine 名へ退避する。
-12. 結果を download log に追記する。
+2. 既存ファイルがあるフォルダで `--resume-existing` がない場合は停止する。
+3. `--resume-existing` がある場合は、既存 FASTQ manifest と download log が今回の FASTQ 選択と一致することを確認する。
+4. 再開時は、完成済み FASTQ と `.part` を考慮した残り必要容量を保存先空き容量と比較する。新規保存時は選択 FASTQ の合計 `size_bytes` を比較する。
+5. FASTQ manifest と download log を準備する。再開時の FASTQ manifest と download log は既存内容を保持し、download log に追記する。
+6. 完成済み同名ファイルがある場合、期待サイズがあればサイズも確認し、期待 MD5 が一致すれば再利用する。
+7. 完成済み同名ファイルのサイズまたは MD5 が不一致、または期待 MD5 がない場合は quarantine 名に退避して取り直す。
+8. 期待 MD5 がある完成済み `.part` は、サイズと MD5 が妥当なら正式ファイル名へ昇格する。期待 MD5 がない完成済み `.part` は再利用しない。
+9. 途中 `.part` がある場合、HTTP `Range` で再開を試みる。期待 MD5 がない場合も、同じ local path の途中 `.part` であれば Range 再開の対象になる。
+10. 保存後、期待 MD5 があれば照合する。
+11. MD5 一致なら `.part` を正式ファイル名へ置き換える。
+12. 期待 MD5 がなければ正式ファイル名へ置き換え、`md5_unavailable` を記録する。
+13. MD5 不一致またはサイズ過大なら正式名にせず quarantine 名へ退避する。
+14. 結果を download log に追記する。
 
-quarantine 名には、`bad-md5-existing`、`unverified-existing`、`bad-md5`、`size-mismatch` などの理由と UTC timestamp を含める。
+quarantine 名には、`bad-md5-existing`、`size-mismatch-existing`、`unverified-existing`、`bad-md5`、`size-mismatch` などの理由と UTC timestamp を含める。
 
-supplementary file は同じ `.part` ダウンロード関数を使うが、FASTQ manifest と MD5 照合は使わない。既存同名ファイルがあれば `.existing`, `.existing.2` のように退避する。
+supplementary file は同じ `.part` ダウンロード関数を使うが、FASTQ manifest と MD5 照合は使わない。既存ファイルがある保存フォルダでは supplementary file の保存を停止する。
 
 ## status とエラー
 
@@ -443,7 +450,7 @@ GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の
 
 | ファイル | 内容 |
 | --- | --- |
-| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、preflight 状態、最後の error code / detail、各 CLI 引数、最後の download / verification done event |
+| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、preflight 状態、既存保存先と再開判定、最後の error code / detail、各 CLI 引数、最後の download / verification done event |
 | `resolved.json` | 最後に成功した `resolve-json` の結果 |
 | `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
 | `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |

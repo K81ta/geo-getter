@@ -11,10 +11,12 @@ import urllib.request
 
 from .errors import (
     ERROR_MESSAGES,
+    GeoGetterError,
     MD5_MISMATCH,
     MD5_UNAVAILABLE,
     MD5_VERIFIED,
     NETWORK_FAILED,
+    OUTPUT_PATH_INVALID,
     SIZE_MISMATCH,
 )
 from .http_client import USER_AGENT
@@ -47,9 +49,11 @@ def download_plan(
     plan: DownloadPlan,
     progress_callback: ProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
+    required_bytes: int | None = None,
+    preserve_manifest: bool = False,
 ) -> list[tuple[PlannedFile, str, str]]:
-    ensure_capacity(plan)
-    write_fastq_outputs(plan)
+    ensure_capacity(plan, required_bytes=required_bytes)
+    write_fastq_outputs(plan, preserve_manifest=preserve_manifest)
     results: list[tuple[PlannedFile, str, str]] = []
 
     for planned in plan.files:
@@ -317,6 +321,8 @@ def _status_code(response: object) -> int:
 
 def _existing_size(path: Path) -> int:
     try:
+        if not path.is_file():
+            return 0
         return path.stat().st_size
     except OSError:
         return 0
@@ -333,7 +339,14 @@ def _reuse_or_quarantine_existing(
 ) -> tuple[str, str, str, int] | None:
     if not planned.local_path.exists():
         return None
+    if not planned.local_path.is_file():
+        raise GeoGetterError(OUTPUT_PATH_INVALID, f"download_target_is_not_file path={planned.local_path}")
+    existing_size = _existing_size(planned.local_path)
     if planned.fastq.expected_md5:
+        if planned.fastq.size_bytes > 0 and existing_size != planned.fastq.size_bytes:
+            quarantined = _quarantine_file(planned.local_path, "size-mismatch-existing")
+            _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
+            return None
         ok, actual_md5 = verify_md5(planned.local_path, planned.fastq.expected_md5)
         if ok:
             stale_part = _part_path(planned.local_path)
@@ -343,7 +356,7 @@ def _reuse_or_quarantine_existing(
                 MD5_VERIFIED,
                 "Existing file MD5 matched, so the file was reused without downloading again.",
                 actual_md5,
-                _existing_size(planned.local_path),
+                existing_size,
             )
         quarantined = _quarantine_file(planned.local_path, "bad-md5-existing")
         _emit(message_callback, f"existing_file_quarantined_bad_md5: {quarantined}")
@@ -361,6 +374,8 @@ def _reuse_or_quarantine_complete_part(
     part_path = _part_path(planned.local_path)
     if not part_path.exists():
         return None
+    if not part_path.is_file():
+        raise GeoGetterError(OUTPUT_PATH_INVALID, f"partial_download_target_is_not_file path={part_path}")
     part_size = _existing_size(part_path)
     if planned.fastq.size_bytes > 0 and part_size < planned.fastq.size_bytes:
         return None
@@ -370,14 +385,8 @@ def _reuse_or_quarantine_complete_part(
         )
     if not planned.fastq.expected_md5:
         if planned.fastq.size_bytes > 0 and part_size == planned.fastq.size_bytes:
-            actual_md5 = calculate_md5(part_path)
-            _finalize_part(part_path, planned.local_path)
-            return (
-                MD5_UNAVAILABLE,
-                "Previous partial file size matched, so it was promoted to the final file name without MD5 verification.",
-                actual_md5,
-                part_size,
-            )
+            quarantined = _quarantine_file(part_path, "unverified-existing")
+            _emit(message_callback, f"partial_file_quarantined_unverified: {quarantined}")
         return None
     ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
     if ok:

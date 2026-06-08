@@ -13,6 +13,10 @@ INSUFFICIENT_SPACE = "insufficient_space"
 NETWORK_FAILED = "network_failed"
 DOWNLOAD_COMPLETE = "download_complete"
 INVALID_MANIFEST = "invalid_manifest"
+OUTPUT_PATH_INVALID = "output_path_invalid"
+RESUME_REQUIRED = "resume_required"
+RESUME_ARTIFACT_MISMATCH = "resume_artifact_mismatch"
+RESUME_SUPPLEMENTARY_UNSUPPORTED = "resume_supplementary_unsupported"
 
 ERROR_MESSAGES = {
     MD5_VERIFIED: "MD5 matched. No file corruption was detected.",
@@ -26,6 +30,10 @@ ERROR_MESSAGES = {
     INSUFFICIENT_SPACE: "The output folder does not have enough free space. Choose another folder or select fewer FASTQ files.",
     NETWORK_FAILED: "Network transfer failed. Check the connection and try again later.",
     INVALID_MANIFEST: "The FASTQ manifest is missing required columns or cannot be used for verification.",
+    OUTPUT_PATH_INVALID: "The output folder contains a path that cannot be used for a downloaded file.",
+    RESUME_REQUIRED: "The output folder already contains files. Confirm resume before writing to this folder.",
+    RESUME_ARTIFACT_MISMATCH: "The existing FASTQ manifest or download log does not match the current FASTQ selection.",
+    RESUME_SUPPLEMENTARY_UNSUPPORTED: "Existing output folders can resume FASTQ downloads only. Choose an empty folder for GEO supplementary/processed files.",
 }
 
 
