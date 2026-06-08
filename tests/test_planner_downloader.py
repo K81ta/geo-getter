@@ -341,8 +341,8 @@ class PlannerDownloaderTest(unittest.TestCase):
 
             resume = validate_resume_artifacts(plan)
 
-            self.assertEqual(resume.manifest_path, fastq_manifest_path(output_dir))
-            self.assertEqual(resume.download_log_path, download_log_path(output_dir))
+            self.assertEqual(resume.manifest_path, fastq_manifest_path(plan.output_dir))
+            self.assertEqual(resume.download_log_path, download_log_path(plan.output_dir))
             self.assertEqual(resume.required_bytes, 10)
             self.assertEqual(resume.matched_fastq_count, 1)
 
