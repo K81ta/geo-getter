@@ -32,6 +32,7 @@ from .planner import (
     verify_fastq_manifest,
 )
 from .providers.resolver import MetadataResolver
+from .updater import check_for_update, download_update_installer
 
 
 class GeoGetterArgumentParser(argparse.ArgumentParser):
@@ -59,6 +60,12 @@ def main(argv: list[str] | None = None) -> int:
     if argv_list and argv_list[0] == "verify-manifest-json":
         verify_manifest_parser = subparsers.add_parser("verify-manifest-json", help=argparse.SUPPRESS)
         verify_manifest_parser.add_argument("--manifest", required=True)
+    if argv_list and argv_list[0] == "check-update-json":
+        subparsers.add_parser("check-update-json", help=argparse.SUPPRESS)
+    if argv_list and argv_list[0] == "download-update-json":
+        update_download_parser = subparsers.add_parser("download-update-json", help=argparse.SUPPRESS)
+        update_download_parser.add_argument("--version", required=True)
+        update_download_parser.add_argument("--out-dir")
 
     args = parser.parse_args(argv_list)
     if args.command == "resolve-json":
@@ -73,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "verify-manifest-json":
         return _verify_manifest_json(Path(args.manifest))
+    if args.command == "check-update-json":
+        return _check_update_json()
+    if args.command == "download-update-json":
+        return _download_update_json(args.version, args.out_dir)
     return 2
 
 
@@ -233,6 +244,16 @@ def _verify_manifest_json(manifest_path: Path) -> int:
     }
     print(json.dumps(payload, ensure_ascii=False), flush=True)
     return 0 if result["total"] and result["status_counts"].get(MD5_VERIFIED, 0) == result["total"] else 1
+
+
+def _check_update_json() -> int:
+    print(json.dumps(check_for_update(), ensure_ascii=False), flush=True)
+    return 0
+
+
+def _download_update_json(version: str, out_dir: str | None) -> int:
+    print(json.dumps(download_update_installer(version, output_dir=out_dir), ensure_ascii=False), flush=True)
+    return 0
 
 
 def _read_input_text(input_text: str | None, input_file: str | None) -> str:

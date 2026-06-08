@@ -17,6 +17,14 @@ OUTPUT_PATH_INVALID = "output_path_invalid"
 RESUME_REQUIRED = "resume_required"
 RESUME_ARTIFACT_MISMATCH = "resume_artifact_mismatch"
 RESUME_SUPPLEMENTARY_UNSUPPORTED = "resume_supplementary_unsupported"
+UPDATE_NOT_AVAILABLE = "update_not_available"
+UPDATE_ASSET_MISSING = "update_asset_missing"
+UPDATE_ASSET_URL_MISSING = "update_asset_url_missing"
+UPDATE_DIGEST_MISSING = "update_digest_missing"
+UPDATE_DIGEST_INVALID = "update_digest_invalid"
+UPDATE_DOWNLOAD_FAILED = "update_download_failed"
+UPDATE_SHA256_MISMATCH = "update_sha256_mismatch"
+UPDATE_VERSION_INVALID = "update_version_invalid"
 
 ERROR_MESSAGES = {
     MD5_VERIFIED: "MD5 matched. No file corruption was detected.",
@@ -34,6 +42,14 @@ ERROR_MESSAGES = {
     RESUME_REQUIRED: "The output folder already contains files. Confirm resume before writing to this folder.",
     RESUME_ARTIFACT_MISMATCH: "The existing FASTQ manifest or download log does not match the current FASTQ selection.",
     RESUME_SUPPLEMENTARY_UNSUPPORTED: "Existing output folders can resume FASTQ downloads only. Choose an empty folder for GEO supplementary/processed files.",
+    UPDATE_NOT_AVAILABLE: "No newer GEOGetter installer is available.",
+    UPDATE_ASSET_MISSING: "The latest release does not include the GEOGetter installer asset.",
+    UPDATE_ASSET_URL_MISSING: "The latest release installer asset does not include a download URL.",
+    UPDATE_DIGEST_MISSING: "The latest release installer asset does not include a SHA256 digest.",
+    UPDATE_DIGEST_INVALID: "The latest release installer asset has an invalid SHA256 digest.",
+    UPDATE_DOWNLOAD_FAILED: "Could not download the GEOGetter update installer.",
+    UPDATE_SHA256_MISMATCH: "The downloaded installer SHA256 did not match the GitHub release asset digest.",
+    UPDATE_VERSION_INVALID: "The release version could not be parsed.",
 }
 
 

@@ -1,0 +1,152 @@
+import hashlib
+import tempfile
+import unittest
+import urllib.error
+from pathlib import Path
+
+from geo_getter.errors import GeoGetterError
+from geo_getter.updater import (
+    build_update_check_payload,
+    compare_versions,
+    download_update_installer,
+    extract_sha256_digest,
+    installer_asset_name,
+)
+
+
+class FakeResponse:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        if self.offset >= len(self.data):
+            return b""
+        if size < 0:
+            size = len(self.data) - self.offset
+        chunk = self.data[self.offset : self.offset + size]
+        self.offset += len(chunk)
+        return chunk
+
+
+class UpdaterTest(unittest.TestCase):
+    def release_payload(self, version="0.1.4", data=b"installer", digest=None, asset_name=None):
+        if digest is None:
+            digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        name = asset_name or installer_asset_name(version)
+        return {
+            "tag_name": f"v{version}",
+            "html_url": f"https://github.com/K81ta/geo-getter/releases/tag/v{version}",
+            "assets": [
+                {
+                    "name": name,
+                    "size": len(data),
+                    "digest": digest,
+                    "browser_download_url": f"https://example.invalid/{name}",
+                }
+            ],
+        }
+
+    def assert_geo_error(self, code, callback, *args, **kwargs):
+        with self.assertRaises(GeoGetterError) as context:
+            callback(*args, **kwargs)
+        self.assertEqual(context.exception.code, code)
+
+    def test_version_comparison_is_numeric(self):
+        self.assertGreater(compare_versions("0.1.10", "0.1.9"), 0)
+        self.assertEqual(compare_versions("v0.1.3", "0.1.3"), 0)
+        self.assertLess(compare_versions("0.1.3", "0.1.4"), 0)
+
+    def test_no_update_returns_normal_payload_without_asset(self):
+        payload = build_update_check_payload({"tag_name": "v0.1.3", "html_url": "https://example.invalid", "assets": []}, "0.1.3")
+
+        self.assertFalse(payload["update_available"])
+        self.assertEqual(payload["latest_version"], "0.1.3")
+        self.assertIsNone(payload["asset"])
+
+    def test_newer_release_returns_installer_asset_and_digest(self):
+        data = b"fixture"
+        release = self.release_payload(data=data)
+
+        payload = build_update_check_payload(release, "0.1.3")
+
+        self.assertTrue(payload["update_available"])
+        self.assertEqual(payload["latest_version"], "0.1.4")
+        self.assertEqual(payload["asset"]["name"], "GEOGetter-Setup-v0.1.4.exe")
+        self.assertEqual(payload["asset"]["sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_newer_release_requires_installer_asset(self):
+        release = self.release_payload(asset_name="GEOGetter-v0.1.4-win-x64-portable.zip")
+
+        self.assert_geo_error("update_asset_missing", build_update_check_payload, release, "0.1.3")
+
+    def test_digest_is_required(self):
+        release = self.release_payload(digest="")
+
+        self.assert_geo_error("update_digest_missing", build_update_check_payload, release, "0.1.3")
+
+    def test_digest_must_be_sha256_hex(self):
+        self.assert_geo_error("update_digest_invalid", extract_sha256_digest, {"name": "fixture.exe", "digest": "md5:" + "0" * 32})
+        self.assert_geo_error("update_digest_invalid", extract_sha256_digest, {"name": "fixture.exe", "digest": "sha256:" + "0" * 63})
+
+    def test_download_update_installer_verifies_sha256_before_returning_path(self):
+        data = b"verified installer"
+        release = self.release_payload(data=data)
+        fetcher = lambda *_args, **_kwargs: release
+        opener = lambda *_args, **_kwargs: FakeResponse(data)
+        with tempfile.TemporaryDirectory() as temp:
+            payload = download_update_installer("0.1.4", output_dir=temp, current_version="0.1.3", fetcher=fetcher, opener=opener)
+            installer_path = Path(payload["installer_path"])
+
+            self.assertEqual(payload["kind"], "update_installer")
+            self.assertEqual(payload["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertEqual(payload["bytes"], len(data))
+            self.assertTrue(installer_path.exists())
+            self.assertEqual(installer_path.read_bytes(), data)
+
+    def test_download_failure_does_not_return_installer_path(self):
+        release = self.release_payload()
+        fetcher = lambda *_args, **_kwargs: release
+
+        def fail_open(*_args, **_kwargs):
+            raise urllib.error.URLError("temporary failure")
+
+        with tempfile.TemporaryDirectory() as temp:
+            self.assert_geo_error(
+                "update_download_failed",
+                download_update_installer,
+                "0.1.4",
+                output_dir=temp,
+                current_version="0.1.3",
+                fetcher=fetcher,
+                opener=fail_open,
+            )
+            self.assertFalse(list(Path(temp).glob("*.exe")))
+
+    def test_sha256_mismatch_does_not_return_installer_path(self):
+        data = b"downloaded installer"
+        release = self.release_payload(data=data, digest="sha256:" + "0" * 64)
+        fetcher = lambda *_args, **_kwargs: release
+        opener = lambda *_args, **_kwargs: FakeResponse(data)
+
+        with tempfile.TemporaryDirectory() as temp:
+            self.assert_geo_error(
+                "update_sha256_mismatch",
+                download_update_installer,
+                "0.1.4",
+                output_dir=temp,
+                current_version="0.1.3",
+                fetcher=fetcher,
+                opener=opener,
+            )
+            self.assertFalse(list(Path(temp).glob("*.exe")))
+
+
+if __name__ == "__main__":
+    unittest.main()
