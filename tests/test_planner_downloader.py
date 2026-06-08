@@ -10,6 +10,7 @@ from geo_getter.downloader import download_plan, download_url_to_part, verify_md
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DownloadPlan, FastqFile
 from geo_getter.planner import build_download_plan, download_log_path, ensure_capacity, fastq_manifest_path, verify_fastq_manifest, write_fastq_outputs
+from geo_getter.path_safety import name_collision_key
 
 
 class FakeUrlopenResponse:
@@ -442,6 +443,45 @@ class PlannerDownloaderTest(unittest.TestCase):
             plan = build_download_plan("GSE", "GSE", [fastq1, fastq2], temp)
             self.assertEqual(plan.files[0].local_path.name, "Same.fastq.gz")
             self.assertEqual(plan.files[1].local_path.name, "same.2.fastq.gz")
+
+    def test_fastq_output_names_avoid_download_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            files = [
+                FastqFile(
+                    source_accession="GSE",
+                    query_accession="SRP",
+                    run_accession=f"SRR{index}",
+                    file_index=1,
+                    file_name=file_name,
+                    url=f"https://example.invalid/{index}",
+                    expected_md5=str(index) * 32,
+                    size_bytes=1,
+                )
+                for index, file_name in enumerate(
+                    [
+                        "out_fastq_manifest.tsv",
+                        "out_supplementary_manifest.tsv",
+                        "out_download_log.tsv",
+                    ],
+                    start=1,
+                )
+            ]
+
+            plan = build_download_plan("GSE", "GSE", files, output_dir)
+
+            self.assertEqual([planned.local_path.name for planned in plan.files], [
+                "out_fastq_manifest.2.tsv",
+                "out_supplementary_manifest.2.tsv",
+                "out_download_log.2.tsv",
+            ])
+
+    def test_name_collision_key_matches_gui_boundary(self):
+        self.assertEqual(name_collision_key("Same.fastq.gz"), name_collision_key("same.fastq.gz"))
+        self.assertEqual(name_collision_key("\u03a3.txt"), name_collision_key("\u03c3.txt"))
+        self.assertNotEqual(name_collision_key("\u00df.txt"), name_collision_key("SS.txt"))
+        self.assertNotEqual(name_collision_key("\u03c2.txt"), name_collision_key("\u03c3.txt"))
+        self.assertNotEqual(name_collision_key("\u0130.txt"), name_collision_key("i\u0307.txt"))
 
     def test_unsafe_fastq_file_name_stays_inside_output_dir(self):
         with tempfile.TemporaryDirectory() as temp:

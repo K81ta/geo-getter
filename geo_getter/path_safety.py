@@ -51,7 +51,13 @@ def reserve_unique_name(file_name: str, used_keys: set[str]) -> str:
 
 
 def name_collision_key(file_name: str) -> str:
-    return file_name.casefold()
+    return "".join(_lower_invariant_char(char) for char in file_name)
+
+
+def _lower_invariant_char(char: str) -> str:
+    if char == "\u0130":
+        return char
+    return char.lower()
 
 
 def split_download_name(file_name: str) -> tuple[str, str]:

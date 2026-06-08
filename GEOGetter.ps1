@@ -1388,7 +1388,7 @@ function Get-PreflightUniqueNumberedName {
 function Get-PreflightReservedUniqueName {
     param(
         [string]$FileName,
-        [hashtable]$UsedKeys
+        [System.Collections.Hashtable]$UsedKeys
     )
     $count = 0
     $candidate = $FileName
@@ -1398,6 +1398,20 @@ function Get-PreflightReservedUniqueName {
     }
     $UsedKeys[(Get-PreflightNameCollisionKey $candidate)] = $true
     return $candidate
+}
+
+function New-PreflightUsedKeys {
+    return [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+}
+
+function Get-PreflightDownloadArtifactNames {
+    param([string]$RunOutputDir)
+    $prefix = ConvertTo-GeoGetterSafeName ([System.IO.Path]::GetFileName($RunOutputDir)) -ArtifactPrefix
+    return @(
+        ("{0}_fastq_manifest.tsv" -f $prefix),
+        ("{0}_supplementary_manifest.tsv" -f $prefix),
+        ("{0}_download_log.tsv" -f $prefix)
+    )
 }
 
 function Get-SelectedFastqItemsForPreflight {
@@ -1431,19 +1445,25 @@ function Get-PreflightPlannedPaths {
     $paths = @([System.IO.Path]::GetFullPath($RunOutputDir))
     $fastqItems = @(Get-SelectedFastqItemsForPreflight)
     $suppItems = @(Get-SelectedSupplementaryItemsForPreflight)
-    $prefix = ConvertTo-GeoGetterSafeName ([System.IO.Path]::GetFileName($RunOutputDir)) -ArtifactPrefix
+    $artifactNames = @(Get-PreflightDownloadArtifactNames $RunOutputDir)
+    $fastqManifestName = $artifactNames[0]
+    $supplementaryManifestName = $artifactNames[1]
+    $downloadLogName = $artifactNames[2]
 
     if ($fastqItems.Count -gt 0) {
-        $paths += (Join-Path $RunOutputDir ("{0}_fastq_manifest.tsv" -f $prefix))
+        $paths += (Join-Path $RunOutputDir $fastqManifestName)
     }
     if ($suppItems.Count -gt 0) {
-        $paths += (Join-Path $RunOutputDir ("{0}_supplementary_manifest.tsv" -f $prefix))
+        $paths += (Join-Path $RunOutputDir $supplementaryManifestName)
     }
     if (($fastqItems.Count + $suppItems.Count) -gt 0) {
-        $paths += (Join-Path $RunOutputDir ("{0}_download_log.tsv" -f $prefix))
+        $paths += (Join-Path $RunOutputDir $downloadLogName)
     }
 
-    $usedKeys = @{}
+    $usedKeys = New-PreflightUsedKeys
+    foreach ($artifactName in $artifactNames) {
+        $usedKeys[(Get-PreflightNameCollisionKey $artifactName)] = $true
+    }
     foreach ($item in $fastqItems) {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.file_name) -DefaultName "download.fastq.gz"
         $fileName = Get-PreflightReservedUniqueName $fileName $usedKeys
@@ -2755,7 +2775,11 @@ if ($SelfTest) {
     Assert-Equal (ConvertTo-GeoGetterSafeName "..") "geo_getter_download" "preflight safe name handles dot-only name"
     Assert-Equal (Get-PreflightNameCollisionKey "Same.fastq.gz") "same.fastq.gz" "preflight name collision key is case-insensitive"
     Assert-Equal (Get-PreflightUniqueNumberedName "same.fastq.gz" 1) "same.2.fastq.gz" "preflight duplicate FASTQ numbering"
-    $preflightUsedKeys = @{}
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x03A3).txt"), (Get-PreflightNameCollisionKey "$([char]0x03C3).txt"), [System.StringComparison]::Ordinal)) $true "preflight key lowercases capital sigma"
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x00DF).txt"), (Get-PreflightNameCollisionKey "SS.txt"), [System.StringComparison]::Ordinal)) $false "preflight key does not fold sharp s"
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x03C2).txt"), (Get-PreflightNameCollisionKey "$([char]0x03C3).txt"), [System.StringComparison]::Ordinal)) $false "preflight key does not fold final sigma"
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x0130).txt"), (Get-PreflightNameCollisionKey ("i" + [string][char]0x0307 + ".txt")), [System.StringComparison]::Ordinal)) $false "preflight key keeps dotted I boundary"
+    $preflightUsedKeys = New-PreflightUsedKeys
     Assert-Equal (Get-PreflightReservedUniqueName "Same.fastq.gz" $preflightUsedKeys) "Same.fastq.gz" "preflight reserves first name"
     Assert-Equal (Get-PreflightReservedUniqueName "same.2.fastq.gz" $preflightUsedKeys) "same.2.fastq.gz" "preflight reserves pre-numbered name"
     Assert-Equal (Get-PreflightReservedUniqueName "same.fastq.gz" $preflightUsedKeys) "same.3.fastq.gz" "preflight skips occupied numbered candidate"
@@ -2885,6 +2909,12 @@ if ($SelfTest) {
                 scope = "GEO Series supplementary/processed"
                 name = "same.fastq.gz"
                 url = $sourceUri
+            },
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                scope = "GEO Series supplementary/processed"
+                name = "collision output_download_log.tsv"
+                url = $sourceUri
             }
         )
         fastq_files = @(
@@ -2923,6 +2953,18 @@ if ($SelfTest) {
                 size_bytes = 16
                 sample_accession = "SAM3"
                 library_layout = "SINGLE"
+            },
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                query_accession = "COLLISION"
+                run_accession = "SRR4"
+                file_index = 1
+                file_name = "collision output_fastq_manifest.tsv"
+                url = $sourceUri
+                expected_md5 = $expectedMd5
+                size_bytes = 16
+                sample_accession = "SAM4"
+                library_layout = "SINGLE"
             }
         )
     }
@@ -2935,6 +2977,8 @@ if ($SelfTest) {
     Assert-Equal ($collisionNames -contains "same.3.fastq.gz") $true "preflight reserves next FASTQ collision name"
     Assert-Equal ($collisionNames -contains "same.4.fastq.gz") $true "preflight reserves supplementary after FASTQ names"
     Assert-Equal ($collisionNames -contains "same.4.fastq.gz.part") $true "preflight includes supplementary part collision path"
+    Assert-Equal ($collisionNames -contains "collision output_fastq_manifest.2.tsv") $true "preflight reserves FASTQ away from artifact name"
+    Assert-Equal ($collisionNames -contains "collision output_download_log.2.tsv") $true "preflight reserves supplementary away from artifact name"
 
     Apply-ResolvedResult $resolvedFixture
     Assert-Equal $outputBox.Text (Get-DefaultOutputFolderForAccession "SELFTEST") "search success sets accession output folder"

@@ -19,6 +19,7 @@ from .planner import (
     download_log_path,
     fastq_manifest_path,
     initialize_log,
+    reserved_download_artifact_names,
     supplementary_manifest_path,
     verify_fastq_manifest,
 )
@@ -127,10 +128,10 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
     statuses: list[str] = []
     run_output_dir = output_dir.expanduser().resolve()
     run_output_dir.mkdir(parents=True, exist_ok=True)
-    reserved_output_names: list[str] = []
+    reserved_output_names = reserved_download_artifact_names(run_output_dir)
     if selected_fastq:
         plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
-        reserved_output_names = [planned.local_path.name for planned in plan.files]
+        reserved_output_names = [*reserved_output_names, *(planned.local_path.name for planned in plan.files)]
 
         def progress(planned, downloaded: int, total: int) -> None:
             print(

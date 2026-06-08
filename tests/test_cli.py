@@ -303,6 +303,82 @@ class CliTest(unittest.TestCase):
             self.assertFalse((out_dir / "same.fastq.gz.existing").exists())
             self.assertEqual(verify_fastq_manifest(fastq_manifest_path(out_dir))["status_counts"], {"md5_verified": 1})
 
+    def test_selected_download_disambiguates_supplementary_name_from_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.tsv"
+            data = b"supplementary fixture\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "out_download_log.tsv",
+                        "url": source.as_uri(),
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
+
+            self.assertEqual((out_dir / "out_download_log.2.tsv").read_bytes(), data)
+            log_text = download_log_path(out_dir).read_text(encoding="utf-8-sig")
+            self.assertTrue(log_text.startswith("timestamp\t"))
+            self.assertNotIn("supplementary fixture", log_text)
+
+    def test_selected_download_disambiguates_fastq_name_from_artifacts_with_supplementary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fastq_source = root / "fastq_source.tsv"
+            supp_source = root / "supp_source.txt"
+            fastq_data = b"@r1\nACGT\n+\n!!!!\n"
+            supp_data = b"supplementary fixture\n"
+            fastq_source.write_bytes(fastq_data)
+            supp_source.write_bytes(supp_data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "out_supplementary_manifest.tsv",
+                        "url": fastq_source.as_uri(),
+                        "expected_md5": hashlib.md5(fastq_data).hexdigest(),
+                        "size_bytes": len(fastq_data),
+                    }
+                ],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "processed.txt",
+                        "url": supp_source.as_uri(),
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+
+            self.assertEqual((out_dir / "out_supplementary_manifest.2.tsv").read_bytes(), fastq_data)
+            self.assertTrue(supplementary_manifest_path(out_dir).exists())
+            self.assertEqual((out_dir / "processed.txt").read_bytes(), supp_data)
+            self.assertEqual(verify_fastq_manifest(fastq_manifest_path(out_dir))["status_counts"], {"md5_verified": 1})
+
     def test_selected_download_logs_supplementary_part_size_on_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
