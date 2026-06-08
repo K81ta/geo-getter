@@ -1361,6 +1361,7 @@ function Clear-ResolvedState {
     if ($fastqGrid) { $fastqGrid.Rows.Clear() }
     if ($suppGrid) { $suppGrid.Rows.Clear() }
     Reset-FastqFilterControls -SkipApply
+    Refresh-FastqFilterValueOptions
     if ($DeleteResolvedJson -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
         Remove-Item -LiteralPath $script:ResolvedJsonPath -Force -ErrorAction SilentlyContinue
     }
@@ -3269,7 +3270,7 @@ function New-MainForm {
     $fastqPanel.ColumnCount = 1
     $fastqPanel.RowCount = 2
     [void]$fastqPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$fastqPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 78)))
+    [void]$fastqPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 110)))
     [void]$fastqPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     $split.Panel1.Controls.Add($fastqPanel)
 
@@ -3279,7 +3280,7 @@ function New-MainForm {
     $fastqHeaderPanel.RowCount = 2
     [void]$fastqHeaderPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 38)))
-    [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40)))
+    [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 72)))
     $fastqPanel.Controls.Add($fastqHeaderPanel, 0, 0)
 
     $fastqTitlePanel = New-Object System.Windows.Forms.Panel
@@ -3311,9 +3312,9 @@ function New-MainForm {
     $fastqFilterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $fastqFilterPanel.Dock = "Fill"
     $fastqFilterPanel.FlowDirection = "LeftToRight"
-    $fastqFilterPanel.WrapContents = $false
+    $fastqFilterPanel.WrapContents = $true
     $fastqFilterPanel.Padding = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
-    $fastqFilterPanel.AutoScroll = $true
+    $fastqFilterPanel.AutoScroll = $false
     $fastqHeaderPanel.Controls.Add($fastqFilterPanel, 0, 1)
 
     $script:fastqFilterLabel = New-Object System.Windows.Forms.Label
@@ -4130,6 +4131,10 @@ if ($SelfTest) {
     Assert-Contains $suppTitle.Text "0件" "clear resolved resets supplementary title count"
     Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "" "clear resolved removes fastq selections"
     Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "" "clear resolved removes supplementary selections"
+    Assert-Equal $fastqLayoutFilterCombo.Items.Count 1 "clear resolved removes stale FASTQ layout filter values"
+    Assert-Equal $fastqStrategyFilterCombo.Items.Count 1 "clear resolved removes stale FASTQ strategy filter values"
+    Assert-Equal ([string]$fastqLayoutFilterCombo.Items[0]) "すべて" "clear resolved keeps FASTQ layout all option"
+    Assert-Equal ([string]$fastqStrategyFilterCombo.Items[0]) "すべて" "clear resolved keeps FASTQ strategy all option"
     Assert-Equal (Test-Path -LiteralPath $script:ResolvedJsonPath) $false "clear resolved removes resolved json"
     $noResultMessage = ""
     try {
