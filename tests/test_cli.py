@@ -303,6 +303,51 @@ class CliTest(unittest.TestCase):
             self.assertFalse((out_dir / "same.fastq.gz.existing").exists())
             self.assertEqual(verify_fastq_manifest(fastq_manifest_path(out_dir))["status_counts"], {"md5_verified": 1})
 
+    def test_selected_download_disambiguates_supplementary_name_from_fastq_part(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fastq_source = root / "fastq_source.fastq.gz"
+            supp_source = root / "supp_source.txt"
+            fastq_data = b"@r1\nACGT\n+\n!!!!\n"
+            supp_data = b"supplementary fixture\n"
+            fastq_source.write_bytes(fastq_data)
+            supp_source.write_bytes(supp_data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "same.fastq.gz",
+                        "url": fastq_source.as_uri(),
+                        "expected_md5": hashlib.md5(fastq_data).hexdigest(),
+                        "size_bytes": len(fastq_data),
+                    }
+                ],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.fastq.gz.part",
+                        "url": supp_source.as_uri(),
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+
+            self.assertEqual((out_dir / "same.fastq.gz").read_bytes(), fastq_data)
+            self.assertEqual((out_dir / "same.fastq.gz.2.part").read_bytes(), supp_data)
+            self.assertFalse((out_dir / "same.fastq.gz.part").exists())
+            self.assertEqual(verify_fastq_manifest(fastq_manifest_path(out_dir))["status_counts"], {"md5_verified": 1})
+
     def test_selected_download_disambiguates_supplementary_name_from_artifacts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

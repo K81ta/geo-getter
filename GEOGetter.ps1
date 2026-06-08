@@ -1385,6 +1385,57 @@ function Get-PreflightUniqueNumberedName {
     return "{0}.{1}{2}" -f $parts.Stem, ($Count + 1), $parts.Suffix
 }
 
+function Get-PreflightReservedDownloadNames {
+    param([string]$FileName)
+    return @(
+        $FileName,
+        ("{0}.part" -f $FileName)
+    )
+}
+
+function Get-PreflightDownloadRuntimeNames {
+    param(
+        [string]$FileName,
+        [ValidateSet("fastq", "supplementary")]
+        [string]$Kind
+    )
+    $names = @($FileName, ("{0}.part" -f $FileName))
+    if ($Kind -eq "fastq") {
+        $timestamp = "20000101T000000Z"
+        $partName = "{0}.part" -f $FileName
+        $names += @(
+            ("{0}.bad-md5-existing-{1}" -f $FileName, $timestamp),
+            ("{0}.bad-md5-existing-{1}.2" -f $FileName, $timestamp),
+            ("{0}.unverified-existing-{1}" -f $FileName, $timestamp),
+            ("{0}.unverified-existing-{1}.2" -f $FileName, $timestamp),
+            ("{0}.bad-md5-{1}" -f $partName, $timestamp),
+            ("{0}.bad-md5-{1}.2" -f $partName, $timestamp),
+            ("{0}.size-mismatch-{1}" -f $partName, $timestamp),
+            ("{0}.size-mismatch-{1}.2" -f $partName, $timestamp)
+        )
+    }
+    else {
+        $names += @(
+            ("{0}.existing" -f $FileName),
+            ("{0}.existing.2" -f $FileName)
+        )
+    }
+    return $names
+}
+
+function Get-PreflightDownloadRuntimePaths {
+    param(
+        [string]$LocalPath,
+        [ValidateSet("fastq", "supplementary")]
+        [string]$Kind
+    )
+    $directory = [System.IO.Path]::GetDirectoryName($LocalPath)
+    $fileName = [System.IO.Path]::GetFileName($LocalPath)
+    return @(Get-PreflightDownloadRuntimeNames $fileName $Kind | ForEach-Object {
+        Join-Path $directory $_
+    })
+}
+
 function Get-PreflightReservedUniqueName {
     param(
         [string]$FileName,
@@ -1392,11 +1443,13 @@ function Get-PreflightReservedUniqueName {
     )
     $count = 0
     $candidate = $FileName
-    while ($UsedKeys.ContainsKey((Get-PreflightNameCollisionKey $candidate))) {
+    while (@(Get-PreflightReservedDownloadNames $candidate | Where-Object { $UsedKeys.ContainsKey((Get-PreflightNameCollisionKey $_)) }).Count -gt 0) {
         $count += 1
         $candidate = Get-PreflightUniqueNumberedName $FileName $count
     }
-    $UsedKeys[(Get-PreflightNameCollisionKey $candidate)] = $true
+    foreach ($reservedName in Get-PreflightReservedDownloadNames $candidate) {
+        $UsedKeys[(Get-PreflightNameCollisionKey $reservedName)] = $true
+    }
     return $candidate
 }
 
@@ -1468,16 +1521,14 @@ function Get-PreflightPlannedPaths {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.file_name) -DefaultName "download.fastq.gz"
         $fileName = Get-PreflightReservedUniqueName $fileName $usedKeys
         $localPath = Join-Path $RunOutputDir $fileName
-        $paths += $localPath
-        $paths += ($localPath + ".part")
+        $paths += @(Get-PreflightDownloadRuntimePaths $localPath "fastq")
     }
 
     foreach ($item in $suppItems) {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.name) -DefaultName "geo_supplementary_file"
         $fileName = Get-PreflightReservedUniqueName $fileName $usedKeys
         $localPath = Join-Path $RunOutputDir $fileName
-        $paths += $localPath
-        $paths += ($localPath + ".part")
+        $paths += @(Get-PreflightDownloadRuntimePaths $localPath "supplementary")
     }
     return $paths
 }
@@ -2779,10 +2830,21 @@ if ($SelfTest) {
     Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x00DF).txt"), (Get-PreflightNameCollisionKey "SS.txt"), [System.StringComparison]::Ordinal)) $false "preflight key does not fold sharp s"
     Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x03C2).txt"), (Get-PreflightNameCollisionKey "$([char]0x03C3).txt"), [System.StringComparison]::Ordinal)) $false "preflight key does not fold final sigma"
     Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x0130).txt"), (Get-PreflightNameCollisionKey ("i" + [string][char]0x0307 + ".txt")), [System.StringComparison]::Ordinal)) $false "preflight key keeps dotted I boundary"
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x212A).txt"), (Get-PreflightNameCollisionKey "K.txt"), [System.StringComparison]::Ordinal)) $false "preflight key keeps Kelvin sign boundary"
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x1E9E).txt"), (Get-PreflightNameCollisionKey "$([char]0x00DF).txt"), [System.StringComparison]::Ordinal)) $false "preflight key keeps capital sharp s boundary"
+    Assert-Equal ([string]::Equals((Get-PreflightNameCollisionKey "$([char]0x212B).txt"), (Get-PreflightNameCollisionKey "$([char]0x00C5).txt"), [System.StringComparison]::Ordinal)) $false "preflight key keeps Angstrom sign boundary"
     $preflightUsedKeys = New-PreflightUsedKeys
     Assert-Equal (Get-PreflightReservedUniqueName "Same.fastq.gz" $preflightUsedKeys) "Same.fastq.gz" "preflight reserves first name"
     Assert-Equal (Get-PreflightReservedUniqueName "same.2.fastq.gz" $preflightUsedKeys) "same.2.fastq.gz" "preflight reserves pre-numbered name"
     Assert-Equal (Get-PreflightReservedUniqueName "same.fastq.gz" $preflightUsedKeys) "same.3.fastq.gz" "preflight skips occupied numbered candidate"
+    Assert-Equal (Get-PreflightReservedUniqueName "Same.fastq.gz.part" $preflightUsedKeys) "Same.fastq.gz.2.part" "preflight reserves existing FASTQ part path"
+    $fastqRuntimeNames = @(Get-PreflightDownloadRuntimeNames "fixture.fastq.gz" "fastq")
+    Assert-Equal ($fastqRuntimeNames -contains "fixture.fastq.gz.part") $true "preflight runtime includes FASTQ part path"
+    Assert-Equal ($fastqRuntimeNames -contains "fixture.fastq.gz.part.size-mismatch-20000101T000000Z") $true "preflight runtime includes size mismatch quarantine path"
+    Assert-Equal ($fastqRuntimeNames -contains "fixture.fastq.gz.bad-md5-existing-20000101T000000Z") $true "preflight runtime includes existing FASTQ quarantine path"
+    $suppRuntimeNames = @(Get-PreflightDownloadRuntimeNames "processed.txt" "supplementary")
+    Assert-Equal ($suppRuntimeNames -contains "processed.txt.existing") $true "preflight runtime includes supplementary existing path"
+    Assert-Equal ($suppRuntimeNames -contains "processed.txt.existing.2") $true "preflight runtime includes supplementary numbered existing path"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80
@@ -2801,6 +2863,23 @@ if ($SelfTest) {
 
     $selfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("geo getter selftest " + [System.Guid]::NewGuid().ToString("N"))
     [System.IO.Directory]::CreateDirectory($selfTestRoot) | Out-Null
+    $longPathDir = Join-Path $selfTestRoot "long path"
+    [System.IO.Directory]::CreateDirectory($longPathDir) | Out-Null
+    $longPathSuffix = ".fastq.gz"
+    $longPathDirFull = [System.IO.Path]::GetFullPath($longPathDir)
+    $longPathStemLength = 250 - $longPathDirFull.Length - 1 - $longPathSuffix.Length
+    if ($longPathStemLength -gt 0) {
+        $longRuntimeLocalPath = Join-Path $longPathDir (("a" * $longPathStemLength) + $longPathSuffix)
+        Assert-Equal ([System.IO.Path]::GetFullPath($longRuntimeLocalPath).Length -lt 260) $true "preflight long path fixture final name is below limit"
+        $longRuntimeRejected = $false
+        try {
+            Assert-PreflightPathLength @(Get-PreflightDownloadRuntimePaths $longRuntimeLocalPath "fastq")
+        }
+        catch {
+            $longRuntimeRejected = $true
+        }
+        Assert-Equal $longRuntimeRejected $true "preflight rejects runtime sidecar path over limit"
+    }
     $script:ResolveStdoutText = $encodingResult.Stdout
     $script:ResolveStderrText = $encodingResult.Stderr
     $script:LastResolveExitCode = $encodingResult.ExitCode
@@ -2915,6 +2994,12 @@ if ($SelfTest) {
                 scope = "GEO Series supplementary/processed"
                 name = "collision output_download_log.tsv"
                 url = $sourceUri
+            },
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                scope = "GEO Series supplementary/processed"
+                name = "same.fastq.gz.part"
+                url = $sourceUri
             }
         )
         fastq_files = @(
@@ -2977,6 +3062,8 @@ if ($SelfTest) {
     Assert-Equal ($collisionNames -contains "same.3.fastq.gz") $true "preflight reserves next FASTQ collision name"
     Assert-Equal ($collisionNames -contains "same.4.fastq.gz") $true "preflight reserves supplementary after FASTQ names"
     Assert-Equal ($collisionNames -contains "same.4.fastq.gz.part") $true "preflight includes supplementary part collision path"
+    Assert-Equal ($collisionNames -contains "same.fastq.gz.2.part") $true "preflight reserves supplementary away from FASTQ part path"
+    Assert-Equal ($collisionNames -contains "same.fastq.gz.2.part.part") $true "preflight includes supplementary doubled part path"
     Assert-Equal ($collisionNames -contains "collision output_fastq_manifest.2.tsv") $true "preflight reserves FASTQ away from artifact name"
     Assert-Equal ($collisionNames -contains "collision output_download_log.2.tsv") $true "preflight reserves supplementary away from artifact name"
 

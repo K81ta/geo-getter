@@ -476,12 +476,54 @@ class PlannerDownloaderTest(unittest.TestCase):
                 "out_download_log.2.tsv",
             ])
 
+    def test_fastq_output_names_reserve_part_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            files = [
+                FastqFile(
+                    source_accession="GSE",
+                    query_accession="SRP",
+                    run_accession="SRR1",
+                    file_index=1,
+                    file_name="same.fastq.gz",
+                    url="https://example.invalid/1",
+                    expected_md5="1" * 32,
+                    size_bytes=1,
+                ),
+                FastqFile(
+                    source_accession="GSE",
+                    query_accession="SRP",
+                    run_accession="SRR2",
+                    file_index=1,
+                    file_name="same.fastq.gz.part",
+                    url="https://example.invalid/2",
+                    expected_md5="2" * 32,
+                    size_bytes=1,
+                ),
+            ]
+
+            plan = build_download_plan("GSE", "GSE", files, output_dir)
+            runtime_names = [
+                name
+                for planned in plan.files
+                for name in (planned.local_path.name, f"{planned.local_path.name}.part")
+            ]
+
+            self.assertEqual([planned.local_path.name for planned in plan.files], [
+                "same.fastq.gz",
+                "same.fastq.gz.2.part",
+            ])
+            self.assertEqual(len(runtime_names), len({name_collision_key(name) for name in runtime_names}))
+
     def test_name_collision_key_matches_gui_boundary(self):
         self.assertEqual(name_collision_key("Same.fastq.gz"), name_collision_key("same.fastq.gz"))
         self.assertEqual(name_collision_key("\u03a3.txt"), name_collision_key("\u03c3.txt"))
         self.assertNotEqual(name_collision_key("\u00df.txt"), name_collision_key("SS.txt"))
         self.assertNotEqual(name_collision_key("\u03c2.txt"), name_collision_key("\u03c3.txt"))
         self.assertNotEqual(name_collision_key("\u0130.txt"), name_collision_key("i\u0307.txt"))
+        self.assertNotEqual(name_collision_key("\u212a.txt"), name_collision_key("K.txt"))
+        self.assertNotEqual(name_collision_key("\u1e9e.txt"), name_collision_key("\u00df.txt"))
+        self.assertNotEqual(name_collision_key("\u212b.txt"), name_collision_key("\u00c5.txt"))
 
     def test_unsafe_fastq_file_name_stays_inside_output_dir(self):
         with tempfile.TemporaryDirectory() as temp:

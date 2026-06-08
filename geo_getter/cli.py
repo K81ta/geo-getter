@@ -12,7 +12,7 @@ from . import __version__
 from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
 from .errors import DOWNLOAD_COMPLETE, MD5_VERIFIED, NETWORK_FAILED, GeoGetterError
 from .models import FastqFile
-from .path_safety import child_path, name_collision_key, reserve_unique_name, safe_file_name
+from .path_safety import child_path, name_collision_key, reserve_unique_download_name, reserved_download_names, safe_file_name
 from .planner import (
     append_download_log,
     build_download_plan,
@@ -131,7 +131,10 @@ def _selected_download_json(input_json: Path, fastq_indices: str, supp_indices: 
     reserved_output_names = reserved_download_artifact_names(run_output_dir)
     if selected_fastq:
         plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
-        reserved_output_names = [*reserved_output_names, *(planned.local_path.name for planned in plan.files)]
+        reserved_output_names = [
+            *reserved_output_names,
+            *(name for planned in plan.files for name in reserved_download_names(planned.local_path.name)),
+        ]
 
         def progress(planned, downloaded: int, total: int) -> None:
             print(
@@ -335,7 +338,7 @@ def _planned_supplementary_files(
     planned: list[tuple[dict, Path]] = []
     for item in selected_supp:
         file_name = safe_file_name(item.get("name", "") or "geo_supplementary_file", "geo_supplementary_file")
-        file_name = reserve_unique_name(file_name, used_keys)
+        file_name = reserve_unique_download_name(file_name, used_keys)
         planned.append((item, child_path(output_dir, file_name)))
     return planned
 
