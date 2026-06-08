@@ -11,10 +11,12 @@ import urllib.request
 
 from .errors import (
     ERROR_MESSAGES,
+    GeoGetterError,
     MD5_MISMATCH,
     MD5_UNAVAILABLE,
     MD5_VERIFIED,
     NETWORK_FAILED,
+    OUTPUT_PATH_INVALID,
     SIZE_MISMATCH,
 )
 from .http_client import USER_AGENT
@@ -48,9 +50,10 @@ def download_plan(
     progress_callback: ProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
     required_bytes: int | None = None,
+    preserve_manifest: bool = False,
 ) -> list[tuple[PlannedFile, str, str]]:
     ensure_capacity(plan, required_bytes=required_bytes)
-    write_fastq_outputs(plan)
+    write_fastq_outputs(plan, preserve_manifest=preserve_manifest)
     results: list[tuple[PlannedFile, str, str]] = []
 
     for planned in plan.files:
@@ -318,6 +321,8 @@ def _status_code(response: object) -> int:
 
 def _existing_size(path: Path) -> int:
     try:
+        if not path.is_file():
+            return 0
         return path.stat().st_size
     except OSError:
         return 0
@@ -334,9 +339,11 @@ def _reuse_or_quarantine_existing(
 ) -> tuple[str, str, str, int] | None:
     if not planned.local_path.exists():
         return None
+    if not planned.local_path.is_file():
+        raise GeoGetterError(OUTPUT_PATH_INVALID, f"download_target_is_not_file path={planned.local_path}")
     existing_size = _existing_size(planned.local_path)
     if planned.fastq.expected_md5:
-        if planned.fastq.size_bytes <= 0 or existing_size != planned.fastq.size_bytes:
+        if planned.fastq.size_bytes > 0 and existing_size != planned.fastq.size_bytes:
             quarantined = _quarantine_file(planned.local_path, "size-mismatch-existing")
             _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
             return None
@@ -367,6 +374,8 @@ def _reuse_or_quarantine_complete_part(
     part_path = _part_path(planned.local_path)
     if not part_path.exists():
         return None
+    if not part_path.is_file():
+        raise GeoGetterError(OUTPUT_PATH_INVALID, f"partial_download_target_is_not_file path={part_path}")
     part_size = _existing_size(part_path)
     if planned.fastq.size_bytes > 0 and part_size < planned.fastq.size_bytes:
         return None

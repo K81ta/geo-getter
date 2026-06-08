@@ -882,7 +882,9 @@ function Set-DownloadPreflightDiagnosticError {
         $script:LastPreflightFreeBytes = $null
     }
     $code = if ([string]::IsNullOrWhiteSpace($Code)) { Get-PreflightDiagnosticCode $script:LastPreflightError } else { $Code }
-    $script:LastResumeErrorCode = $code
+    if ($code -like "resume_*") {
+        $script:LastResumeErrorCode = $code
+    }
     $script:LastDiagnosticError = New-DiagnosticError "download_preflight" "selected-download-json" $code $script:LastPreflightError $script:LastPreflightError "gui_preflight" $null
 }
 
@@ -3756,6 +3758,7 @@ if ($SelfTest) {
     $preflightFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $preflightFailureExtract "diagnostics.json") | ConvertFrom-Json
     Assert-Equal $preflightFailureDiagnostics.last_error.phase "download_preflight" "diagnostics records preflight phase"
     Assert-Equal $preflightFailureDiagnostics.last_error.code "output_path_invalid" "diagnostics records preflight code"
+    Assert-Equal $preflightFailureDiagnostics.resume_error_code "" "diagnostics does not record non-resume preflight as resume error"
 
     $longPreflightMessage = ""
     try {
@@ -3786,6 +3789,7 @@ if ($SelfTest) {
     }
     Assert-Contains $nonEmptySuppMessage "supplementary" "preflight rejects supplementary in nonempty output"
     Assert-Equal $script:LastDiagnosticError.code "resume_supplementary_unsupported" "preflight records supplementary resume code"
+    Assert-Equal $script:LastResumeErrorCode "resume_supplementary_unsupported" "preflight records resume-specific code"
     Assert-Equal $script:LastExistingOutputNonEmpty $true "preflight records nonempty output"
 
     $outputBox.Text = Join-Path $selfTestRoot "huge fastq output"
@@ -3866,6 +3870,31 @@ if ($SelfTest) {
     Assert-Equal $resumeSecond.ExitCode 0 "resume fixture second download exit code"
     Assert-Contains $resumeSecond.Stdout '"resume_existing": true' "resume done event records resume mode"
     Assert-Contains $resumeSecond.Stdout '"resume_required_bytes": 0' "resume done event records remaining bytes"
+    $script:ResumeExistingConfirmationForSelfTest = $false
+    $script:DownloadProcess = $null
+    Start-DownloadProcess
+    Assert-Equal $script:DownloadProcess $null "resume cancellation does not start subprocess"
+    Assert-Equal $script:LastResumeExistingRequested $false "resume cancellation records no resume request"
+    Assert-Equal $statusLabel.Text (T "canceled") "resume cancellation updates status"
+    $script:ResumeExistingConfirmationForSelfTest = $true
+    $progressBar.Value = 0
+    $statusLabel.Text = T "downloading"
+    Start-DownloadProcess
+    Assert-Equal ($script:LastDownloadArguments -contains "--resume-existing") $true "download start passes resume argument after confirmation"
+    Assert-Equal $script:LastResumeExistingRequested $true "download start records confirmed resume request"
+    $resumeStartDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ($null -ne $script:DownloadProcess -and [DateTime]::UtcNow -lt $resumeStartDeadline) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 50
+    }
+    for ($i = 0; $i -lt 20; $i++) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 50
+    }
+    Assert-Equal $script:DownloadProcess $null "confirmed resume subprocess finished"
+    Assert-Equal $statusLabel.Text (T "complete") "confirmed resume completes"
+    Assert-Equal ([bool]$script:LastDownloadDoneEvent.resume_existing) $true "confirmed resume done event records resume mode"
+    $script:ResumeExistingConfirmationForSelfTest = $null
 
     $downloadDoneEventForDiagnostics = $script:LastDownloadDoneEvent
     $script:LastDownloadDoneEvent = $null

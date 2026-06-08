@@ -351,6 +351,101 @@ class CliTest(unittest.TestCase):
             self.assertEqual(done["resume_existing"], True)
             self.assertEqual(done["resume_required_bytes"], 0)
 
+    def test_selected_download_resume_preserves_existing_fastq_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir), 0)
+            manifest = fastq_manifest_path(out_dir)
+            with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+                fieldnames = list(rows[0].keys())
+            fieldnames.append("operator_note")
+            rows[0]["status"] = "previous_status"
+            rows[0]["operator_note"] = "keep me"
+            with manifest.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t", lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(rows)
+            original_manifest = manifest.read_text(encoding="utf-8-sig")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir, resume_existing=True), 0)
+
+            self.assertEqual(manifest.read_text(encoding="utf-8-sig"), original_manifest)
+
+    def test_selected_download_resumes_fastq_only_from_mixed_history(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fastq_source = root / "source.fastq.gz"
+            fastq_data = b"@r1\nACGT\n+\n!!!!\n"
+            fastq_source.write_bytes(fastq_data)
+            supp_source = root / "supplementary.txt"
+            supp_source.write_text("supplementary fixture\n", encoding="utf-8")
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": fastq_source.as_uri(),
+                        "expected_md5": hashlib.md5(fastq_data).hexdigest(),
+                        "size_bytes": len(fastq_data),
+                    }
+                ],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "supplementary.txt",
+                        "url": supp_source.as_uri(),
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+            self.assertIn("GEO_SUPPLEMENTARY", download_log_path(out_dir).read_text(encoding="utf-8-sig"))
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir, resume_existing=True), 0)
+
+            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(done["statuses"], ["md5_verified"])
+            self.assertEqual(done["resume_existing"], True)
+
     def test_selected_download_sanitizes_supplementary_name(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

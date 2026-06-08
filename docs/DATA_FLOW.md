@@ -81,9 +81,9 @@ GEO supplementary / processed file を選んだ場合は `*_supplementary_manife
 
 ダウンロード中のファイルは `.part` として保存される。同じ保存パスに `.part` が残っている場合は、HTTP Range で再開を試みる。
 
-既存ファイルがある保存フォルダで FASTQ を再開する場合は、既存の `*_fastq_manifest.tsv` と `*_download_log.tsv` が今回の FASTQ 選択と一致する場合だけ続行する。一致しない場合や必要な記録がない場合は、推測で続行せず停止する。
+既存ファイルがある保存フォルダで FASTQ を再開する場合は、既存の `*_fastq_manifest.tsv` と `*_download_log.tsv` が今回の FASTQ 選択と一致する場合だけ続行する。過去の `*_download_log.tsv` に GEO supplementary / processed file の記録があっても、今回の FASTQ 選択とは別に扱う。一致しない場合や必要な記録がない場合は、推測で続行せず停止する。
 
-完成済みの同名 FASTQ は、期待サイズと期待 MD5 の両方が一致する場合だけ再利用する。MD5 が合わない場合、サイズが合わない場合、または期待 MD5 がない既存 FASTQ は、正式ファイル名のまま使わず別名に退避して取り直す。
+完成済みの同名 FASTQ は、期待サイズがある場合はサイズも確認したうえで、期待 MD5 が一致する場合だけ再利用する。MD5 が合わない場合、期待サイズがあるのにサイズが合わない場合、または期待 MD5 がない既存 FASTQ は、正式ファイル名のまま使わず別名に退避して取り直す。
 
 GEO supplementary / processed file は MD5 照合を行わない。既存ファイルがある保存フォルダでは保存せず、空の保存先を選ぶ必要がある。
 

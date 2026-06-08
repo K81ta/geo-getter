@@ -94,9 +94,10 @@ def ensure_capacity(plan: DownloadPlan, required_bytes: int | None = None) -> No
         )
 
 
-def write_fastq_outputs(plan: DownloadPlan) -> None:
+def write_fastq_outputs(plan: DownloadPlan, preserve_manifest: bool = False) -> None:
     plan.output_dir.mkdir(parents=True, exist_ok=True)
-    write_fastq_manifest(plan)
+    if not preserve_manifest:
+        write_fastq_manifest(plan)
     initialize_log(plan.output_dir)
 
 
@@ -362,7 +363,7 @@ def _assert_download_log_matches_plan(log: Path, rows: list[dict[str, str]], pla
     for index, row in enumerate(rows, start=2):
         run_accession = (row.get("run_accession") or "").strip()
         if run_accession == "GEO_SUPPLEMENTARY":
-            _raise_resume_mismatch("download_log_contains_supplementary", log, f"row={index}")
+            continue
         key = _resume_log_key_from_row(row)
         if key not in allowed:
             _raise_resume_mismatch("download_log_selection_mismatch", log, f"row={index} entry={_format_resume_key(key)}")
@@ -426,8 +427,7 @@ def _file_is_reusable(path: Path, expected_md5: str, expected_size: int) -> bool
     return (
         path.is_file()
         and bool(expected_md5)
-        and expected_size > 0
-        and _existing_size(path) == expected_size
+        and (expected_size <= 0 or _existing_size(path) == expected_size)
         and _calculate_md5(path).lower() == expected_md5.lower()
     )
 
@@ -513,6 +513,8 @@ def _parse_manifest_size(value: str | None, row_number: int) -> int:
 
 def _existing_size(path: Path) -> int:
     try:
+        if not path.is_file():
+            return 0
         return path.stat().st_size
     except OSError:
         return 0

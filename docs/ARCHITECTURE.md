@@ -407,8 +407,8 @@ FASTQ 保存処理:
 2. 既存ファイルがあるフォルダで `--resume-existing` がない場合は停止する。
 3. `--resume-existing` がある場合は、既存 FASTQ manifest と download log が今回の FASTQ 選択と一致することを確認する。
 4. 再開時は、完成済み FASTQ と `.part` を考慮した残り必要容量を保存先空き容量と比較する。新規保存時は選択 FASTQ の合計 `size_bytes` を比較する。
-5. FASTQ manifest と download log を準備する。再開時の download log は既存内容を保持して追記する。
-6. 完成済み同名ファイルがある場合、期待サイズと期待 MD5 が一致すれば再利用する。
+5. FASTQ manifest と download log を準備する。再開時の FASTQ manifest と download log は既存内容を保持し、download log に追記する。
+6. 完成済み同名ファイルがある場合、期待サイズがあればサイズも確認し、期待 MD5 が一致すれば再利用する。
 7. 完成済み同名ファイルのサイズまたは MD5 が不一致、または期待 MD5 がない場合は quarantine 名に退避して取り直す。
 8. 期待 MD5 がある完成済み `.part` は、サイズと MD5 が妥当なら正式ファイル名へ昇格する。期待 MD5 がない完成済み `.part` は再利用しない。
 9. 途中 `.part` がある場合、HTTP `Range` で再開を試みる。期待 MD5 がない場合も、同じ local path の途中 `.part` であれば Range 再開の対象になる。

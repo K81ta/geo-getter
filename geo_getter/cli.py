@@ -186,7 +186,13 @@ def _selected_download_json(
         def message(text: str) -> None:
             print(json.dumps({"event": "message", "message": text}, ensure_ascii=False), flush=True)
 
-        results = download_plan(plan, progress_callback=progress, message_callback=message, required_bytes=resume_required_bytes)
+        results = download_plan(
+            plan,
+            progress_callback=progress,
+            message_callback=message,
+            required_bytes=resume_required_bytes,
+            preserve_manifest=resume_active,
+        )
         statuses.extend(status for _planned, status, _message in results)
     else:
         initialize_log(run_output_dir)
