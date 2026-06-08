@@ -1385,6 +1385,21 @@ function Get-PreflightUniqueNumberedName {
     return "{0}.{1}{2}" -f $parts.Stem, ($Count + 1), $parts.Suffix
 }
 
+function Get-PreflightReservedUniqueName {
+    param(
+        [string]$FileName,
+        [hashtable]$UsedKeys
+    )
+    $count = 0
+    $candidate = $FileName
+    while ($UsedKeys.ContainsKey((Get-PreflightNameCollisionKey $candidate))) {
+        $count += 1
+        $candidate = Get-PreflightUniqueNumberedName $FileName $count
+    }
+    $UsedKeys[(Get-PreflightNameCollisionKey $candidate)] = $true
+    return $candidate
+}
+
 function Get-SelectedFastqItemsForPreflight {
     $selected = @()
     if ($null -eq $script:Resolved) { return $selected }
@@ -1428,25 +1443,18 @@ function Get-PreflightPlannedPaths {
         $paths += (Join-Path $RunOutputDir ("{0}_download_log.tsv" -f $prefix))
     }
 
-    $fastqCounts = @{}
+    $usedKeys = @{}
     foreach ($item in $fastqItems) {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.file_name) -DefaultName "download.fastq.gz"
-        $key = Get-PreflightNameCollisionKey $fileName
-        $count = if ($fastqCounts.ContainsKey($key)) { [int]$fastqCounts[$key] } else { 0 }
-        $fastqCounts[$key] = $count + 1
-        $fileName = Get-PreflightUniqueNumberedName $fileName $count
+        $fileName = Get-PreflightReservedUniqueName $fileName $usedKeys
         $localPath = Join-Path $RunOutputDir $fileName
         $paths += $localPath
         $paths += ($localPath + ".part")
     }
 
-    $suppCounts = @{}
     foreach ($item in $suppItems) {
         $fileName = ConvertTo-GeoGetterSafeName ([string]$item.name) -DefaultName "geo_supplementary_file"
-        $key = Get-PreflightNameCollisionKey $fileName
-        $count = if ($suppCounts.ContainsKey($key)) { [int]$suppCounts[$key] } else { 0 }
-        $suppCounts[$key] = $count + 1
-        $fileName = Get-PreflightUniqueNumberedName $fileName $count
+        $fileName = Get-PreflightReservedUniqueName $fileName $usedKeys
         $localPath = Join-Path $RunOutputDir $fileName
         $paths += $localPath
         $paths += ($localPath + ".part")
@@ -2747,6 +2755,10 @@ if ($SelfTest) {
     Assert-Equal (ConvertTo-GeoGetterSafeName "..") "geo_getter_download" "preflight safe name handles dot-only name"
     Assert-Equal (Get-PreflightNameCollisionKey "Same.fastq.gz") "same.fastq.gz" "preflight name collision key is case-insensitive"
     Assert-Equal (Get-PreflightUniqueNumberedName "same.fastq.gz" 1) "same.2.fastq.gz" "preflight duplicate FASTQ numbering"
+    $preflightUsedKeys = @{}
+    Assert-Equal (Get-PreflightReservedUniqueName "Same.fastq.gz" $preflightUsedKeys) "Same.fastq.gz" "preflight reserves first name"
+    Assert-Equal (Get-PreflightReservedUniqueName "same.2.fastq.gz" $preflightUsedKeys) "same.2.fastq.gz" "preflight reserves pre-numbered name"
+    Assert-Equal (Get-PreflightReservedUniqueName "same.fastq.gz" $preflightUsedKeys) "same.3.fastq.gz" "preflight skips occupied numbered candidate"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80
@@ -2854,6 +2866,76 @@ if ($SelfTest) {
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
+
+    $collisionFixture = [pscustomobject]@{
+        input_text = "COLLISION"
+        primary_accession = "COLLISION"
+        query_accessions = @("COLLISION")
+        warnings = @()
+        dataset_metadata = [pscustomobject]@{
+            accession = "COLLISION"
+            status = "Public on Jan 01 2026"
+            title = "Collision self test dataset"
+            organism = "Homo sapiens"
+            experiment_type = "Expression profiling by high throughput sequencing"
+        }
+        supplementary_files = @(
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                scope = "GEO Series supplementary/processed"
+                name = "same.fastq.gz"
+                url = $sourceUri
+            }
+        )
+        fastq_files = @(
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                query_accession = "COLLISION"
+                run_accession = "SRR1"
+                file_index = 1
+                file_name = "Same.fastq.gz"
+                url = $sourceUri
+                expected_md5 = $expectedMd5
+                size_bytes = 16
+                sample_accession = "SAM1"
+                library_layout = "SINGLE"
+            },
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                query_accession = "COLLISION"
+                run_accession = "SRR2"
+                file_index = 1
+                file_name = "same.2.fastq.gz"
+                url = $sourceUri
+                expected_md5 = $expectedMd5
+                size_bytes = 16
+                sample_accession = "SAM2"
+                library_layout = "SINGLE"
+            },
+            [pscustomobject]@{
+                source_accession = "COLLISION"
+                query_accession = "COLLISION"
+                run_accession = "SRR3"
+                file_index = 1
+                file_name = "same.fastq.gz"
+                url = $sourceUri
+                expected_md5 = $expectedMd5
+                size_bytes = 16
+                sample_accession = "SAM3"
+                library_layout = "SINGLE"
+            }
+        )
+    }
+    Apply-ResolvedResult $collisionFixture
+    Set-GridSelection $fastqGrid "selected" $true
+    Set-GridSelection $suppGrid "supp_selected" $true
+    $collisionNames = @(Get-PreflightPlannedPaths (Join-Path $selfTestRoot "collision output") | ForEach-Object { [System.IO.Path]::GetFileName([string]$_) })
+    Assert-Equal ($collisionNames -contains "Same.fastq.gz") $true "preflight includes first FASTQ collision name"
+    Assert-Equal ($collisionNames -contains "same.2.fastq.gz") $true "preflight includes pre-numbered FASTQ name"
+    Assert-Equal ($collisionNames -contains "same.3.fastq.gz") $true "preflight reserves next FASTQ collision name"
+    Assert-Equal ($collisionNames -contains "same.4.fastq.gz") $true "preflight reserves supplementary after FASTQ names"
+    Assert-Equal ($collisionNames -contains "same.4.fastq.gz.part") $true "preflight includes supplementary part collision path"
+
     Apply-ResolvedResult $resolvedFixture
     Assert-Equal $outputBox.Text (Get-DefaultOutputFolderForAccession "SELFTEST") "search success sets accession output folder"
     Assert-Equal $fastqGrid.Rows[0].Cells["run"].Value "SRR1" "fastq display defaults to SRR order"

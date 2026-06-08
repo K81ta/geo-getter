@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import json
 import contextlib
@@ -5,9 +6,10 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
-from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path
+from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path, verify_fastq_manifest
 
 
 class CliTest(unittest.TestCase):
@@ -252,6 +254,90 @@ class CliTest(unittest.TestCase):
             self.assertEqual((run_dir / "same.2.txt").read_bytes(), b"second\n")
             self.assertEqual((run_dir / "same.3.txt").read_bytes(), b"third\n")
             self.assertFalse((run_dir / "Same.txt.existing").exists())
+
+    def test_selected_download_disambiguates_fastq_and_supplementary_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fastq_source = root / "fastq_source.fastq.gz"
+            supp_source = root / "supp_source.fastq.gz"
+            fastq_data = b"@r1\nACGT\n+\n!!!!\n"
+            supp_data = b"supplementary fixture\n"
+            fastq_source.write_bytes(fastq_data)
+            supp_source.write_bytes(supp_data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "same.fastq.gz",
+                        "url": fastq_source.as_uri(),
+                        "expected_md5": hashlib.md5(fastq_data).hexdigest(),
+                        "size_bytes": len(fastq_data),
+                    }
+                ],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.fastq.gz",
+                        "url": supp_source.as_uri(),
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+
+            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(done["statuses"], ["md5_verified", "download_complete"])
+            self.assertEqual((out_dir / "same.fastq.gz").read_bytes(), fastq_data)
+            self.assertEqual((out_dir / "same.2.fastq.gz").read_bytes(), supp_data)
+            self.assertFalse((out_dir / "same.fastq.gz.existing").exists())
+            self.assertEqual(verify_fastq_manifest(fastq_manifest_path(out_dir))["status_counts"], {"md5_verified": 1})
+
+    def test_selected_download_logs_supplementary_part_size_on_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "supplementary.txt",
+                        "url": "https://example.invalid/supplementary.txt",
+                    }
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
+            def fail_with_part(_url, local_path, **_kwargs):
+                local_path.with_name(local_path.name + ".part").write_bytes(b"abc")
+                raise OSError("fixture transfer failure")
+
+            stdout = io.StringIO()
+            with mock.patch("geo_getter.cli.download_url_to_part", side_effect=fail_with_part):
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 1)
+
+            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(done["statuses"], ["network_failed"])
+            with download_log_path(out_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "network_failed")
+            self.assertEqual(rows[-1]["bytes_downloaded"], "3")
 
     def test_selected_download_reports_unsupported_fastq_url_without_losing_done_event(self):
         with tempfile.TemporaryDirectory() as temp:
