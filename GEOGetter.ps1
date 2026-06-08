@@ -189,6 +189,11 @@ $script:LastPreflightError = ""
 $script:LastPreflightOutputDir = ""
 $script:LastPreflightRequiredBytes = $null
 $script:LastPreflightFreeBytes = $null
+$script:LastExistingOutputNonEmpty = $false
+$script:LastResumeExistingRequested = $false
+$script:LastResumeRequiredBytes = $null
+$script:LastResumeErrorCode = ""
+$script:ResumeExistingConfirmationForSelfTest = $null
 $script:LastInputText = ""
 $script:LastResolvedInputText = ""
 $script:Language = $UiLanguage
@@ -302,7 +307,7 @@ $script:Translations = @{
             "通信失敗時は自動で再試行します。再試行しても失敗したファイルはdownload logに失敗として記録されます。"
             ""
             "既存ファイル:"
-            "同名FASTQが既にありMD5が一致する場合は、再ダウンロードせず再利用します。MD5が一致しない場合は、既存ファイルを退避してから取り直します。"
+            "同名FASTQが既にあり期待サイズとMD5が一致する場合は、再ダウンロードせず再利用します。サイズまたはMD5が一致しない場合は、既存ファイルを退避してから取り直します。"
             ""
             "保存先の空き容量が不足している場合は、保存先を変更するか、選択するFASTQを減らしてください。"
         ) -join [Environment]::NewLine)
@@ -353,6 +358,10 @@ $script:Translations = @{
         preflightCannotWrite = "保存先に書き込めません: {0}"
         preflightInsufficientSpace = "空き容量が足りません。必要容量(FASTQ): {0} / 空き容量: {1}"
         preflightPathTooLong = "保存先パスが長すぎます: {0}"
+        resumeExistingTitle = "既存フォルダから再開"
+        resumeExistingPrompt = "保存先フォルダに既存ファイルがあります。前回のFASTQ記録と今回の選択が一致する場合だけ、このフォルダで再開します。`n`n{0}`n`n再開しますか?"
+        resumeDeclinedLog = "既存フォルダからの再開をキャンセルしました。"
+        resumeSupplementaryUnsupported = "既存ファイルがある保存先では、GEO supplementary / processed file は保存できません。空の保存先を選んでください。"
         diagnosticsSavedLog = "診断情報を保存しました: {0}"
         diagnosticsFailedLog = "診断情報の保存に失敗しました: {0}"
         diagnosticsDialogTitle = "診断情報を保存"
@@ -467,7 +476,7 @@ $script:Translations = @{
             "Network failures are retried automatically. Files that still fail after retry are recorded as failures in the download log."
             ""
             "Existing files:"
-            "If a FASTQ file with the same name already exists and its MD5 matches, GEOGetter reuses it instead of downloading again. If the MD5 does not match, the existing file is moved aside and downloaded again."
+            "If a FASTQ file with the same name already exists and both its expected size and MD5 match, GEOGetter reuses it instead of downloading again. If the size or MD5 does not match, the existing file is moved aside and downloaded again."
             ""
             "If the output folder does not have enough free space, change the output folder or select fewer FASTQ files."
         ) -join [Environment]::NewLine)
@@ -518,6 +527,10 @@ $script:Translations = @{
         preflightCannotWrite = "Could not write to the output folder: {0}"
         preflightInsufficientSpace = "Not enough free space. Required (FASTQ): {0} / Free: {1}"
         preflightPathTooLong = "The output path is too long: {0}"
+        resumeExistingTitle = "Resume from existing folder"
+        resumeExistingPrompt = "The output folder already contains files. GEOGetter will resume in this folder only if the previous FASTQ records match the current selection.`n`n{0}`n`nResume?"
+        resumeDeclinedLog = "Resume from the existing folder was canceled."
+        resumeSupplementaryUnsupported = "GEO supplementary/processed files cannot be saved to an output folder that already contains files. Choose an empty output folder."
         diagnosticsSavedLog = "Saved diagnostics: {0}"
         diagnosticsFailedLog = "Failed to save diagnostics: {0}"
         diagnosticsDialogTitle = "Save diagnostics"
@@ -858,7 +871,8 @@ function Get-PreflightDiagnosticCode {
 function Set-DownloadPreflightDiagnosticError {
     param(
         [string]$Message,
-        [bool]$ClearOutputContext = $false
+        [bool]$ClearOutputContext = $false,
+        [string]$Code = ""
     )
     $script:LastPreflightStatus = "failed"
     $script:LastPreflightError = $Message
@@ -867,7 +881,8 @@ function Set-DownloadPreflightDiagnosticError {
         $script:LastPreflightRequiredBytes = $null
         $script:LastPreflightFreeBytes = $null
     }
-    $code = Get-PreflightDiagnosticCode $script:LastPreflightError
+    $code = if ([string]::IsNullOrWhiteSpace($Code)) { Get-PreflightDiagnosticCode $script:LastPreflightError } else { $Code }
+    $script:LastResumeErrorCode = $code
     $script:LastDiagnosticError = New-DiagnosticError "download_preflight" "selected-download-json" $code $script:LastPreflightError $script:LastPreflightError "gui_preflight" $null
 }
 
@@ -1063,6 +1078,10 @@ function Save-DiagnosticsZip {
             preflight_output_dir = $script:LastPreflightOutputDir
             preflight_required_bytes = $script:LastPreflightRequiredBytes
             preflight_free_bytes = $script:LastPreflightFreeBytes
+            existing_output_nonempty = $script:LastExistingOutputNonEmpty
+            resume_existing_requested = $script:LastResumeExistingRequested
+            resume_required_bytes = $script:LastResumeRequiredBytes
+            resume_error_code = $script:LastResumeErrorCode
             last_download_arguments = @($script:LastDownloadArguments)
             last_download_start_error = $script:LastDownloadStartError
             last_download_exit_code = $script:LastDownloadExitCode
@@ -1208,6 +1227,9 @@ function Clear-DownloadDiagnosticState {
     $script:DownloadStdoutClosed = $false
     $script:DownloadStderrClosed = $false
     $script:DownloadFinalized = $false
+    $script:LastResumeExistingRequested = $false
+    $script:LastResumeRequiredBytes = $null
+    $script:LastResumeErrorCode = ""
 }
 
 function Clear-VerificationDiagnosticState {
@@ -1242,6 +1264,10 @@ function Clear-ResolvedState {
     $script:LastPreflightOutputDir = ""
     $script:LastPreflightRequiredBytes = $null
     $script:LastPreflightFreeBytes = $null
+    $script:LastExistingOutputNonEmpty = $false
+    $script:LastResumeExistingRequested = $false
+    $script:LastResumeRequiredBytes = $null
+    $script:LastResumeErrorCode = ""
     if ($fastqGrid) { $fastqGrid.Rows.Clear() }
     if ($suppGrid) { $suppGrid.Rows.Clear() }
     if ($DeleteResolvedJson -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
@@ -1522,6 +1548,8 @@ function Get-PreflightDownloadRuntimeNames {
         $names += @(
             ("{0}.bad-md5-existing-{1}" -f $FileName, $timestamp),
             ("{0}.bad-md5-existing-{1}.2" -f $FileName, $timestamp),
+            ("{0}.size-mismatch-existing-{1}" -f $FileName, $timestamp),
+            ("{0}.size-mismatch-existing-{1}.2" -f $FileName, $timestamp),
             ("{0}.unverified-existing-{1}" -f $FileName, $timestamp),
             ("{0}.unverified-existing-{1}.2" -f $FileName, $timestamp),
             ("{0}.bad-md5-{1}" -f $partName, $timestamp),
@@ -1664,12 +1692,43 @@ function Assert-PreflightPathLength {
     }
 }
 
+function Test-DirectoryHasEntries {
+    param([string]$Path)
+    if (-not [System.IO.Directory]::Exists($Path)) { return $false }
+    $entries = [System.IO.Directory]::EnumerateFileSystemEntries($Path)
+    $enumerator = $entries.GetEnumerator()
+    try {
+        return $enumerator.MoveNext()
+    }
+    finally {
+        if ($enumerator -is [System.IDisposable]) { $enumerator.Dispose() }
+    }
+}
+
+function Confirm-ResumeExistingOutput {
+    param([string]$OutputDir)
+    if ($SelfTest -and $null -ne $script:ResumeExistingConfirmationForSelfTest) {
+        return [bool]$script:ResumeExistingConfirmationForSelfTest
+    }
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        ((T "resumeExistingPrompt") -f $OutputDir),
+        (T "resumeExistingTitle"),
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    return $result -eq [System.Windows.Forms.DialogResult]::Yes
+}
+
 function Test-DownloadPreflight {
     $script:LastPreflightStatus = "running"
     $script:LastPreflightError = ""
     $script:LastPreflightOutputDir = ""
     $script:LastPreflightRequiredBytes = $null
     $script:LastPreflightFreeBytes = $null
+    $script:LastExistingOutputNonEmpty = $false
+    $script:LastResumeExistingRequested = $false
+    $script:LastResumeRequiredBytes = $null
+    $script:LastResumeErrorCode = ""
     try {
         if (-not $outputBox -or [string]::IsNullOrWhiteSpace($outputBox.Text)) {
             throw (T "preflightOutputRequired")
@@ -1681,6 +1740,13 @@ function Test-DownloadPreflight {
 
         $script:LastPreflightOutputDir = $runOutputDir
         Assert-PreflightPathLength @(Get-PreflightPlannedPaths $runOutputDir)
+        $existingOutputNonEmpty = Test-DirectoryHasEntries $runOutputDir
+        $script:LastExistingOutputNonEmpty = $existingOutputNonEmpty
+        if ($existingOutputNonEmpty -and (Get-SelectedSuppCount) -gt 0) {
+            Set-DownloadPreflightDiagnosticError (T "resumeSupplementaryUnsupported") $false "resume_supplementary_unsupported"
+            Append-Log ((T "preflightFailedLog") -f $script:LastPreflightError)
+            throw $script:LastPreflightError
+        }
 
         try {
             [System.IO.Directory]::CreateDirectory($runOutputDir) | Out-Null
@@ -1703,7 +1769,7 @@ function Test-DownloadPreflight {
         $requiredBytes = [Int64](Get-SelectedTotalBytes)
         $script:LastPreflightRequiredBytes = $requiredBytes
         $script:LastPreflightFreeBytes = $freeBytes
-        if ($null -ne $freeBytes -and $requiredBytes -gt [Int64]$freeBytes) {
+        if (-not $existingOutputNonEmpty -and $null -ne $freeBytes -and $requiredBytes -gt [Int64]$freeBytes) {
             throw ((T "preflightInsufficientSpace") -f (Format-Bytes $requiredBytes), (Format-Bytes ([Int64]$freeBytes)))
         }
 
@@ -1712,10 +1778,13 @@ function Test-DownloadPreflight {
             OutputDir = $runOutputDir
             RequiredBytes = $requiredBytes
             FreeBytes = $freeBytes
+            ExistingOutputNonEmpty = $existingOutputNonEmpty
         }
     }
     catch {
-        Set-DownloadPreflightDiagnosticError $_.Exception.Message
+        if ($script:LastPreflightStatus -ne "failed" -or $script:LastPreflightError -ne $_.Exception.Message) {
+            Set-DownloadPreflightDiagnosticError $_.Exception.Message
+        }
         Append-Log ((T "preflightFailedLog") -f $script:LastPreflightError)
         throw
     }
@@ -1848,6 +1917,10 @@ function Handle-DownloadLine {
         }
         elseif ($event.event -eq "done") {
             $script:LastDownloadDoneEvent = $event
+            $resumeBytesProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "resume_required_bytes" } | Select-Object -First 1)
+            if ($resumeBytesProperty.Count -gt 0 -and $null -ne $resumeBytesProperty[0].Value) {
+                $script:LastResumeRequiredBytes = [Int64]$resumeBytesProperty[0].Value
+            }
             $progressBar.Value = 100
             if ($event.fastq_manifest) { Append-Log ((T "fastqManifestLog") -f $event.fastq_manifest) }
             if ($event.supplementary_manifest) { Append-Log ((T "supplementaryManifestLog") -f $event.supplementary_manifest) }
@@ -1861,6 +1934,24 @@ function Handle-DownloadLine {
     catch {
         Append-Log $Line
     }
+}
+
+function Handle-DownloadErrorLine {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return }
+    try {
+        $event = $Line | ConvertFrom-Json
+        if ($event.event -eq "error") {
+            $script:LastDiagnosticError = New-DiagnosticError "download" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastDownloadExitCode
+            if ([string]$event.code -like "resume_*") {
+                $script:LastResumeErrorCode = [string]$event.code
+            }
+            Append-Log ([string]$event.message)
+            return
+        }
+    }
+    catch { }
+    Append-Log $Line
 }
 
 function Format-VerificationStatusCounts {
@@ -2201,12 +2292,23 @@ function Start-DownloadProcess {
         Set-DownloadPreflightDiagnosticError $_.Exception.Message $true
         throw
     }
-    Test-DownloadPreflight | Out-Null
+    $preflight = Test-DownloadPreflight
+    $resumeExisting = $false
+    if ($preflight.ExistingOutputNonEmpty) {
+        if (-not (Confirm-ResumeExistingOutput $preflight.OutputDir)) {
+            $script:LastResumeExistingRequested = $false
+            $statusLabel.Text = T "canceled"
+            Append-Log (T "resumeDeclinedLog")
+            return
+        }
+        $resumeExisting = $true
+        $script:LastResumeExistingRequested = $true
+    }
 
     $fastqIndices = Get-SelectedFastqIndicesOrEmpty
     $suppIndices = Get-SelectedSuppIndicesOrEmpty
-    $script:LastDownloadArguments = Get-DownloadPythonArguments $fastqIndices $suppIndices
-    $psi = New-DownloadProcessStartInfo $fastqIndices $suppIndices
+    $script:LastDownloadArguments = Get-DownloadPythonArguments $fastqIndices $suppIndices $resumeExisting
+    $psi = New-DownloadProcessStartInfo $fastqIndices $suppIndices $resumeExisting
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     $process.EnableRaisingEvents = $true
@@ -2230,7 +2332,7 @@ function Start-DownloadProcess {
             param($line)
             Add-DiagnosticProcessOutput "stderr" $line
             try {
-                Append-Log $line
+                Handle-DownloadErrorLine $line
             }
             catch { }
         }),
@@ -2293,9 +2395,10 @@ function New-ResolveProcessStartInfo {
 function New-DownloadProcessStartInfo {
     param(
         [string]$FastqIndices,
-        [string]$SuppIndices
+        [string]$SuppIndices,
+        [bool]$ResumeExisting = $false
     )
-    return New-PythonProcessStartInfo -Arguments (Get-DownloadPythonArguments $FastqIndices $SuppIndices)
+    return New-PythonProcessStartInfo -Arguments (Get-DownloadPythonArguments $FastqIndices $SuppIndices $ResumeExisting)
 }
 
 function New-VerifyManifestProcessStartInfo {
@@ -2311,9 +2414,14 @@ function Get-ResolvePythonArguments {
 function Get-DownloadPythonArguments {
     param(
         [string]$FastqIndices,
-        [string]$SuppIndices
+        [string]$SuppIndices,
+        [bool]$ResumeExisting = $false
     )
-    return @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text)
+    $args = @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text)
+    if ($ResumeExisting) {
+        $args += "--resume-existing"
+    }
+    return $args
 }
 
 function Get-VerifyManifestPythonArguments {
@@ -2380,9 +2488,10 @@ function Set-ProcessEnvironment {
 function Invoke-SelectedDownloadJsonForSelfTest {
     param(
         [string]$FastqIndices,
-        [string]$SuppIndices
+        [string]$SuppIndices,
+        [bool]$ResumeExisting = $false
     )
-    $psi = New-DownloadProcessStartInfo $FastqIndices $SuppIndices
+    $psi = New-DownloadProcessStartInfo $FastqIndices $SuppIndices $ResumeExisting
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     [void]$process.Start()
@@ -3664,6 +3773,21 @@ if ($SelfTest) {
     Assert-Equal $script:LastPreflightStatus "ok" "preflight accepts supplementary-only selection"
     Assert-Equal $suppOnlyPreflight.RequiredBytes ([Int64]0) "supplementary-only preflight excludes unknown size from capacity"
 
+    $nonEmptySuppOutput = Join-Path $selfTestRoot "nonempty supp output"
+    [System.IO.Directory]::CreateDirectory($nonEmptySuppOutput) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $nonEmptySuppOutput "existing.txt"), "existing", $utf8NoBom)
+    $outputBox.Text = $nonEmptySuppOutput
+    $nonEmptySuppMessage = ""
+    try {
+        Test-DownloadPreflight | Out-Null
+    }
+    catch {
+        $nonEmptySuppMessage = $_.Exception.Message
+    }
+    Assert-Contains $nonEmptySuppMessage "supplementary" "preflight rejects supplementary in nonempty output"
+    Assert-Equal $script:LastDiagnosticError.code "resume_supplementary_unsupported" "preflight records supplementary resume code"
+    Assert-Equal $script:LastExistingOutputNonEmpty $true "preflight records nonempty output"
+
     $outputBox.Text = Join-Path $selfTestRoot "huge fastq output"
     Set-GridSelection $fastqGrid "selected" $true
     Set-GridSelection $suppGrid "supp_selected" $false
@@ -3726,6 +3850,22 @@ if ($SelfTest) {
     Assert-Contains $verifyResult.Stdout '"kind": "manifest_verification"' "verify-manifest-json done event"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "verification_report.tsv")) $true "verification report exists"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "verification_report.tsv")) "md5_verified" "verification report md5 success"
+
+    $resumeOutput = Join-Path $selfTestRoot "resume fastq output"
+    $outputBox.Text = $resumeOutput
+    Set-GridSelection $fastqGrid "selected" $false
+    $fastqGrid.Rows[0].Cells["selected"].Value = $true
+    Set-GridSelection $suppGrid "supp_selected" $false
+    $resumeFirst = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
+    Assert-Equal $resumeFirst.ExitCode 0 "resume fixture first download exit code"
+    $resumePreflight = Test-DownloadPreflight
+    Assert-Equal $resumePreflight.ExistingOutputNonEmpty $true "preflight detects nonempty FASTQ resume output"
+    $resumeArgs = Get-DownloadPythonArguments (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty) $true
+    Assert-Equal ($resumeArgs -contains "--resume-existing") $true "resume argument is passed to selected-download-json"
+    $resumeSecond = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty) $true
+    Assert-Equal $resumeSecond.ExitCode 0 "resume fixture second download exit code"
+    Assert-Contains $resumeSecond.Stdout '"resume_existing": true' "resume done event records resume mode"
+    Assert-Contains $resumeSecond.Stdout '"resume_required_bytes": 0' "resume done event records remaining bytes"
 
     $downloadDoneEventForDiagnostics = $script:LastDownloadDoneEvent
     $script:LastDownloadDoneEvent = $null

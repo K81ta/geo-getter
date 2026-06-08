@@ -10,7 +10,16 @@ from unittest import mock
 from geo_getter.downloader import download_plan, download_url_to_part, verify_md5
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DownloadPlan, FastqFile
-from geo_getter.planner import build_download_plan, download_log_path, ensure_capacity, fastq_manifest_path, verify_fastq_manifest, write_fastq_outputs
+from geo_getter.planner import (
+    append_download_log,
+    build_download_plan,
+    download_log_path,
+    ensure_capacity,
+    fastq_manifest_path,
+    validate_resume_artifacts,
+    verify_fastq_manifest,
+    write_fastq_outputs,
+)
 from geo_getter.path_safety import name_collision_key
 
 
@@ -210,6 +219,31 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("reused without downloading again", log_text)
             self.assertEqual(existing.read_bytes(), data)
 
+    def test_existing_file_requires_matching_size_before_reuse(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            data = b"already downloaded\n"
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(data)
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="file:///definitely/not/used.fastq.gz",
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data) + 1,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "network_failed")
+            self.assertFalse(existing.exists())
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.size-mismatch-existing-*")))
+
     def test_existing_mismatched_file_is_quarantined_before_redownload(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -219,7 +253,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             output_dir = root / "out"
             output_dir.mkdir()
             existing = output_dir / "fixture.fastq.gz"
-            existing.write_bytes(b"wrong data\n")
+            existing.write_bytes(b"wrong content")
             fastq = FastqFile(
                 source_accession="FIXTURE",
                 query_accession="FIXTURE",
@@ -259,20 +293,23 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertFalse(part.exists())
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
 
-    def test_complete_part_file_without_md5_is_finalized_when_size_matches(self):
+    def test_complete_part_file_without_md5_is_not_reused(self):
         with tempfile.TemporaryDirectory() as temp:
-            output_dir = Path(temp) / "out"
+            root = Path(temp)
+            output_dir = root / "out"
             output_dir.mkdir()
             data = b"complete unverified part\n"
             part = output_dir / "fixture.fastq.gz.part"
             part.write_bytes(data)
+            source = root / "source.fastq.gz"
+            source.write_bytes(data)
             fastq = FastqFile(
                 source_accession="FIXTURE",
                 query_accession="FIXTURE",
                 run_accession="FIXTURE_RUN",
                 file_index=1,
                 file_name="fixture.fastq.gz",
-                url="file:///definitely/not/used.fastq.gz",
+                url=source.as_uri(),
                 expected_md5="",
                 size_bytes=len(data),
             )
@@ -283,6 +320,115 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(results[0][1], "md5_unavailable")
             self.assertFalse(part.exists())
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.part.unverified-existing-*")))
+
+    def test_resume_artifacts_match_existing_manifest_and_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            append_download_log(output_dir, "FIXTURE_RUN", "fixture.fastq.gz", "network_failed", "1" * 32, "", 10, 3, "fixture")
+
+            resume = validate_resume_artifacts(plan)
+
+            self.assertEqual(resume.manifest_path, fastq_manifest_path(output_dir))
+            self.assertEqual(resume.download_log_path, download_log_path(output_dir))
+            self.assertEqual(resume.required_bytes, 10)
+            self.assertEqual(resume.matched_fastq_count, 1)
+
+    def test_resume_artifacts_reject_manifest_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            manifest = fastq_manifest_path(output_dir)
+            original = manifest.read_text(encoding="utf-8-sig")
+            manifest.write_text(original.replace("https://example.invalid/fixture.fastq.gz", "https://example.invalid/other.fastq.gz"), encoding="utf-8-sig")
+            changed = manifest.read_text(encoding="utf-8-sig")
+
+            with self.assertRaises(GeoGetterError) as context:
+                validate_resume_artifacts(plan)
+
+            self.assertEqual(context.exception.code, "resume_artifact_mismatch")
+            self.assertIn("fastq_manifest_selection_mismatch", context.exception.detail)
+            self.assertEqual(manifest.read_text(encoding="utf-8-sig"), changed)
+
+    def test_resume_artifacts_reject_download_log_outside_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            append_download_log(output_dir, "OTHER_RUN", "other.fastq.gz", "network_failed", "2" * 32, "", 10, 0, "fixture")
+
+            with self.assertRaises(GeoGetterError) as context:
+                validate_resume_artifacts(plan)
+
+            self.assertEqual(context.exception.code, "resume_artifact_mismatch")
+            self.assertIn("download_log_selection_mismatch", context.exception.detail)
+
+    def test_resume_required_bytes_uses_verified_existing_and_partial_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            complete_data = b"complete\n"
+            partial_data = b"abc"
+            fastq1 = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="RUN1",
+                file_index=1,
+                file_name="complete.fastq.gz",
+                url="https://example.invalid/complete.fastq.gz",
+                expected_md5=hashlib.md5(complete_data).hexdigest(),
+                size_bytes=len(complete_data),
+            )
+            fastq2 = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="RUN2",
+                file_index=1,
+                file_name="partial.fastq.gz",
+                url="https://example.invalid/partial.fastq.gz",
+                expected_md5="2" * 32,
+                size_bytes=6,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq1, fastq2], output_dir)
+            write_fastq_outputs(plan)
+            (output_dir / "complete.fastq.gz").write_bytes(complete_data)
+            (output_dir / "partial.fastq.gz.part").write_bytes(partial_data)
+
+            resume = validate_resume_artifacts(plan)
+
+            self.assertEqual(resume.required_bytes, 3)
 
     def test_oversized_part_file_is_quarantined(self):
         with tempfile.TemporaryDirectory() as temp:

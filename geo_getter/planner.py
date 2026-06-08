@@ -3,11 +3,22 @@ from __future__ import annotations
 import csv
 import hashlib
 import shutil
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .errors import INVALID_MANIFEST, MD5_MISMATCH, MD5_UNAVAILABLE, MD5_VERIFIED, MISSING, SIZE_MISMATCH, GeoGetterError
+from .errors import (
+    INVALID_MANIFEST,
+    MD5_MISMATCH,
+    MD5_UNAVAILABLE,
+    MD5_VERIFIED,
+    MISSING,
+    RESUME_ARTIFACT_MISMATCH,
+    SIZE_MISMATCH,
+    GeoGetterError,
+)
 from .models import DownloadPlan, FastqFile, PlannedFile
 from .path_safety import child_path, name_collision_key, reserve_unique_download_name, safe_file_name
 
@@ -28,6 +39,25 @@ FASTQ_MANIFEST_REQUIRED_COLUMNS = (
     "local_path",
     "status",
 )
+DOWNLOAD_LOG_REQUIRED_COLUMNS = (
+    "timestamp",
+    "run_accession",
+    "file_name",
+    "status",
+    "expected_md5",
+    "actual_md5",
+    "bytes_expected",
+    "bytes_downloaded",
+    "message",
+)
+
+
+@dataclass(frozen=True)
+class ResumeArtifacts:
+    manifest_path: Path
+    download_log_path: Path
+    required_bytes: int
+    matched_fastq_count: int
 
 
 def build_download_plan(
@@ -55,11 +85,12 @@ def build_download_plan(
     )
 
 
-def ensure_capacity(plan: DownloadPlan) -> None:
-    if plan.total_bytes > plan.available_bytes:
+def ensure_capacity(plan: DownloadPlan, required_bytes: int | None = None) -> None:
+    needed = plan.total_bytes if required_bytes is None else required_bytes
+    if needed > plan.available_bytes:
         raise GeoGetterError(
             "insufficient_space",
-            f"required={format_bytes(plan.total_bytes)} available={format_bytes(plan.available_bytes)}",
+            f"required={format_bytes(needed)} available={format_bytes(plan.available_bytes)}",
         )
 
 
@@ -189,6 +220,45 @@ def reserved_download_artifact_names(output_dir: str | Path) -> list[str]:
     ]
 
 
+def validate_resume_artifacts(plan: DownloadPlan) -> ResumeArtifacts:
+    manifest = fastq_manifest_path(plan.output_dir)
+    log = download_log_path(plan.output_dir)
+    if not manifest.is_file():
+        _raise_resume_mismatch("missing_fastq_manifest", manifest, f"planned_count={len(plan.files)}")
+    if not log.is_file():
+        _raise_resume_mismatch("missing_download_log", log, f"planned_count={len(plan.files)}")
+
+    manifest_rows = _read_tsv_rows(manifest, FASTQ_MANIFEST_REQUIRED_COLUMNS, "fastq_manifest")
+    if not manifest_rows:
+        _raise_resume_mismatch("empty_fastq_manifest", manifest, f"planned_count={len(plan.files)}")
+    _assert_manifest_matches_plan(manifest, manifest_rows, plan)
+
+    log_rows = _read_tsv_rows(log, DOWNLOAD_LOG_REQUIRED_COLUMNS, "download_log")
+    _assert_download_log_matches_plan(log, log_rows, plan)
+
+    return ResumeArtifacts(
+        manifest_path=manifest,
+        download_log_path=log,
+        required_bytes=calculate_resume_required_bytes(plan),
+        matched_fastq_count=len(plan.files),
+    )
+
+
+def calculate_resume_required_bytes(plan: DownloadPlan) -> int:
+    required = 0
+    for planned in plan.files:
+        expected_size = max(0, int(planned.fastq.size_bytes))
+        if _completed_fastq_is_reusable(planned) or _complete_part_is_reusable(planned):
+            continue
+        part_path = planned.local_path.with_name(planned.local_path.name + ".part")
+        part_size = _existing_size(part_path)
+        if expected_size > 0 and 0 < part_size < expected_size:
+            required += expected_size - part_size
+        else:
+            required += expected_size
+    return required
+
+
 def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> dict:
     manifest = Path(manifest_path).expanduser()
     output = Path(report_path).expanduser() if report_path else manifest.parent / VERIFICATION_REPORT_NAME
@@ -251,6 +321,126 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
                 ]
             )
     return {"report_path": output, "status_counts": counts, "total": len(rows)}
+
+
+def _read_tsv_rows(path: Path, required_columns: tuple[str, ...], artifact: str) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            fieldnames = reader.fieldnames or []
+            missing = [name for name in required_columns if name not in fieldnames]
+            if missing:
+                _raise_resume_mismatch(
+                    f"missing_{artifact}_columns",
+                    path,
+                    f"missing={','.join(missing)}",
+                )
+            return list(reader)
+    except GeoGetterError:
+        raise
+    except OSError as exc:
+        _raise_resume_mismatch(f"read_{artifact}_failed", path, str(exc))
+
+
+def _assert_manifest_matches_plan(manifest: Path, rows: list[dict[str, str]], plan: DownloadPlan) -> None:
+    expected = Counter(_resume_manifest_key_from_planned(planned) for planned in plan.files)
+    actual = Counter(_resume_manifest_key_from_row(row) for row in rows)
+    if actual == expected:
+        return
+    detail = f"planned_count={len(plan.files)} existing_count={len(rows)}"
+    missing = list((expected - actual).elements())
+    extra = list((actual - expected).elements())
+    if missing:
+        detail += f" missing={_format_resume_key(missing[0])}"
+    if extra:
+        detail += f" extra={_format_resume_key(extra[0])}"
+    _raise_resume_mismatch("fastq_manifest_selection_mismatch", manifest, detail)
+
+
+def _assert_download_log_matches_plan(log: Path, rows: list[dict[str, str]], plan: DownloadPlan) -> None:
+    allowed = {_resume_log_key_from_planned(planned) for planned in plan.files}
+    for index, row in enumerate(rows, start=2):
+        run_accession = (row.get("run_accession") or "").strip()
+        if run_accession == "GEO_SUPPLEMENTARY":
+            _raise_resume_mismatch("download_log_contains_supplementary", log, f"row={index}")
+        key = _resume_log_key_from_row(row)
+        if key not in allowed:
+            _raise_resume_mismatch("download_log_selection_mismatch", log, f"row={index} entry={_format_resume_key(key)}")
+
+
+def _resume_manifest_key_from_planned(planned: PlannedFile) -> tuple[str, ...]:
+    item = planned.fastq
+    return (
+        item.source_accession,
+        item.query_accession,
+        item.run_accession,
+        str(item.file_index),
+        item.file_name,
+        item.url,
+        item.expected_md5,
+        str(item.size_bytes),
+        planned.local_path.name,
+    )
+
+
+def _resume_manifest_key_from_row(row: dict[str, str]) -> tuple[str, ...]:
+    local_path = (row.get("local_path") or "").strip()
+    local_name = Path(local_path).name if local_path else ""
+    return (
+        (row.get("source_accession") or "").strip(),
+        (row.get("query_accession") or "").strip(),
+        (row.get("run_accession") or "").strip(),
+        (row.get("file_index") or "").strip(),
+        (row.get("file_name") or "").strip(),
+        (row.get("url") or "").strip(),
+        (row.get("expected_md5") or "").strip(),
+        (row.get("size_bytes") or "").strip(),
+        local_name,
+    )
+
+
+def _resume_log_key_from_planned(planned: PlannedFile) -> tuple[str, ...]:
+    item = planned.fastq
+    return (item.run_accession, item.file_name, item.expected_md5, str(item.size_bytes))
+
+
+def _resume_log_key_from_row(row: dict[str, str]) -> tuple[str, ...]:
+    return (
+        (row.get("run_accession") or "").strip(),
+        (row.get("file_name") or "").strip(),
+        (row.get("expected_md5") or "").strip(),
+        (row.get("bytes_expected") or "").strip(),
+    )
+
+
+def _completed_fastq_is_reusable(planned: PlannedFile) -> bool:
+    return _file_is_reusable(planned.local_path, planned.fastq.expected_md5, planned.fastq.size_bytes)
+
+
+def _complete_part_is_reusable(planned: PlannedFile) -> bool:
+    part_path = planned.local_path.with_name(planned.local_path.name + ".part")
+    return _file_is_reusable(part_path, planned.fastq.expected_md5, planned.fastq.size_bytes)
+
+
+def _file_is_reusable(path: Path, expected_md5: str, expected_size: int) -> bool:
+    return (
+        path.is_file()
+        and bool(expected_md5)
+        and expected_size > 0
+        and _existing_size(path) == expected_size
+        and _calculate_md5(path).lower() == expected_md5.lower()
+    )
+
+
+def _format_resume_key(key: tuple[str, ...]) -> str:
+    return "|".join(key)
+
+
+def _raise_resume_mismatch(reason: str, path: Path, detail: str = "") -> None:
+    text = f"reason={reason} path={path}"
+    if detail:
+        text += f" {detail}"
+    raise GeoGetterError(RESUME_ARTIFACT_MISMATCH, text)
 
 
 def _artifact_path(output_dir: str | Path, suffix: str) -> Path:

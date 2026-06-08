@@ -61,6 +61,8 @@ Downloads/GEOGetter/
 
 raw FASTQ を保存した場合は `*_fastq_manifest.tsv`、GEO supplementary / processed file を保存した場合は `*_supplementary_manifest.tsv` が作成されます。`*_download_log.tsv` にはファイルごとの保存結果が記録されます。
 
+中断後に同じ保存フォルダを選ぶと、前回の FASTQ manifest / download log と今回の選択が一致する場合だけ再開できます。完成済み FASTQ は期待サイズと MD5 が一致する場合だけ再利用し、途中の `.part` は同じ保存ファイル名に対応する場合だけ再開に使います。
+
 ## 保存済み FASTQ の確認
 
 保存済み FASTQ をあとから確認したい場合は、`ツール > 保存済みFASTQを確認` から保存フォルダ内の `*_fastq_manifest.tsv` を選びます。同じフォルダに `verification_report.tsv` が作成されます。

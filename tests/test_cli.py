@@ -172,13 +172,184 @@ class CliTest(unittest.TestCase):
             log = download_log_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertIn("download_complete", log)
 
+    def test_selected_download_rejects_nonempty_output_without_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "existing.txt").write_text("existing", encoding="utf-8")
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(out_dir),
+                ],
+                "resume_required",
+            )
+
+            self.assertIn(str(out_dir.resolve()), payload["detail"])
+
+    def test_selected_download_rejects_resume_when_manifest_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "existing.txt").write_text("existing", encoding="utf-8")
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(out_dir),
+                    "--resume-existing",
+                ],
+                "resume_artifact_mismatch",
+            )
+
+            self.assertIn("missing_fastq_manifest", payload["detail"])
+
+    def test_selected_download_rejects_supplementary_in_nonempty_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "supplementary.txt"
+            source.write_bytes(b"supplementary fixture\n")
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "existing.txt").write_text("existing", encoding="utf-8")
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [],
+                        "supplementary_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "scope": "GEO Series supplementary/processed",
+                                "name": "supplementary.txt",
+                                "url": source.as_uri(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--supp-indices",
+                    "0",
+                    "--out",
+                    str(out_dir),
+                    "--resume-existing",
+                ],
+                "resume_supplementary_unsupported",
+            )
+
+    def test_selected_download_resume_existing_fastq_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
-            self.assertFalse((out_dir / "GSE000001").exists())
-            self.assertFalse((out_dir / "GSE000001_2").exists())
-            self.assertEqual((run_dir / "supplementary.txt").read_bytes(), data)
-            self.assertTrue((run_dir / "supplementary.txt.existing").exists())
-            self.assertTrue(download_log_path(run_dir).exists())
+                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir), 0)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir, resume_existing=True), 0)
+
+            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(done["statuses"], ["md5_verified"])
+            self.assertEqual(done["output_dir"], str(out_dir.resolve()))
+            self.assertEqual(done["resume_existing"], True)
+            self.assertEqual(done["resume_required_bytes"], 0)
 
     def test_selected_download_sanitizes_supplementary_name(self):
         with tempfile.TemporaryDirectory() as temp:
