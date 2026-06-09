@@ -4517,7 +4517,7 @@ if ($SelfTest) {
     $statusLabel.Text = T "fetching"
     Set-Busy $true
     Complete-ResolveIfReady
-    Assert-Equal $script:LastOperationError $null "resolve finalizer does not diagnose before stderr close"
+    Assert-Equal $script:LastOperationError $null "resolve finalizer waits for stderr close before setting operation error"
     $script:ResolveStderrClosed = $true
     Complete-ResolveIfReady
     Assert-Equal $script:LastOperationError.code "invalid_input" "resolve finalizer parses stderr error after close"
