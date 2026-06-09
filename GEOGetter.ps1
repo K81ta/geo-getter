@@ -3452,7 +3452,7 @@ function New-MainForm {
 
     $script:fastqFilterLabel = New-Object System.Windows.Forms.Label
     $fastqFilterLabel.Text = "FASTQ filter"
-    $fastqFilterLabel.Size = New-Object System.Drawing.Size(50, 26)
+    $fastqFilterLabel.Size = New-Object System.Drawing.Size(85, 26)
     $fastqFilterLabel.TextAlign = "MiddleLeft"
     $fastqFilterPanel.Controls.Add($fastqFilterLabel)
 
