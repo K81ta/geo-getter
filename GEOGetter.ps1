@@ -215,6 +215,7 @@ $script:LastInputText = ""
 $script:LastResolvedInputText = ""
 $script:SuppressFastqFilterEvents = $false
 $script:Language = $UiLanguage
+$script:GridCopyMenuItems = @()
 $script:Translations = @{
     ja = @{
         appTitle = "GEOGetter"
@@ -234,7 +235,7 @@ $script:Translations = @{
         helpIntegrity = "MD5・エラーの見方"
         helpCancelRetry = "キャンセルと再試行"
         helpClose = "閉じる"
-        about = "このアプリについて"
+        copyCellMenu = "コピー"
         inputLabel = "GEO accession / URL"
         fetchButton = "ファイルを検索"
         outputLabel = "保存先"
@@ -245,23 +246,15 @@ $script:Translations = @{
         capacityUnknown = "必要容量(FASTQ): {0} / 空き容量: 取得不可"
         selectionSummary = "選択内容: FASTQ {0} 件 / {1}、GEO supplementary/processed {2}、保存先: {3}"
         supplementaryNoneSummary = "{0} 件"
-        supplementarySelectedSummary = "{0} 件（サイズ不明・MD5対象外）"
+        supplementarySelectedSummary = "{0} 件"
         fastqTitle = "raw FASTQ（ENA direct FASTQ）: {0}件"
         fastqFilteredTitle = "raw FASTQ（ENA direct FASTQ）: {0}/{1}件表示"
         supplementaryTitle = "GEO supplementary / processed file（raw FASTQ以外）: {0}件"
-        fastqFilterLabel = "FASTQ絞り込み"
+        fastqFilterLabel = "Filter"
         fastqFilterKeywordLabel = "検索"
         fastqFilterLayoutLabel = "Layout"
         fastqFilterStrategyLabel = "Strategy"
-        fastqFilterMd5Label = "MD5"
-        fastqFilterSizeLabel = "サイズ"
         fastqFilterAll = "すべて"
-        fastqFilterMd5Present = "MD5あり"
-        fastqFilterMd5Missing = "MD5なし"
-        fastqFilterSizeSmall = "<100 MB"
-        fastqFilterSizeMedium = "100 MB-1 GB"
-        fastqFilterSizeLarge = "1-10 GB"
-        fastqFilterSizeHuge = ">=10 GB"
         clearFastqFilterButton = "フィルタ解除"
         downloadButton = "選択ファイルをダウンロード"
         cancelButton = "キャンセル"
@@ -303,15 +296,13 @@ $script:Translations = @{
         ) -join [Environment]::NewLine)
         helpTablesText = (@(
             "raw FASTQ（ENA direct FASTQ）:"
-            "ENA Portal APIから取得したraw read候補です。FASTQ URL、ファイルサイズ、照合用MD5値が表示されます。照合用MD5値がある場合は、保存後に検証します。"
+            "ENA Portal APIから取得したraw read候補です。Run、GEO Sample、サンプル名、Layout、Strategy、ファイル名、サイズ、MD5、FASTQ URLを確認できます。"
+            "Filterは検索、Layout、Strategyで絞り込めます。絞り込み中の一括選択は、表示中の行だけに適用されます。"
             ""
             "GEO supplementary / processed file:"
-            "GEOページに登録されている補足ファイルやprocessed fileです。raw FASTQとは別の保存対象です。"
-            "推定種別はファイル名や拡張子からの目安です。ファイル内容を解析して判定するものではありません。"
-            "FASTQ風 supplementary も raw FASTQ とは別扱いで、FASTQ manifest やMD5検証の対象にはなりません。"
+            "GEOページに登録されている補足ファイルやprocessed fileです。由来、ファイル名、GEO URLを確認して選択します。raw FASTQとは別の保存対象です。"
             ""
-            "FASTQ表のGEO Sampleとサンプル名は、GEO由来のサンプル情報を確認するための列です。件数は各表の見出しに表示されます。"
-            "FASTQ表はRun、GEO Sample、サンプル名、Layout、Strategy、MD5、サイズで絞り込めます。絞り込み中の一括選択は、表示中の行だけに適用されます。"
+            "表のセルを右クリックして [コピー] を選ぶか、セルを選んで Ctrl+C を押すと、そのセルの値だけをコピーできます。"
         ) -join [Environment]::NewLine)
         helpOutputFilesText = (@(
             "検索後、保存先には実際に保存する accession フォルダが表示されます。"
@@ -335,8 +326,6 @@ $script:Translations = @{
             "- md5_unavailable: ENAから照合用MD5値を取得できなかったため、保存はしますが検証はできません。"
             "- md5_mismatch: 正式なFASTQとしては保存せず、退避名に変更します。"
             "- network_failed: 通信に失敗しました。時間をおいて再実行してください。"
-            ""
-            "GEO supplementary / processed fileの保存結果はdownload logに残ります。"
         ) -join [Environment]::NewLine)
         helpCancelRetryText = (@(
             "キャンセル:"
@@ -350,7 +339,6 @@ $script:Translations = @{
             ""
             "保存先の空き容量が不足している場合は、保存先を変更するか、選択するFASTQを減らしてください。"
         ) -join [Environment]::NewLine)
-        aboutText = "GEOページ起点でENA direct FASTQとGEO supplementary / processed fileを取得するデスクトップアプリです。FASTQはMD5検証ログを残します。"
         colSelect = "選択"
         colRun = "Run"
         colGeoSample = "GEO Sample"
@@ -364,22 +352,10 @@ $script:Translations = @{
         colFastqUrl = "FASTQ URL"
         colScope = "区分"
         colOrigin = "由来"
-        colExtension = "拡張子"
-        colEstimatedType = "推定種別"
-        colVerification = "検証"
         colGeoUrl = "GEO URL"
         suppOriginSeries = "Series: {0}"
         suppOriginSample = "Sample: {0}"
         suppOriginUnknown = "GEO: {0}"
-        suppTypeGeoRawArchive = "GEO RAW archive"
-        suppTypeFastqLike = "FASTQ風 supplementary"
-        suppTypeCountMatrix = "count matrix"
-        suppTypeGenomeTrack = "genome track"
-        suppTypeTableText = "table/text"
-        suppTypeArchive = "archive"
-        suppTypeOther = "その他"
-        suppSizeUnknown = "不明"
-        suppVerificationNotApplicable = "MD5対象外"
         metadataFailed = "metadata取得に失敗しました。"
         searchRequiredBeforeDownload = "現在の入力に対する検索結果がありません。もう一度ファイルを検索してください。"
         inputChangedAfterResolve = "入力内容が変更されています。現在の入力で再度ファイルを検索してください。"
@@ -460,7 +436,7 @@ $script:Translations = @{
         helpIntegrity = "MD5 and errors"
         helpCancelRetry = "Cancel and retry"
         helpClose = "Close"
-        about = "About"
+        copyCellMenu = "Copy"
         inputLabel = "GEO accession / URL"
         fetchButton = "Find files"
         outputLabel = "Output folder"
@@ -471,7 +447,7 @@ $script:Translations = @{
         capacityUnknown = "Required (FASTQ): {0} / Free: unavailable"
         selectionSummary = "Selection: FASTQ {0} files / {1}, GEO supplementary/processed {2}, output: {3}"
         supplementaryNoneSummary = "{0} files"
-        supplementarySelectedSummary = "{0} files (size unknown, MD5 N/A)"
+        supplementarySelectedSummary = "{0} files"
         fastqTitle = "raw FASTQ (ENA direct FASTQ): {0} files"
         fastqFilteredTitle = "raw FASTQ (ENA direct FASTQ): {0}/{1} shown"
         supplementaryTitle = "GEO supplementary / processed files (not raw FASTQ): {0} files"
@@ -479,15 +455,7 @@ $script:Translations = @{
         fastqFilterKeywordLabel = "Search"
         fastqFilterLayoutLabel = "Layout"
         fastqFilterStrategyLabel = "Strategy"
-        fastqFilterMd5Label = "MD5"
-        fastqFilterSizeLabel = "Size"
         fastqFilterAll = "All"
-        fastqFilterMd5Present = "Has MD5"
-        fastqFilterMd5Missing = "No MD5"
-        fastqFilterSizeSmall = "<100 MB"
-        fastqFilterSizeMedium = "100 MB-1 GB"
-        fastqFilterSizeLarge = "1-10 GB"
-        fastqFilterSizeHuge = ">=10 GB"
         clearFastqFilterButton = "Clear filter"
         downloadButton = "Download selected files"
         cancelButton = "Cancel"
@@ -529,15 +497,13 @@ $script:Translations = @{
         ) -join [Environment]::NewLine)
         helpTablesText = (@(
             "raw FASTQ (ENA direct FASTQ):"
-            "Raw read candidates returned by the ENA Portal API. The table shows FASTQ URLs, file sizes, and expected MD5 values. When an expected MD5 is available, GEOGetter verifies the file after download."
+            "Raw read candidates returned by the ENA Portal API. The table shows Run, GEO Sample, Sample title, Layout, Strategy, file name, size, MD5, and FASTQ URL."
+            "Filter can narrow rows by search text, Layout, and Strategy. While filtered, bulk selection applies only to visible rows."
             ""
             "GEO supplementary / processed files:"
-            "Supplementary or processed files registered on the GEO page. These are saved separately from raw FASTQ files."
-            "Estimated type is a filename and extension based hint. GEOGetter does not inspect file contents to classify it."
-            "FASTQ-like supplementary files are still separate from raw FASTQ and are not included in the FASTQ manifest or MD5 verification."
+            "Supplementary or processed files registered on the GEO page. Select them by checking origin, file name, and GEO URL. They are saved separately from raw FASTQ files."
             ""
-            "The GEO Sample and Sample title columns in the FASTQ table help confirm the source sample. Counts are shown in each table title."
-            "The FASTQ table can be filtered by Run, GEO Sample, Sample title, Layout, Strategy, MD5, and size. While filtered, bulk selection applies only to visible rows."
+            "Right-click a table cell and choose [Copy], or select a cell and press Ctrl+C, to copy only that cell value."
         ) -join [Environment]::NewLine)
         helpOutputFilesText = (@(
             "After search, the output field shows the accession folder that GEOGetter will write to."
@@ -561,8 +527,6 @@ $script:Translations = @{
             "- md5_unavailable: ENA did not provide an expected MD5, so the file is saved but not verified."
             "- md5_mismatch: the file is not kept as the final FASTQ and is moved aside."
             "- network_failed: the transfer failed. Check the connection and try again later."
-            ""
-            "GEO supplementary / processed file save results are recorded in the download log."
         ) -join [Environment]::NewLine)
         helpCancelRetryText = (@(
             "Cancel:"
@@ -576,7 +540,6 @@ $script:Translations = @{
             ""
             "If the output folder does not have enough free space, change the output folder or select fewer FASTQ files."
         ) -join [Environment]::NewLine)
-        aboutText = "Desktop app for downloading ENA direct FASTQ and GEO supplementary / processed files from a GEO page. It keeps MD5 verification logs for FASTQ files."
         colSelect = "Select"
         colRun = "Run"
         colGeoSample = "GEO Sample"
@@ -590,22 +553,10 @@ $script:Translations = @{
         colFastqUrl = "FASTQ URL"
         colScope = "Type"
         colOrigin = "Origin"
-        colExtension = "Extension"
-        colEstimatedType = "Estimated type"
-        colVerification = "Verification"
         colGeoUrl = "GEO URL"
         suppOriginSeries = "Series: {0}"
         suppOriginSample = "Sample: {0}"
         suppOriginUnknown = "GEO: {0}"
-        suppTypeGeoRawArchive = "GEO RAW archive"
-        suppTypeFastqLike = "FASTQ-like supplementary"
-        suppTypeCountMatrix = "Count matrix"
-        suppTypeGenomeTrack = "Genome track"
-        suppTypeTableText = "Table/text"
-        suppTypeArchive = "Archive"
-        suppTypeOther = "Other"
-        suppSizeUnknown = "Unknown"
-        suppVerificationNotApplicable = "MD5 N/A"
         metadataFailed = "Metadata retrieval failed."
         searchRequiredBeforeDownload = "No search result is available for the current input. Search files again."
         inputChangedAfterResolve = "The input has changed. Search files again for the current input."
@@ -816,7 +767,7 @@ function Update-StaticTexts {
     if ($helpMenuItem) { $helpMenuItem.Text = T "helpMenu" }
     if ($helpOpenMenuItem) { $helpOpenMenuItem.Text = T "helpOpen" }
     if ($checkUpdatesMenuItem) { $checkUpdatesMenuItem.Text = T "checkUpdatesMenu" }
-    if ($aboutMenuItem) { $aboutMenuItem.Text = T "about" }
+    Update-GridCopyMenuTexts
     if ($inputLabel) { $inputLabel.Text = T "inputLabel" }
     if ($fetchButton) { $fetchButton.Text = T "fetchButton" }
     if ($outputLabel) { $outputLabel.Text = T "outputLabel" }
@@ -859,10 +810,6 @@ function Update-GridHeaders {
     if ($suppGrid -and $suppGrid.Columns.Count -gt 0) {
         $suppGrid.Columns["supp_selected"].HeaderText = T "colSelect"
         $suppGrid.Columns["supp_origin"].HeaderText = T "colOrigin"
-        $suppGrid.Columns["supp_extension"].HeaderText = T "colExtension"
-        $suppGrid.Columns["supp_type"].HeaderText = T "colEstimatedType"
-        $suppGrid.Columns["supp_size"].HeaderText = T "colSize"
-        $suppGrid.Columns["supp_verification"].HeaderText = T "colVerification"
         $suppGrid.Columns["supp_name"].HeaderText = T "colFileName"
         $suppGrid.Columns["supp_url"].HeaderText = T "colGeoUrl"
     }
@@ -1429,6 +1376,56 @@ function Set-GridSelection {
     Update-Capacity
 }
 
+function Get-GridCurrentCellText {
+    param([System.Windows.Forms.DataGridView]$Grid)
+    if ($null -eq $Grid -or $null -eq $Grid.CurrentCell) { return "" }
+    if ($Grid.CurrentCell.RowIndex -lt 0 -or $Grid.CurrentCell.ColumnIndex -lt 0) { return "" }
+    $value = $Grid.CurrentCell.Value
+    if ($null -eq $value) { return "" }
+    return [string]$value
+}
+
+function Copy-CurrentGridCell {
+    param([System.Windows.Forms.DataGridView]$Grid)
+    $text = Get-GridCurrentCellText $Grid
+    if ([string]::IsNullOrEmpty($text)) { return }
+    [System.Windows.Forms.Clipboard]::SetText($text)
+}
+
+function Update-GridCopyMenuTexts {
+    foreach ($item in @($script:GridCopyMenuItems)) {
+        if ($null -ne $item) { $item.Text = T "copyCellMenu" }
+    }
+}
+
+function Add-GridCellCopyHandlers {
+    param([System.Windows.Forms.DataGridView]$Grid)
+    if ($null -eq $Grid) { return }
+
+    $copyMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $copyItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $copyItem.Text = T "copyCellMenu"
+    [void]$copyMenu.Items.Add($copyItem)
+    $script:GridCopyMenuItems += $copyItem
+
+    $gridForCopy = $Grid
+    $copyItem.Add_Click({ Copy-CurrentGridCell $gridForCopy }.GetNewClosure())
+    $Grid.ContextMenuStrip = $copyMenu
+    $Grid.Add_CellMouseDown({
+        param($sender, $eventArgs)
+        if ($eventArgs.Button -ne [System.Windows.Forms.MouseButtons]::Right) { return }
+        if ($eventArgs.RowIndex -lt 0 -or $eventArgs.ColumnIndex -lt 0) { return }
+        $sender.CurrentCell = $sender.Rows[$eventArgs.RowIndex].Cells[$eventArgs.ColumnIndex]
+    })
+    $Grid.Add_KeyDown({
+        param($sender, $eventArgs)
+        if (-not $eventArgs.Control -or $eventArgs.KeyCode -ne [System.Windows.Forms.Keys]::C) { return }
+        Copy-CurrentGridCell $sender
+        $eventArgs.Handled = $true
+        $eventArgs.SuppressKeyPress = $true
+    })
+}
+
 function Assert-AnySelection {
     if (-not (Get-SelectedFastqIndicesOrEmpty) -and -not (Get-SelectedSuppIndicesOrEmpty)) {
         throw (T "noFilesSelected")
@@ -1540,18 +1537,12 @@ function Update-FastqFilterTexts {
     if ($fastqFilterKeywordLabel) { $fastqFilterKeywordLabel.Text = T "fastqFilterKeywordLabel" }
     if ($fastqFilterLayoutLabel) { $fastqFilterLayoutLabel.Text = T "fastqFilterLayoutLabel" }
     if ($fastqFilterStrategyLabel) { $fastqFilterStrategyLabel.Text = T "fastqFilterStrategyLabel" }
-    if ($fastqFilterMd5Label) { $fastqFilterMd5Label.Text = T "fastqFilterMd5Label" }
-    if ($fastqFilterSizeLabel) { $fastqFilterSizeLabel.Text = T "fastqFilterSizeLabel" }
     if ($fastqClearFilterButton) { $fastqClearFilterButton.Text = T "clearFastqFilterButton" }
 
     $wasSuppressed = $script:SuppressFastqFilterEvents
     $script:SuppressFastqFilterEvents = $true
     try {
         Refresh-FastqFilterValueOptions
-        $md5Index = if ($fastqMd5FilterCombo) { $fastqMd5FilterCombo.SelectedIndex } else { 0 }
-        Set-ComboBoxItems $fastqMd5FilterCombo @((T "fastqFilterAll"), (T "fastqFilterMd5Present"), (T "fastqFilterMd5Missing")) $md5Index
-        $sizeIndex = if ($fastqSizeFilterCombo) { $fastqSizeFilterCombo.SelectedIndex } else { 0 }
-        Set-ComboBoxItems $fastqSizeFilterCombo @((T "fastqFilterAll"), (T "fastqFilterSizeSmall"), (T "fastqFilterSizeMedium"), (T "fastqFilterSizeLarge"), (T "fastqFilterSizeHuge")) $sizeIndex
     }
     finally {
         $script:SuppressFastqFilterEvents = $wasSuppressed
@@ -1573,8 +1564,6 @@ function Reset-FastqFilterControls {
         if ($fastqFilterBox) { $fastqFilterBox.Text = "" }
         if ($fastqLayoutFilterCombo -and $fastqLayoutFilterCombo.Items.Count -gt 0) { $fastqLayoutFilterCombo.SelectedIndex = 0 }
         if ($fastqStrategyFilterCombo -and $fastqStrategyFilterCombo.Items.Count -gt 0) { $fastqStrategyFilterCombo.SelectedIndex = 0 }
-        if ($fastqMd5FilterCombo -and $fastqMd5FilterCombo.Items.Count -gt 0) { $fastqMd5FilterCombo.SelectedIndex = 0 }
-        if ($fastqSizeFilterCombo -and $fastqSizeFilterCombo.Items.Count -gt 0) { $fastqSizeFilterCombo.SelectedIndex = 0 }
     }
     finally {
         $script:SuppressFastqFilterEvents = $wasSuppressed
@@ -1588,8 +1577,6 @@ function Test-FastqFilterActive {
     if ($fastqFilterBox -and -not [string]::IsNullOrWhiteSpace([string]$fastqFilterBox.Text)) { return $true }
     if ($fastqLayoutFilterCombo -and $fastqLayoutFilterCombo.SelectedIndex -gt 0) { return $true }
     if ($fastqStrategyFilterCombo -and $fastqStrategyFilterCombo.SelectedIndex -gt 0) { return $true }
-    if ($fastqMd5FilterCombo -and $fastqMd5FilterCombo.SelectedIndex -gt 0) { return $true }
-    if ($fastqSizeFilterCombo -and $fastqSizeFilterCombo.SelectedIndex -gt 0) { return $true }
     return $false
 }
 
@@ -1643,35 +1630,6 @@ function Test-FastqRowMatchesSelectedText {
     return [string]::Equals([string]$Row.Cells[$ColumnName].Value, $SelectedValue, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-function Test-FastqRowMatchesMd5Filter {
-    param([System.Windows.Forms.DataGridViewRow]$Row)
-    if ($null -eq $fastqMd5FilterCombo -or $fastqMd5FilterCombo.SelectedIndex -le 0) { return $true }
-    $hasMd5 = -not [string]::IsNullOrWhiteSpace([string]$Row.Cells["md5"].Value)
-    if ($fastqMd5FilterCombo.SelectedIndex -eq 1) { return $hasMd5 }
-    if ($fastqMd5FilterCombo.SelectedIndex -eq 2) { return -not $hasMd5 }
-    return $true
-}
-
-function Test-FastqRowMatchesSizeFilter {
-    param([System.Windows.Forms.DataGridViewRow]$Row)
-    if ($null -eq $fastqSizeFilterCombo -or $fastqSizeFilterCombo.SelectedIndex -le 0) { return $true }
-    $size = [Int64]0
-    try {
-        $size = [Int64]$Row.Cells["size_bytes_raw"].Value
-    }
-    catch {
-        return $false
-    }
-    $mb100 = [Int64]100 * 1024 * 1024
-    $gb1 = [Int64]1024 * 1024 * 1024
-    $gb10 = [Int64]10 * 1024 * 1024 * 1024
-    if ($fastqSizeFilterCombo.SelectedIndex -eq 1) { return $size -lt $mb100 }
-    if ($fastqSizeFilterCombo.SelectedIndex -eq 2) { return $size -ge $mb100 -and $size -lt $gb1 }
-    if ($fastqSizeFilterCombo.SelectedIndex -eq 3) { return $size -ge $gb1 -and $size -lt $gb10 }
-    if ($fastqSizeFilterCombo.SelectedIndex -eq 4) { return $size -ge $gb10 }
-    return $true
-}
-
 function Test-FastqRowMatchesFilter {
     param([System.Windows.Forms.DataGridViewRow]$Row)
     if ($null -eq $Row -or $Row.IsNewRow) { return $false }
@@ -1679,8 +1637,6 @@ function Test-FastqRowMatchesFilter {
     if (-not (Test-FastqRowMatchesKeyword $Row $keyword)) { return $false }
     if (-not (Test-FastqRowMatchesSelectedText $Row "layout" (Get-FastqComboSelectedValue $fastqLayoutFilterCombo))) { return $false }
     if (-not (Test-FastqRowMatchesSelectedText $Row "strategy" (Get-FastqComboSelectedValue $fastqStrategyFilterCombo))) { return $false }
-    if (-not (Test-FastqRowMatchesMd5Filter $Row)) { return $false }
-    if (-not (Test-FastqRowMatchesSizeFilter $Row)) { return $false }
     return $true
 }
 
@@ -1728,59 +1684,12 @@ function Get-SupplementaryOriginDisplay {
     return (T "suppOriginUnknown") -f $accession
 }
 
-function Get-SupplementaryExtensionDisplay {
-    param($Item)
-    $extension = Get-ObjectPropertyString $Item "extension"
-    if ([string]::IsNullOrWhiteSpace($extension)) { return "-" }
-    return $extension
-}
-
-function Get-SupplementaryTypeDisplay {
-    param($Item)
-    $estimatedType = (Get-ObjectPropertyString $Item "estimated_type").ToLowerInvariant()
-    if ($estimatedType -eq "geo_raw_archive") { return T "suppTypeGeoRawArchive" }
-    if ($estimatedType -eq "fastq_like_supplementary") { return T "suppTypeFastqLike" }
-    if ($estimatedType -eq "count_matrix") { return T "suppTypeCountMatrix" }
-    if ($estimatedType -eq "genome_track") { return T "suppTypeGenomeTrack" }
-    if ($estimatedType -eq "table_text") { return T "suppTypeTableText" }
-    if ($estimatedType -eq "archive") { return T "suppTypeArchive" }
-    return T "suppTypeOther"
-}
-
-function Get-SupplementarySizeDisplay {
-    param($Item)
-    $sizeStatus = (Get-ObjectPropertyString $Item "size_status").ToLowerInvariant()
-    $sizeBytes = Get-ObjectPropertyString $Item "size_bytes"
-    if ($sizeStatus -ne "unknown" -and -not [string]::IsNullOrWhiteSpace($sizeBytes)) {
-        try {
-            $bytes = [Int64]$sizeBytes
-            if ($bytes -gt 0) { return Format-Bytes $bytes }
-        }
-        catch {
-        }
-    }
-    return T "suppSizeUnknown"
-}
-
-function Get-SupplementaryVerificationDisplay {
-    param($Item)
-    $verificationStatus = (Get-ObjectPropertyString $Item "verification_status").ToLowerInvariant()
-    if ([string]::IsNullOrWhiteSpace($verificationStatus) -or $verificationStatus -eq "not_applicable") {
-        return T "suppVerificationNotApplicable"
-    }
-    return $verificationStatus
-}
-
 function Update-SupplementaryRowDisplay {
     param(
         [System.Windows.Forms.DataGridViewRow]$Row,
         $Item
     )
     $Row.Cells["supp_origin"].Value = Get-SupplementaryOriginDisplay $Item
-    $Row.Cells["supp_extension"].Value = Get-SupplementaryExtensionDisplay $Item
-    $Row.Cells["supp_type"].Value = Get-SupplementaryTypeDisplay $Item
-    $Row.Cells["supp_size"].Value = Get-SupplementarySizeDisplay $Item
-    $Row.Cells["supp_verification"].Value = Get-SupplementaryVerificationDisplay $Item
     $Row.Cells["supp_name"].Value = $Item.name
     $Row.Cells["supp_url"].Value = $Item.url
 }
@@ -2141,10 +2050,6 @@ function Add-SupplementaryRowsFromResolved {
         $rowIndex = $suppGrid.Rows.Add(
             $false,
             (Get-SupplementaryOriginDisplay $item),
-            (Get-SupplementaryExtensionDisplay $item),
-            (Get-SupplementaryTypeDisplay $item),
-            (Get-SupplementarySizeDisplay $item),
-            (Get-SupplementaryVerificationDisplay $item),
             $item.name,
             $item.url,
             $i
@@ -2169,8 +2074,6 @@ function Set-Busy {
     if ($fastqFilterBox) { $fastqFilterBox.Enabled = -not $Busy }
     if ($fastqLayoutFilterCombo) { $fastqLayoutFilterCombo.Enabled = -not $Busy }
     if ($fastqStrategyFilterCombo) { $fastqStrategyFilterCombo.Enabled = -not $Busy }
-    if ($fastqMd5FilterCombo) { $fastqMd5FilterCombo.Enabled = -not $Busy }
-    if ($fastqSizeFilterCombo) { $fastqSizeFilterCombo.Enabled = -not $Busy }
     if ($fastqClearFilterButton) { $fastqClearFilterButton.Enabled = -not $Busy }
     if ($suppSelectAllButton) { $suppSelectAllButton.Enabled = -not $Busy }
     if ($suppClearSelectionButton) { $suppClearSelectionButton.Enabled = -not $Busy }
@@ -3370,15 +3273,12 @@ function New-MainForm {
     $script:helpMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:helpOpenMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:checkUpdatesMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $script:aboutMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     [void]$languageMenuItem.DropDownItems.Add($japaneseMenuItem)
     [void]$languageMenuItem.DropDownItems.Add($englishMenuItem)
     [void]$settingsMenuItem.DropDownItems.Add($languageMenuItem)
     [void]$toolsMenuItem.DropDownItems.Add($verifyManifestMenuItem)
     [void]$helpMenuItem.DropDownItems.Add($helpOpenMenuItem)
     [void]$helpMenuItem.DropDownItems.Add($checkUpdatesMenuItem)
-    [void]$helpMenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-    [void]$helpMenuItem.DropDownItems.Add($aboutMenuItem)
     [void]$menuStrip.Items.Add($settingsMenuItem)
     [void]$menuStrip.Items.Add($toolsMenuItem)
     [void]$menuStrip.Items.Add($helpMenuItem)
@@ -3499,7 +3399,7 @@ function New-MainForm {
     $fastqPanel.ColumnCount = 1
     $fastqPanel.RowCount = 2
     [void]$fastqPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$fastqPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 110)))
+    [void]$fastqPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 88)))
     [void]$fastqPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     $split.Panel1.Controls.Add($fastqPanel)
 
@@ -3508,35 +3408,39 @@ function New-MainForm {
     $fastqHeaderPanel.ColumnCount = 1
     $fastqHeaderPanel.RowCount = 2
     [void]$fastqHeaderPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-    [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 38)))
-    [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 72)))
+    [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 42)))
+    [void]$fastqHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 46)))
     $fastqPanel.Controls.Add($fastqHeaderPanel, 0, 0)
 
-    $fastqTitlePanel = New-Object System.Windows.Forms.Panel
+    $fastqTitlePanel = New-Object System.Windows.Forms.TableLayoutPanel
     $fastqTitlePanel.Dock = "Fill"
+    $fastqTitlePanel.ColumnCount = 3
+    $fastqTitlePanel.RowCount = 1
+    [void]$fastqTitlePanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+    [void]$fastqTitlePanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 128)))
+    [void]$fastqTitlePanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 132)))
+    [void]$fastqTitlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     $fastqHeaderPanel.Controls.Add($fastqTitlePanel, 0, 0)
 
     $script:fastqTitle = New-Object System.Windows.Forms.Label
     $fastqTitle.Text = "raw FASTQ (ENA direct FASTQ): 0 files"
-    $fastqTitle.Location = New-Object System.Drawing.Point(0, 0)
-    $fastqTitle.Size = New-Object System.Drawing.Size(880, 38)
-    $fastqTitle.Anchor = $anchorTopLeftRight
+    $fastqTitle.Dock = "Fill"
     $fastqTitle.TextAlign = "MiddleLeft"
-    $fastqTitlePanel.Controls.Add($fastqTitle)
+    $fastqTitle.AutoEllipsis = $true
+    $fastqTitle.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+    $fastqTitlePanel.Controls.Add($fastqTitle, 0, 0)
 
     $script:fastqSelectAllButton = New-Object System.Windows.Forms.Button
     $fastqSelectAllButton.Text = "Select all"
-    $fastqSelectAllButton.Location = New-Object System.Drawing.Point(895, 4)
-    $fastqSelectAllButton.Size = New-Object System.Drawing.Size(110, 30)
-    $fastqSelectAllButton.Anchor = $anchorTopRight
-    $fastqTitlePanel.Controls.Add($fastqSelectAllButton)
+    $fastqSelectAllButton.Dock = "Fill"
+    $fastqSelectAllButton.Margin = New-Object System.Windows.Forms.Padding(4, 5, 4, 5)
+    $fastqTitlePanel.Controls.Add($fastqSelectAllButton, 1, 0)
 
     $script:fastqClearSelectionButton = New-Object System.Windows.Forms.Button
     $fastqClearSelectionButton.Text = "Clear selection"
-    $fastqClearSelectionButton.Location = New-Object System.Drawing.Point(1015, 4)
-    $fastqClearSelectionButton.Size = New-Object System.Drawing.Size(120, 30)
-    $fastqClearSelectionButton.Anchor = $anchorTopRight
-    $fastqTitlePanel.Controls.Add($fastqClearSelectionButton)
+    $fastqClearSelectionButton.Dock = "Fill"
+    $fastqClearSelectionButton.Margin = New-Object System.Windows.Forms.Padding(4, 5, 0, 5)
+    $fastqTitlePanel.Controls.Add($fastqClearSelectionButton, 2, 0)
 
     $fastqFilterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $fastqFilterPanel.Dock = "Fill"
@@ -3548,7 +3452,7 @@ function New-MainForm {
 
     $script:fastqFilterLabel = New-Object System.Windows.Forms.Label
     $fastqFilterLabel.Text = "FASTQ filter"
-    $fastqFilterLabel.Size = New-Object System.Drawing.Size(85, 26)
+    $fastqFilterLabel.Size = New-Object System.Drawing.Size(50, 26)
     $fastqFilterLabel.TextAlign = "MiddleLeft"
     $fastqFilterPanel.Controls.Add($fastqFilterLabel)
 
@@ -3583,28 +3487,6 @@ function New-MainForm {
     $fastqStrategyFilterCombo.DropDownStyle = "DropDownList"
     $fastqStrategyFilterCombo.Width = 120
     $fastqFilterPanel.Controls.Add($fastqStrategyFilterCombo)
-
-    $script:fastqFilterMd5Label = New-Object System.Windows.Forms.Label
-    $fastqFilterMd5Label.Text = "MD5"
-    $fastqFilterMd5Label.Size = New-Object System.Drawing.Size(40, 26)
-    $fastqFilterMd5Label.TextAlign = "MiddleLeft"
-    $fastqFilterPanel.Controls.Add($fastqFilterMd5Label)
-
-    $script:fastqMd5FilterCombo = New-Object System.Windows.Forms.ComboBox
-    $fastqMd5FilterCombo.DropDownStyle = "DropDownList"
-    $fastqMd5FilterCombo.Width = 95
-    $fastqFilterPanel.Controls.Add($fastqMd5FilterCombo)
-
-    $script:fastqFilterSizeLabel = New-Object System.Windows.Forms.Label
-    $fastqFilterSizeLabel.Text = "Size"
-    $fastqFilterSizeLabel.Size = New-Object System.Drawing.Size(40, 26)
-    $fastqFilterSizeLabel.TextAlign = "MiddleLeft"
-    $fastqFilterPanel.Controls.Add($fastqFilterSizeLabel)
-
-    $script:fastqSizeFilterCombo = New-Object System.Windows.Forms.ComboBox
-    $fastqSizeFilterCombo.DropDownStyle = "DropDownList"
-    $fastqSizeFilterCombo.Width = 120
-    $fastqFilterPanel.Controls.Add($fastqSizeFilterCombo)
 
     $script:fastqClearFilterButton = New-Object System.Windows.Forms.Button
     $fastqClearFilterButton.Text = "Clear filter"
@@ -3665,6 +3547,7 @@ function New-MainForm {
         $hiddenCol.Visible = $false
         [void]$fastqGrid.Columns.Add($hiddenCol)
     }
+    Add-GridCellCopyHandlers $fastqGrid
 
     $suppPanel = New-Object System.Windows.Forms.TableLayoutPanel
     $suppPanel.Dock = "Fill"
@@ -3676,31 +3559,35 @@ function New-MainForm {
     [void]$suppPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     $split.Panel2.Controls.Add($suppPanel)
 
-    $suppHeaderPanel = New-Object System.Windows.Forms.Panel
+    $suppHeaderPanel = New-Object System.Windows.Forms.TableLayoutPanel
     $suppHeaderPanel.Dock = "Fill"
+    $suppHeaderPanel.ColumnCount = 3
+    $suppHeaderPanel.RowCount = 1
+    [void]$suppHeaderPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+    [void]$suppHeaderPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 128)))
+    [void]$suppHeaderPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 132)))
+    [void]$suppHeaderPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
     $suppPanel.Controls.Add($suppHeaderPanel, 0, 0)
 
     $script:suppTitle = New-Object System.Windows.Forms.Label
     $suppTitle.Text = "GEO supplementary / processed files (not raw FASTQ): 0 files"
-    $suppTitle.Location = New-Object System.Drawing.Point(0, 0)
-    $suppTitle.Size = New-Object System.Drawing.Size(880, 42)
-    $suppTitle.Anchor = $anchorTopLeftRight
+    $suppTitle.Dock = "Fill"
     $suppTitle.TextAlign = "MiddleLeft"
-    $suppHeaderPanel.Controls.Add($suppTitle)
+    $suppTitle.AutoEllipsis = $true
+    $suppTitle.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+    $suppHeaderPanel.Controls.Add($suppTitle, 0, 0)
 
     $script:suppSelectAllButton = New-Object System.Windows.Forms.Button
     $suppSelectAllButton.Text = "Select all"
-    $suppSelectAllButton.Location = New-Object System.Drawing.Point(895, 6)
-    $suppSelectAllButton.Size = New-Object System.Drawing.Size(110, 30)
-    $suppSelectAllButton.Anchor = $anchorTopRight
-    $suppHeaderPanel.Controls.Add($suppSelectAllButton)
+    $suppSelectAllButton.Dock = "Fill"
+    $suppSelectAllButton.Margin = New-Object System.Windows.Forms.Padding(4, 6, 4, 6)
+    $suppHeaderPanel.Controls.Add($suppSelectAllButton, 1, 0)
 
     $script:suppClearSelectionButton = New-Object System.Windows.Forms.Button
     $suppClearSelectionButton.Text = "Clear selection"
-    $suppClearSelectionButton.Location = New-Object System.Drawing.Point(1015, 6)
-    $suppClearSelectionButton.Size = New-Object System.Drawing.Size(120, 30)
-    $suppClearSelectionButton.Anchor = $anchorTopRight
-    $suppHeaderPanel.Controls.Add($suppClearSelectionButton)
+    $suppClearSelectionButton.Dock = "Fill"
+    $suppClearSelectionButton.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 6)
+    $suppHeaderPanel.Controls.Add($suppClearSelectionButton, 2, 0)
 
     $script:suppGrid = New-Object System.Windows.Forms.DataGridView
     $suppGrid.Dock = "Fill"
@@ -3724,13 +3611,9 @@ function New-MainForm {
     $suppSelectCol.SortMode = "NotSortable"
     [void]$suppGrid.Columns.Add($suppSelectCol)
     foreach ($col in @(
-        @("supp_origin", "Origin", 130),
-        @("supp_extension", "Extension", 75),
-        @("supp_type", "Estimated type", 150),
-        @("supp_size", "Size", 80),
-        @("supp_verification", "Verification", 100),
-        @("supp_name", "File name", 330),
-        @("supp_url", "GEO URL", 240)
+        @("supp_origin", "Origin", 150),
+        @("supp_name", "File name", 360),
+        @("supp_url", "GEO URL", 520)
     )) {
         $textCol = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
         $textCol.Name = $col[0]
@@ -3745,6 +3628,7 @@ function New-MainForm {
     $suppIndexCol.HeaderText = "supp_source_index"
     $suppIndexCol.Visible = $false
     [void]$suppGrid.Columns.Add($suppIndexCol)
+    Add-GridCellCopyHandlers $suppGrid
 
     $bottom = New-Object System.Windows.Forms.Panel
     $bottom.Dock = "Fill"
@@ -3809,8 +3693,6 @@ function New-MainForm {
     $fastqFilterBox.Add_TextChanged({ Apply-FastqFilter })
     $fastqLayoutFilterCombo.Add_SelectedIndexChanged({ Apply-FastqFilter })
     $fastqStrategyFilterCombo.Add_SelectedIndexChanged({ Apply-FastqFilter })
-    $fastqMd5FilterCombo.Add_SelectedIndexChanged({ Apply-FastqFilter })
-    $fastqSizeFilterCombo.Add_SelectedIndexChanged({ Apply-FastqFilter })
     $fastqClearFilterButton.Add_Click({ Reset-FastqFilterControls })
 
     $japaneseMenuItem.Add_Click({ Set-Language "ja" })
@@ -3826,10 +3708,6 @@ function New-MainForm {
             Show-AppError $_.Exception.Message
         }
     })
-    $aboutMenuItem.Add_Click({
-        [System.Windows.Forms.MessageBox]::Show((T "aboutText"), (T "about"), "OK", "Information") | Out-Null
-    })
-
     $fastqGrid.add_CurrentCellDirtyStateChanged({
         if ($fastqGrid.IsCurrentCellDirty) {
             $fastqGrid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit)
@@ -3945,10 +3823,9 @@ if ($SelfTest) {
     Assert-Equal $verifyManifestMenuItem.Text "Verify saved FASTQ" "English verify manifest menu"
     Assert-Equal $helpOpenMenuItem.Text "Open help" "English open help menu"
     Assert-Equal $checkUpdatesMenuItem.Text "Check for updates" "English check updates menu"
-    Assert-Equal $helpMenuItem.DropDownItems.Count 4 "Help menu uses help, update, separator, and about"
+    Assert-Equal $helpMenuItem.DropDownItems.Count 2 "Help menu uses help and update"
     Assert-Equal $helpMenuItem.DropDownItems[0] $helpOpenMenuItem "Help menu opens help first"
     Assert-Equal $helpMenuItem.DropDownItems[1] $checkUpdatesMenuItem "Help menu checks updates second"
-    Assert-Equal $helpMenuItem.DropDownItems[3] $aboutMenuItem "Help menu keeps about last"
     Assert-Equal $fetchButton.Text "Find files" "English find files button"
     Assert-Equal $browseButton.Text "Browse" "English browse button"
     Assert-Equal ((Get-Variable -Name ("diag" + "nosticsButton") -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "save button removed from main UI"
@@ -3957,7 +3834,8 @@ if ($SelfTest) {
     Assert-Equal $fastqFilterLabel.Text "FASTQ filter" "English FASTQ filter label"
     Assert-Equal $fastqFilterKeywordLabel.Text "Search" "English FASTQ search label"
     Assert-Equal $fastqClearFilterButton.Text "Clear filter" "English clear FASTQ filter button"
-    Assert-Equal $suppGrid.Columns["supp_type"].HeaderText "Estimated type" "English supplementary type header"
+    Assert-Equal $fastqGrid.ContextMenuStrip.Items[0].Text "Copy" "English FASTQ copy menu"
+    Assert-Equal $suppGrid.Columns["supp_name"].HeaderText "File name" "English supplementary file name header"
     Set-Language "ja"
     Assert-Equal $helpOpenMenuItem.Text "ヘルプを開く" "Japanese open help menu"
     Assert-Equal $checkUpdatesMenuItem.Text "更新を確認" "Japanese check updates menu"
@@ -3966,15 +3844,15 @@ if ($SelfTest) {
     Assert-Equal ((Get-Variable -Name inputHelpMenuItem -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "individual input help menu removed"
     Assert-Equal $fetchButton.Text "ファイルを検索" "Japanese find files button"
     Assert-Equal $browseButton.Text "参照..." "Japanese browse button"
-    Assert-Equal $fastqFilterLabel.Text "FASTQ絞り込み" "Japanese FASTQ filter label"
+    Assert-Equal $fastqFilterLabel.Text "Filter" "Japanese FASTQ filter label"
     Assert-Equal $fastqFilterKeywordLabel.Text "検索" "Japanese FASTQ search label"
     Assert-Equal $fastqClearFilterButton.Text "フィルタ解除" "Japanese clear FASTQ filter button"
-    Assert-Equal ([string]$fastqMd5FilterCombo.Items[1]) "MD5あり" "Japanese MD5 filter option"
+    Assert-Equal $fastqGrid.ContextMenuStrip.Items[0].Text "コピー" "Japanese FASTQ copy menu"
     Assert-Equal $suppTitle.Text "GEO supplementary / processed file（raw FASTQ以外）: 0件" "Japanese supplementary title"
+    Assert-Equal $suppGrid.Columns.Count 5 "supplementary grid keeps selection, origin, file name, URL, and source index"
     Assert-Equal $suppGrid.Columns["supp_origin"].HeaderText "由来" "Japanese supplementary origin header"
-    Assert-Equal $suppGrid.Columns["supp_extension"].HeaderText "拡張子" "Japanese supplementary extension header"
-    Assert-Equal $suppGrid.Columns["supp_type"].HeaderText "推定種別" "Japanese supplementary type header"
-    Assert-Equal $suppGrid.Columns["supp_verification"].HeaderText "検証" "Japanese supplementary verification header"
+    Assert-Equal $suppGrid.Columns["supp_name"].HeaderText "ファイル名" "Japanese supplementary file name header"
+    Assert-Equal $suppGrid.Columns["supp_url"].HeaderText "GEO URL" "Japanese supplementary URL header"
     Set-Busy $true
     Assert-Equal $checkUpdatesMenuItem.Enabled $false "busy disables check updates menu"
     Set-Busy $false
@@ -4383,32 +4261,16 @@ if ($SelfTest) {
     Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "2,0" "FASTQ strategy filter preserves sorted resolved indices"
     Reset-FastqFilterControls
     Set-GridSelection $fastqGrid "selected" $false
-    $fastqMd5FilterCombo.SelectedIndex = 2
-    Apply-FastqFilter
-    Set-GridSelection $fastqGrid "selected" $true
-    Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "1" "FASTQ MD5 missing filter selection keeps resolved index"
-    Reset-FastqFilterControls
-    Set-GridSelection $fastqGrid "selected" $false
-    $fastqSizeFilterCombo.SelectedIndex = 1
-    Apply-FastqFilter
-    Set-GridSelection $fastqGrid "selected" $true
-    Assert-Equal (Get-SelectedFastqIndicesOrEmpty) "2" "FASTQ size filter selection keeps resolved index"
-    Reset-FastqFilterControls
-    Set-GridSelection $fastqGrid "selected" $false
     Assert-Equal $suppGrid.Rows.Count 1 "supplementary row count"
     Assert-Equal $suppGrid.Rows[0].Cells["supp_origin"].Value "Series: SELFTEST" "supplementary origin display"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_extension"].Value ".txt" "supplementary extension display"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_type"].Value "table/text" "supplementary estimated type display"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "不明" "supplementary unknown size display"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5対象外" "supplementary verification display"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_name"].Value "processed.txt" "supplementary file name display"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_url"].Value $sourceUri "supplementary URL display"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
     Set-Language "en"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "Unknown" "supplementary size redisplays in English"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5 N/A" "supplementary verification redisplays in English"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_name"].Value "processed.txt" "supplementary file name survives English language switch"
     Assert-Equal ([bool]$suppGrid.Rows[0].Cells["supp_selected"].Value) $true "supplementary selection survives English language switch"
     Set-Language "ja"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_size"].Value "不明" "supplementary size redisplays in Japanese"
-    Assert-Equal $suppGrid.Rows[0].Cells["supp_verification"].Value "MD5対象外" "supplementary verification redisplays in Japanese"
+    Assert-Equal $suppGrid.Rows[0].Cells["supp_name"].Value "processed.txt" "supplementary file name survives Japanese language switch"
     Assert-Equal ([bool]$suppGrid.Rows[0].Cells["supp_selected"].Value) $true "supplementary selection survives Japanese language switch"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
     Assert-Contains $fastqTitle.Text "3件" "FASTQ title includes count"
@@ -4435,8 +4297,6 @@ if ($SelfTest) {
     Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "0" "bulk supplementary selection"
     Assert-Contains $capacityLabel.Text "必要容量(FASTQ): 0 B /" "capacity label stays FASTQ-only for supplementary selection"
     Assert-Contains $selectionSummaryLabel.Text "GEO supplementary/processed 1 件" "selection summary selected supplementary"
-    Assert-Contains $selectionSummaryLabel.Text "サイズ不明" "selection summary supplementary unknown size"
-    Assert-Contains $selectionSummaryLabel.Text "MD5対象外" "selection summary supplementary MD5 not applicable"
     Set-GridSelection $suppGrid "supp_selected" $false
     Assert-Equal (Get-SelectedSuppIndicesOrEmpty) "" "bulk clear supplementary selection"
     $inputBox.Text = "SELFTEST"
