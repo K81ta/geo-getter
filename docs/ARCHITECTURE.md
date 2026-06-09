@@ -57,7 +57,7 @@ flowchart TD
 | 層 | 担当 | 責務 |
 | --- | --- | --- |
 | Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat` | PowerShell WinForms GUI を STA で起動する |
-| GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル、診断 zip 作成 |
+| GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル |
 | CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、manifest 再確認 |
 | Metadata core | `accession.py`, `providers/*` | accession 抽出、GEO/ENA 問い合わせ、候補統合 |
 | Download core | `planner.py`, `downloader.py`, `path_safety.py` | 出力先決定、manifest/log、容量確認、ファイル名安全化、ダウンロード、MD5 検証 |
@@ -447,21 +447,3 @@ Python 側の status / error code は英語で統一する。GUI の主要ラベ
 保存済み FASTQ manifest 再確認では、すべての FASTQ が `md5_verified` の場合だけ終了コード `0` を返す。`md5_unavailable`, `missing`, `size_mismatch`, `md5_mismatch` がある場合は、`verification_report.tsv` を作成したうえで終了コード `1` を返す。
 
 ファイル単位の失敗は download log に残し、次のファイル処理へ進む。metadata 解決時に情報が不足した場合は `warnings` に記録し、該当する項目は空欄のまま返す。
-
-## 診断情報
-
-GUI は `診断情報を保存` / `Save diagnostics` から、問題報告用の zip をローカルに作成できる。自動送信はしない。
-
-診断 zip の標準ファイル:
-
-| ファイル | 内容 |
-| --- | --- |
-| `diagnostics.json` | version、実行日時、Python path、入力、選択 index、保存先、空き容量、preflight 状態、既存保存先と再開判定、最後の error code / detail、各 CLI 引数、最後の download / verification done event |
-| `resolved.json` | 最後に成功した `resolve-json` の結果 |
-| `resolve_stdout.txt`, `resolve_stderr.txt` | metadata 解決 subprocess の標準出力と標準エラー |
-| `download_stdout.jsonl`, `download_stderr.txt` | download subprocess の JSON Lines と標準エラー |
-| `verify_stdout.jsonl`, `verify_stderr.txt` | manifest 再確認 subprocess の JSON Lines と標準エラー |
-| `gui_log.txt` | GUI 下部ログの内容 |
-| `artifacts/*` | 最後の download done event が返した manifest、download log、最後の manifest 再確認レポート。`done` 前に失敗した場合は、予定出力フォルダに作成済みの manifest / download log |
-
-診断 zip にはローカルパス、入力 accession、保存先、ファイル名が含まれる可能性があるため、ユーザーが必要時に手動で共有する。

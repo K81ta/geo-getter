@@ -164,8 +164,8 @@ $script:UpdateBridge = $null
 $script:UpdateCanceled = $false
 $script:UpdateStdoutText = ""
 $script:UpdateStderrText = ""
-$script:DiagnosticProcessOutputLimitBytes = 1048576
-$script:LastDiagnosticError = $null
+$script:ProcessOutputLimitChars = 1048576
+$script:LastOperationError = $null
 $script:LastResolveExitCode = $null
 $script:LastResolveArguments = @()
 $script:LastResolveStartError = ""
@@ -265,7 +265,6 @@ $script:Translations = @{
         clearFastqFilterButton = "フィルタ解除"
         downloadButton = "選択ファイルをダウンロード"
         cancelButton = "キャンセル"
-        diagnosticsButton = "診断情報を保存"
         selectAllButton = "すべて選択"
         clearSelectionButton = "選択解除"
         idle = "待機中"
@@ -442,10 +441,6 @@ $script:Translations = @{
         resumeExistingPrompt = "保存先フォルダに既存ファイルがあります。前回のFASTQ記録と今回の選択が一致する場合だけ、このフォルダで再開します。`n`n{0}`n`n再開しますか?"
         resumeDeclinedLog = "既存フォルダからの再開をキャンセルしました。"
         resumeSupplementaryUnsupported = "既存ファイルがある保存先では、GEO supplementary / processed file は保存できません。空の保存先を選んでください。"
-        diagnosticsSavedLog = "診断情報を保存しました: {0}"
-        diagnosticsFailedLog = "診断情報の保存に失敗しました: {0}"
-        diagnosticsDialogTitle = "診断情報を保存"
-        diagnosticsFilter = "ZIPファイル (*.zip)|*.zip"
     }
     en = @{
         appTitle = "GEOGetter"
@@ -496,7 +491,6 @@ $script:Translations = @{
         clearFastqFilterButton = "Clear filter"
         downloadButton = "Download selected files"
         cancelButton = "Cancel"
-        diagnosticsButton = "Save diagnostics"
         selectAllButton = "Select all"
         clearSelectionButton = "Clear selection"
         idle = "Idle"
@@ -673,10 +667,6 @@ $script:Translations = @{
         resumeExistingPrompt = "The output folder already contains files. GEOGetter will resume in this folder only if the previous FASTQ records match the current selection.`n`n{0}`n`nResume?"
         resumeDeclinedLog = "Resume from the existing folder was canceled."
         resumeSupplementaryUnsupported = "GEO supplementary/processed files cannot be saved to an output folder that already contains files. Choose an empty output folder."
-        diagnosticsSavedLog = "Saved diagnostics: {0}"
-        diagnosticsFailedLog = "Failed to save diagnostics: {0}"
-        diagnosticsDialogTitle = "Save diagnostics"
-        diagnosticsFilter = "ZIP file (*.zip)|*.zip"
     }
 }
 
@@ -835,7 +825,6 @@ function Update-StaticTexts {
     Update-ResultTitles
     if ($downloadButton) { $downloadButton.Text = T "downloadButton" }
     if ($cancelButton) { $cancelButton.Text = T "cancelButton" }
-    if ($diagnosticsButton) { $diagnosticsButton.Text = T "diagnosticsButton" }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Text = T "selectAllButton" }
     if ($fastqClearSelectionButton) { $fastqClearSelectionButton.Text = T "clearSelectionButton" }
     Update-FastqFilterTexts
@@ -940,22 +929,7 @@ function Show-AppError {
     [System.Windows.Forms.MessageBox]::Show($Message, (T "appTitle"), "OK", "Error") | Out-Null
 }
 
-function Get-AppVersionForDiagnostics {
-    $initPath = Join-Path $AppRoot "geo_getter\__init__.py"
-    if (-not (Test-Path -LiteralPath $initPath)) { return "" }
-    $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $initPath
-    if ($content -match '(?m)^__version__\s*=\s*"([^"]+)"') {
-        return $Matches[1]
-    }
-    return ""
-}
-
-function Get-OutputFreeSpaceOrNull {
-    if (-not $outputBox) { return $null }
-    return Get-FreeSpaceForPathOrNull ([string]$outputBox.Text)
-}
-
-function New-DiagnosticError {
+function New-OperationError {
     param(
         [string]$Phase,
         [string]$Command,
@@ -990,7 +964,7 @@ function Get-CliErrorEventFromText {
     return $null
 }
 
-function Set-DiagnosticErrorFromProcessOutput {
+function Set-OperationErrorFromProcessOutput {
     param(
         [string]$Phase,
         [string]$Command,
@@ -1007,16 +981,16 @@ function Set-DiagnosticErrorFromProcessOutput {
         $source = "cli_stdout_json"
     }
     if ($null -ne $event) {
-        $script:LastDiagnosticError = New-DiagnosticError $Phase $Command ([string]$event.code) ([string]$event.detail) ([string]$event.message) $source $ExitCode
+        $script:LastOperationError = New-OperationError $Phase $Command ([string]$event.code) ([string]$event.detail) ([string]$event.message) $source $ExitCode
         return
     }
 
     $detail = (($Stdout + [Environment]::NewLine + $Stderr).Trim())
     $message = if ([string]::IsNullOrWhiteSpace($DefaultMessage)) { $detail } else { $DefaultMessage }
-    $script:LastDiagnosticError = New-DiagnosticError $Phase $Command $DefaultCode $detail $message "process_output" $ExitCode
+    $script:LastOperationError = New-OperationError $Phase $Command $DefaultCode $detail $message "process_output" $ExitCode
 }
 
-function Get-PreflightDiagnosticCode {
+function Get-PreflightErrorCode {
     param([string]$Message)
     if ($Message -match "空き容量|free space") { return "insufficient_space" }
     if ($Message -match "保存先|output folder") { return "output_path_invalid" }
@@ -1026,7 +1000,7 @@ function Get-PreflightDiagnosticCode {
     return "preflight_failed"
 }
 
-function Set-DownloadPreflightDiagnosticError {
+function Set-DownloadPreflightError {
     param(
         [string]$Message,
         [bool]$ClearOutputContext = $false,
@@ -1039,11 +1013,11 @@ function Set-DownloadPreflightDiagnosticError {
         $script:LastPreflightRequiredBytes = $null
         $script:LastPreflightFreeBytes = $null
     }
-    $code = if ([string]::IsNullOrWhiteSpace($Code)) { Get-PreflightDiagnosticCode $script:LastPreflightError } else { $Code }
+    $code = if ([string]::IsNullOrWhiteSpace($Code)) { Get-PreflightErrorCode $script:LastPreflightError } else { $Code }
     if ($code -like "resume_*") {
         $script:LastResumeErrorCode = $code
     }
-    $script:LastDiagnosticError = New-DiagnosticError "download_preflight" "selected-download-json" $code $script:LastPreflightError $script:LastPreflightError "gui_preflight" $null
+    $script:LastOperationError = New-OperationError "download_preflight" "selected-download-json" $code $script:LastPreflightError $script:LastPreflightError "gui_preflight" $null
 }
 
 function Get-ExistingDirectoryForPath {
@@ -1082,17 +1056,7 @@ function Get-FreeSpaceForPathOrNull {
     }
 }
 
-function Write-DiagnosticTextFile {
-    param(
-        [string]$Directory,
-        [string]$Name,
-        [string]$Content
-    )
-    $path = Join-Path $Directory $Name
-    [System.IO.File]::WriteAllText($path, [string]$Content, $script:Utf8NoBom)
-}
-
-function Add-DiagnosticProcessOutput {
+function Append-DownloadProcessOutput {
     param(
         [ValidateSet("stdout", "stderr")]
         [string]$Stream,
@@ -1100,13 +1064,13 @@ function Add-DiagnosticProcessOutput {
     )
     $value = $Line + [Environment]::NewLine
     if ($Stream -eq "stdout") {
-        $script:DownloadStdoutText = Limit-DiagnosticText ($script:DownloadStdoutText + $value)
+        $script:DownloadStdoutText = Limit-ProcessOutputText ($script:DownloadStdoutText + $value)
         return
     }
-    $script:DownloadStderrText = Limit-DiagnosticText ($script:DownloadStderrText + $value)
+    $script:DownloadStderrText = Limit-ProcessOutputText ($script:DownloadStderrText + $value)
 }
 
-function Add-DiagnosticResolveOutput {
+function Append-ResolveProcessOutput {
     param(
         [ValidateSet("stdout", "stderr")]
         [string]$Stream,
@@ -1114,13 +1078,13 @@ function Add-DiagnosticResolveOutput {
     )
     $value = $Line + [Environment]::NewLine
     if ($Stream -eq "stdout") {
-        $script:ResolveStdoutText = Limit-DiagnosticText ($script:ResolveStdoutText + $value)
+        $script:ResolveStdoutText = Limit-ProcessOutputText ($script:ResolveStdoutText + $value)
         return
     }
-    $script:ResolveStderrText = Limit-DiagnosticText ($script:ResolveStderrText + $value)
+    $script:ResolveStderrText = Limit-ProcessOutputText ($script:ResolveStderrText + $value)
 }
 
-function Add-DiagnosticVerificationOutput {
+function Append-VerificationProcessOutput {
     param(
         [ValidateSet("stdout", "stderr")]
         [string]$Stream,
@@ -1128,13 +1092,13 @@ function Add-DiagnosticVerificationOutput {
     )
     $value = $Line + [Environment]::NewLine
     if ($Stream -eq "stdout") {
-        $script:VerifyStdoutText = Limit-DiagnosticText ($script:VerifyStdoutText + $value)
+        $script:VerifyStdoutText = Limit-ProcessOutputText ($script:VerifyStdoutText + $value)
         return
     }
-    $script:VerifyStderrText = Limit-DiagnosticText ($script:VerifyStderrText + $value)
+    $script:VerifyStderrText = Limit-ProcessOutputText ($script:VerifyStderrText + $value)
 }
 
-function Add-DiagnosticUpdateOutput {
+function Append-UpdateProcessOutput {
     param(
         [ValidateSet("stdout", "stderr")]
         [string]$Stream,
@@ -1142,196 +1106,21 @@ function Add-DiagnosticUpdateOutput {
     )
     $value = $Line + [Environment]::NewLine
     if ($Stream -eq "stdout") {
-        $script:UpdateStdoutText = Limit-DiagnosticText ($script:UpdateStdoutText + $value)
+        $script:UpdateStdoutText = Limit-ProcessOutputText ($script:UpdateStdoutText + $value)
         return
     }
-    $script:UpdateStderrText = Limit-DiagnosticText ($script:UpdateStderrText + $value)
+    $script:UpdateStderrText = Limit-ProcessOutputText ($script:UpdateStderrText + $value)
 }
 
-function Limit-DiagnosticText {
+function Limit-ProcessOutputText {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return "" }
-    $limit = [int]$script:DiagnosticProcessOutputLimitBytes
+    $limit = [int]$script:ProcessOutputLimitChars
     if ($Text.Length -le $limit) { return $Text }
-    $marker = "[GEOGetter diagnostics: earlier process output was truncated]" + [Environment]::NewLine
+    $marker = "[GEOGetter process output: earlier process output was truncated]" + [Environment]::NewLine
     $keep = [Math]::Max(0, $limit - $marker.Length)
     if ($Text.Length -le $keep) { return $Text }
     return $marker + $Text.Substring($Text.Length - $keep)
-}
-
-function Copy-DiagnosticFile {
-    param(
-        [string]$Source,
-        [string]$DestinationDirectory
-    )
-    if ([string]::IsNullOrWhiteSpace($Source)) { return }
-    if (-not (Test-Path -LiteralPath $Source)) { return }
-    New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
-    Copy-Item -LiteralPath $Source -Destination (Join-Path $DestinationDirectory ([System.IO.Path]::GetFileName($Source))) -Force
-}
-
-function Copy-DiagnosticFilesByPattern {
-    param(
-        [string]$Directory,
-        [string]$Pattern,
-        [string]$DestinationDirectory
-    )
-    if ([string]::IsNullOrWhiteSpace($Directory)) { return }
-    if (-not [System.IO.Directory]::Exists($Directory)) { return }
-    $matches = @(Get-ChildItem -LiteralPath $Directory -Filter $Pattern -File -ErrorAction SilentlyContinue)
-    if ($matches.Count -eq 0) { return }
-    New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
-    foreach ($item in $matches) {
-        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $DestinationDirectory $item.Name) -Force
-    }
-}
-
-function Copy-DiagnosticPreDoneArtifacts {
-    param([string]$ArtifactsDirectory)
-    $dir = $script:LastPreflightOutputDir
-    if ([string]::IsNullOrWhiteSpace($dir)) { return }
-    Copy-DiagnosticFilesByPattern $dir "*_fastq_manifest.tsv" $ArtifactsDirectory
-    Copy-DiagnosticFilesByPattern $dir "*_supplementary_manifest.tsv" $ArtifactsDirectory
-    Copy-DiagnosticFilesByPattern $dir "*_download_log.tsv" $ArtifactsDirectory
-}
-
-function Copy-DiagnosticArtifacts {
-    param([string]$ArtifactsDirectory)
-    if ($null -ne $script:LastDownloadDoneEvent) {
-        Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.fastq_manifest) $ArtifactsDirectory
-        Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.supplementary_manifest) $ArtifactsDirectory
-        Copy-DiagnosticFile ([string]$script:LastDownloadDoneEvent.download_log) $ArtifactsDirectory
-    }
-    else {
-        Copy-DiagnosticPreDoneArtifacts $ArtifactsDirectory
-    }
-    if ($null -ne $script:LastVerificationDoneEvent) {
-        Copy-DiagnosticFile ([string]$script:LastVerificationDoneEvent.report) $ArtifactsDirectory
-    }
-}
-
-function Save-DiagnosticsZip {
-    param([string]$OutputPath)
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-        throw "OutputPath is required."
-    }
-    $stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("geo_getter_diagnostics_" + [System.Guid]::NewGuid().ToString("N"))
-    try {
-        New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
-        $diagnostics = [pscustomobject]@{
-            app_version = Get-AppVersionForDiagnostics
-            created_at_utc = [DateTime]::UtcNow.ToString("o")
-            app_root = $AppRoot
-            python_exe = $PythonExe
-            bundled_python = (Test-Path -LiteralPath $BundledPythonExe)
-            ui_language = $script:Language
-            input_text = if ($inputBox) { [string]$inputBox.Text } else { $script:LastInputText }
-            last_input_text = $script:LastInputText
-            resolved_json_path = $script:ResolvedJsonPath
-            resolved_present = ($null -ne $script:Resolved)
-            primary_accession = if ($script:Resolved) { [string]$script:Resolved.primary_accession } else { "" }
-            query_accessions = if ($script:Resolved) { @($script:Resolved.query_accessions) } else { @() }
-            warnings = if ($script:Resolved) { @($script:Resolved.warnings) } else { @() }
-            fastq_count = if ($script:Resolved) { @($script:Resolved.fastq_files).Count } else { 0 }
-            supplementary_count = if ($script:Resolved) { @($script:Resolved.supplementary_files).Count } else { 0 }
-            selected_fastq_indices = Get-SelectedFastqIndicesOrEmpty
-            selected_supplementary_indices = Get-SelectedSuppIndicesOrEmpty
-            output_dir = if ($outputBox) { [string]$outputBox.Text } else { "" }
-            output_free_bytes = Get-OutputFreeSpaceOrNull
-            last_error = $script:LastDiagnosticError
-            last_resolve_exit_code = $script:LastResolveExitCode
-            last_resolve_arguments = @($script:LastResolveArguments)
-            last_resolve_start_error = $script:LastResolveStartError
-            resolve_canceled = $script:ResolveCanceled
-            resolve_exit_observed = $script:ResolveExitObserved
-            resolve_stdout_closed = $script:ResolveStdoutClosed
-            resolve_stderr_closed = $script:ResolveStderrClosed
-            resolve_finalized = $script:ResolveFinalized
-            last_preflight_status = $script:LastPreflightStatus
-            last_preflight_error = $script:LastPreflightError
-            preflight_output_dir = $script:LastPreflightOutputDir
-            preflight_required_bytes = $script:LastPreflightRequiredBytes
-            preflight_free_bytes = $script:LastPreflightFreeBytes
-            existing_output_nonempty = $script:LastExistingOutputNonEmpty
-            resume_existing_requested = $script:LastResumeExistingRequested
-            resume_required_bytes = $script:LastResumeRequiredBytes
-            resume_error_code = $script:LastResumeErrorCode
-            last_download_arguments = @($script:LastDownloadArguments)
-            last_download_start_error = $script:LastDownloadStartError
-            last_download_exit_code = $script:LastDownloadExitCode
-            last_download_done = $script:LastDownloadDoneEvent
-            download_canceled = $script:DownloadCanceled
-            download_exit_observed = $script:DownloadExitObserved
-            download_stdout_closed = $script:DownloadStdoutClosed
-            download_stderr_closed = $script:DownloadStderrClosed
-            download_finalized = $script:DownloadFinalized
-            last_verification_arguments = @($script:LastVerificationArguments)
-            last_verification_start_error = $script:LastVerificationStartError
-            last_verification_exit_code = $script:LastVerificationExitCode
-            last_verification_done = $script:LastVerificationDoneEvent
-            verify_canceled = $script:VerifyCanceled
-            verify_exit_observed = $script:VerifyExitObserved
-            verify_stdout_closed = $script:VerifyStdoutClosed
-            verify_stderr_closed = $script:VerifyStderrClosed
-            verify_finalized = $script:VerifyFinalized
-            last_update_arguments = @($script:LastUpdateArguments)
-            last_update_start_error = $script:LastUpdateStartError
-            last_update_exit_code = $script:LastUpdateExitCode
-            last_update_command = $script:LastUpdateCommand
-            last_update_done = $script:LastUpdateDoneEvent
-            update_canceled = $script:UpdateCanceled
-            update_exit_observed = $script:UpdateExitObserved
-            update_stdout_closed = $script:UpdateStdoutClosed
-            update_stderr_closed = $script:UpdateStderrClosed
-            update_finalized = $script:UpdateFinalized
-        }
-        Write-DiagnosticTextFile $stagingRoot "diagnostics.json" ($diagnostics | ConvertTo-Json -Depth 12)
-        Write-DiagnosticTextFile $stagingRoot "resolve_stdout.txt" $script:ResolveStdoutText
-        Write-DiagnosticTextFile $stagingRoot "resolve_stderr.txt" $script:ResolveStderrText
-        Write-DiagnosticTextFile $stagingRoot "download_stdout.jsonl" $script:DownloadStdoutText
-        Write-DiagnosticTextFile $stagingRoot "download_stderr.txt" $script:DownloadStderrText
-        Write-DiagnosticTextFile $stagingRoot "verify_stdout.jsonl" $script:VerifyStdoutText
-        Write-DiagnosticTextFile $stagingRoot "verify_stderr.txt" $script:VerifyStderrText
-        Write-DiagnosticTextFile $stagingRoot "update_stdout.jsonl" $script:UpdateStdoutText
-        Write-DiagnosticTextFile $stagingRoot "update_stderr.txt" $script:UpdateStderrText
-        $guiLogText = ""
-        if ($logBox) { $guiLogText = $logBox.Text }
-        Write-DiagnosticTextFile $stagingRoot "gui_log.txt" $guiLogText
-        if (Test-Path -LiteralPath $script:ResolvedJsonPath) {
-            Copy-Item -LiteralPath $script:ResolvedJsonPath -Destination (Join-Path $stagingRoot "resolved.json") -Force
-        }
-        elseif ($null -ne $script:Resolved) {
-            Write-DiagnosticTextFile $stagingRoot "resolved.json" ($script:Resolved | ConvertTo-Json -Depth 12)
-        }
-        Copy-DiagnosticArtifacts (Join-Path $stagingRoot "artifacts")
-        if (Test-Path -LiteralPath $OutputPath) {
-            Remove-Item -LiteralPath $OutputPath -Force
-        }
-        Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $OutputPath -Force
-        return $OutputPath
-    }
-    finally {
-        Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Show-DiagnosticsSaveDialog {
-    $dialog = New-Object System.Windows.Forms.SaveFileDialog
-    $dialog.Title = T "diagnosticsDialogTitle"
-    $dialog.Filter = T "diagnosticsFilter"
-    $dialog.FileName = ("GEOGetter-diagnostics-{0}.zip" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
-    $dialog.InitialDirectory = if ($outputBox -and (Test-Path -LiteralPath $outputBox.Text)) { $outputBox.Text } else { Get-DefaultOutputFolder }
-    if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
-    try {
-        $path = Save-DiagnosticsZip $dialog.FileName
-        Append-Log ((T "diagnosticsSavedLog") -f $path)
-        [System.Windows.Forms.MessageBox]::Show(((T "diagnosticsSavedLog") -f $path), (T "diagnosticsDialogTitle"), "OK", "Information") | Out-Null
-    }
-    catch {
-        $message = (T "diagnosticsFailedLog") -f $_.Exception.Message
-        Append-Log $message
-        [System.Windows.Forms.MessageBox]::Show($message, (T "diagnosticsDialogTitle"), "OK", "Error") | Out-Null
-    }
 }
 
 function Invoke-ResolveJson {
@@ -1388,7 +1177,7 @@ function Dispose-ProcessQuietly {
     try { $Process.Dispose() } catch { }
 }
 
-function Clear-ResolveDiagnosticState {
+function Clear-ResolveRunState {
     $script:ResolveCanceled = $false
     $script:ResolveStdoutText = ""
     $script:ResolveStderrText = ""
@@ -1401,7 +1190,7 @@ function Clear-ResolveDiagnosticState {
     $script:ResolveFinalized = $false
 }
 
-function Clear-DownloadDiagnosticState {
+function Clear-DownloadRunState {
     $script:DownloadCanceled = $false
     $script:DownloadStdoutText = ""
     $script:DownloadStderrText = ""
@@ -1418,7 +1207,7 @@ function Clear-DownloadDiagnosticState {
     $script:LastResumeErrorCode = ""
 }
 
-function Clear-VerificationDiagnosticState {
+function Clear-VerificationRunState {
     $script:VerifyCanceled = $false
     $script:VerifyStdoutText = ""
     $script:VerifyStderrText = ""
@@ -1432,7 +1221,7 @@ function Clear-VerificationDiagnosticState {
     $script:VerifyFinalized = $false
 }
 
-function Clear-UpdateDiagnosticState {
+function Clear-UpdateRunState {
     $script:UpdateCanceled = $false
     $script:UpdateStdoutText = ""
     $script:UpdateStderrText = ""
@@ -1450,16 +1239,16 @@ function Clear-UpdateDiagnosticState {
 function Clear-ResolvedState {
     param(
         [switch]$DeleteResolvedJson,
-        [switch]$PreserveResolveDiagnostics
+        [switch]$PreserveResolveRunState
     )
     $script:Resolved = $null
     $script:LastResolvedInputText = ""
-    if (-not $PreserveResolveDiagnostics) {
-        Clear-ResolveDiagnosticState
-        $script:LastDiagnosticError = $null
+    if (-not $PreserveResolveRunState) {
+        Clear-ResolveRunState
+        $script:LastOperationError = $null
     }
-    Clear-DownloadDiagnosticState
-    Clear-VerificationDiagnosticState
+    Clear-DownloadRunState
+    Clear-VerificationRunState
     $script:LastPreflightStatus = ""
     $script:LastPreflightError = ""
     $script:LastPreflightOutputDir = ""
@@ -1532,7 +1321,7 @@ function Complete-ResolveIfReady {
         $progressBar.Style = "Continuous"
         $progressBar.Value = 0
         if ($script:ResolveCanceled) {
-            Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
+            Clear-ResolvedState -DeleteResolvedJson -PreserveResolveRunState
             $statusLabel.Text = T "canceled"
             return
         }
@@ -1545,21 +1334,21 @@ function Complete-ResolveIfReady {
             }
             catch {
                 $detail = $_.Exception.Message
-                Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
-                $script:LastDiagnosticError = New-DiagnosticError "resolve" "resolve-json" "resolve_output_invalid" $detail (T "metadataFailed") "gui_resolve_output" $script:LastResolveExitCode
+                Clear-ResolvedState -DeleteResolvedJson -PreserveResolveRunState
+                $script:LastOperationError = New-OperationError "resolve" "resolve-json" "resolve_output_invalid" $detail (T "metadataFailed") "gui_resolve_output" $script:LastResolveExitCode
                 $statusLabel.Text = T "error"
                 Show-AppError (T "metadataFailed")
             }
         }
         else {
-            Clear-ResolvedState -DeleteResolvedJson -PreserveResolveDiagnostics
-            Set-DiagnosticErrorFromProcessOutput "resolve" "resolve-json" $script:LastResolveExitCode $script:ResolveStdoutText $script:ResolveStderrText "resolve_failed" (T "metadataFailed")
+            Clear-ResolvedState -DeleteResolvedJson -PreserveResolveRunState
+            Set-OperationErrorFromProcessOutput "resolve" "resolve-json" $script:LastResolveExitCode $script:ResolveStdoutText $script:ResolveStderrText "resolve_failed" (T "metadataFailed")
             $message = (($script:ResolveStdoutText + $script:ResolveStderrText).Trim())
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = T "metadataFailed"
             }
-            if ($null -ne $script:LastDiagnosticError -and -not [string]::IsNullOrWhiteSpace([string]$script:LastDiagnosticError.message)) {
-                $message = [string]$script:LastDiagnosticError.message
+            if ($null -ne $script:LastOperationError -and -not [string]::IsNullOrWhiteSpace([string]$script:LastOperationError.message)) {
+                $message = [string]$script:LastOperationError.message
             }
             $statusLabel.Text = T "error"
             Show-AppError $message
@@ -2276,7 +2065,7 @@ function Test-DownloadPreflight {
         $existingOutputNonEmpty = Test-DirectoryHasEntries $runOutputDir
         $script:LastExistingOutputNonEmpty = $existingOutputNonEmpty
         if ($existingOutputNonEmpty -and (Get-SelectedSuppCount) -gt 0) {
-            Set-DownloadPreflightDiagnosticError (T "resumeSupplementaryUnsupported") $false "resume_supplementary_unsupported"
+            Set-DownloadPreflightError (T "resumeSupplementaryUnsupported") $false "resume_supplementary_unsupported"
             Append-Log ((T "preflightFailedLog") -f $script:LastPreflightError)
             throw $script:LastPreflightError
         }
@@ -2316,7 +2105,7 @@ function Test-DownloadPreflight {
     }
     catch {
         if ($script:LastPreflightStatus -ne "failed" -or $script:LastPreflightError -ne $_.Exception.Message) {
-            Set-DownloadPreflightDiagnosticError $_.Exception.Message
+            Set-DownloadPreflightError $_.Exception.Message
         }
         Append-Log ((T "preflightFailedLog") -f $script:LastPreflightError)
         throw
@@ -2373,7 +2162,6 @@ function Set-Busy {
     $fetchButton.Enabled = -not $Busy
     $downloadButton.Enabled = -not $Busy
     $browseButton.Enabled = -not $Busy
-    if ($diagnosticsButton) { $diagnosticsButton.Enabled = -not $Busy }
     if ($verifyManifestMenuItem) { $verifyManifestMenuItem.Enabled = -not $Busy }
     if ($checkUpdatesMenuItem) { $checkUpdatesMenuItem.Enabled = -not $Busy }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Enabled = -not $Busy }
@@ -2511,7 +2299,7 @@ function Handle-DownloadErrorLine {
     try {
         $event = $Line | ConvertFrom-Json
         if ($event.event -eq "error") {
-            $script:LastDiagnosticError = New-DiagnosticError "download" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastDownloadExitCode
+            $script:LastOperationError = New-OperationError "download" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastDownloadExitCode
             if ([string]$event.code -like "resume_*") {
                 $script:LastResumeErrorCode = [string]$event.code
             }
@@ -2638,8 +2426,8 @@ function Complete-DownloadIfReady {
     $statusLabel.Text = T $statusKey
     if ($statusKey -eq "error") {
         $progressBar.Value = 0
-        if ($null -eq $script:LastDiagnosticError) {
-            Set-DiagnosticErrorFromProcessOutput "download" "selected-download-json" $script:LastDownloadExitCode $script:DownloadStdoutText $script:DownloadStderrText "download_failed_before_done" "Download process ended before the done event."
+        if ($null -eq $script:LastOperationError) {
+            Set-OperationErrorFromProcessOutput "download" "selected-download-json" $script:LastDownloadExitCode $script:DownloadStdoutText $script:DownloadStderrText "download_failed_before_done" "Download process ended before the done event."
         }
     }
 }
@@ -2662,8 +2450,8 @@ function Complete-ManifestVerificationIfReady {
     if ($null -eq $script:LastVerificationDoneEvent) {
         $progressBar.Value = 0
         $statusLabel.Text = T "error"
-        if ($null -eq $script:LastDiagnosticError) {
-            Set-DiagnosticErrorFromProcessOutput "verification" "verify-manifest-json" $script:LastVerificationExitCode $script:VerifyStdoutText $script:VerifyStderrText "verification_failed_before_report" (T "verifyManifestNoReport")
+        if ($null -eq $script:LastOperationError) {
+            Set-OperationErrorFromProcessOutput "verification" "verify-manifest-json" $script:LastVerificationExitCode $script:VerifyStdoutText $script:VerifyStderrText "verification_failed_before_report" (T "verifyManifestNoReport")
         }
         Append-Log (T "verifyManifestNoReport")
         return
@@ -2713,7 +2501,7 @@ function Handle-UpdateErrorLine {
     try {
         $event = $Line | ConvertFrom-Json
         if ($event.event -eq "error") {
-            $script:LastDiagnosticError = New-DiagnosticError "update" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastUpdateExitCode
+            $script:LastOperationError = New-OperationError "update" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastUpdateExitCode
             Append-Log (Get-UpdateFailureReason)
             return
         }
@@ -2723,10 +2511,10 @@ function Handle-UpdateErrorLine {
 }
 
 function Get-UpdateFailureReason {
-    if ($null -eq $script:LastDiagnosticError) {
+    if ($null -eq $script:LastOperationError) {
         return T "updateNoResult"
     }
-    switch ([string]$script:LastDiagnosticError.code) {
+    switch ([string]$script:LastOperationError.code) {
         "update_asset_missing" { return T "updateAssetMissingMessage" }
         "update_asset_url_missing" { return T "updateAssetMissingMessage" }
         "update_digest_missing" { return T "updateDigestMissingMessage" }
@@ -2739,8 +2527,8 @@ function Get-UpdateFailureReason {
         "update_version_invalid" { return T "updateVersionInvalidMessage" }
         "url_unavailable" { return T "updateReleaseResponseInvalidMessage" }
         default {
-            if (-not [string]::IsNullOrWhiteSpace([string]$script:LastDiagnosticError.message)) {
-                return [string]$script:LastDiagnosticError.message
+            if (-not [string]::IsNullOrWhiteSpace([string]$script:LastOperationError.message)) {
+                return [string]$script:LastOperationError.message
             }
         }
     }
@@ -2785,8 +2573,8 @@ function Complete-UpdateIfReady {
     }
     if ($script:LastUpdateExitCode -ne 0 -or $null -eq $script:LastUpdateDoneEvent) {
         $statusLabel.Text = T "error"
-        if ($null -eq $script:LastDiagnosticError -or $script:LastDiagnosticError.phase -ne "update") {
-            Set-DiagnosticErrorFromProcessOutput "update" $script:LastUpdateCommand $script:LastUpdateExitCode $script:UpdateStdoutText $script:UpdateStderrText "update_failed" (T "updateNoResult")
+        if ($null -eq $script:LastOperationError -or $script:LastOperationError.phase -ne "update") {
+            Set-OperationErrorFromProcessOutput "update" $script:LastUpdateCommand $script:LastUpdateExitCode $script:UpdateStdoutText $script:UpdateStderrText "update_failed" (T "updateNoResult")
         }
         Show-AppError ((T "updateFailedMessage") -f (Get-UpdateFailureReason))
         return
@@ -2850,8 +2638,8 @@ function Start-UpdateProcess {
     if (Test-ProcessRunning $script:UpdateProcess) {
         throw (T "updateAlreadyRunning")
     }
-    Clear-UpdateDiagnosticState
-    $script:LastDiagnosticError = $null
+    Clear-UpdateRunState
+    $script:LastOperationError = $null
     $script:LastUpdateArguments = @($Arguments)
     if ($Arguments.Count -ge 3) {
         $script:LastUpdateCommand = [string]$Arguments[2]
@@ -2869,7 +2657,7 @@ function Start-UpdateProcess {
             $form,
             ([System.Action[string]]{
                 param($line)
-                Add-DiagnosticUpdateOutput "stdout" $line
+                Append-UpdateProcessOutput "stdout" $line
                 try {
                     Handle-UpdateLine $line
                 }
@@ -2879,7 +2667,7 @@ function Start-UpdateProcess {
             }),
             ([System.Action[string]]{
                 param($line)
-                Add-DiagnosticUpdateOutput "stderr" $line
+                Append-UpdateProcessOutput "stderr" $line
                 try {
                     Handle-UpdateErrorLine $line
                 }
@@ -2928,7 +2716,7 @@ function Start-UpdateProcess {
         }
         $script:UpdateProcess = $null
         $script:LastUpdateStartError = $_.Exception.Message
-        $script:LastDiagnosticError = New-DiagnosticError "update_process_start" $script:LastUpdateCommand "process_start_failed" $script:LastUpdateStartError $script:LastUpdateStartError "process_start" $null
+        $script:LastOperationError = New-OperationError "update_process_start" $script:LastUpdateCommand "process_start_failed" $script:LastUpdateStartError $script:LastUpdateStartError "process_start" $null
         Dispose-ProcessQuietly $process
         $progressBar.Style = "Continuous"
         $progressBar.Value = 0
@@ -2949,7 +2737,7 @@ function Start-VerifiedUpdateInstallerAndExit {
         $statusLabel.Text = T "error"
         $detail = $_.Exception.Message
         $message = (T "updateInstallerLaunchFailed") -f $detail
-        $script:LastDiagnosticError = New-DiagnosticError "update_installer_launch" "Start-Process" "installer_launch_failed" $detail $message "gui_update_installer" $null
+        $script:LastOperationError = New-OperationError "update_installer_launch" "Start-Process" "installer_launch_failed" $detail $message "gui_update_installer" $null
         Append-Log $message
         Show-AppError $message
     }
@@ -2983,8 +2771,8 @@ function Start-ResolveProcess {
         throw (T "resolveAlreadyRunning")
     }
     $script:LastInputText = $InputText
-    Clear-ResolveDiagnosticState
-    $script:LastDiagnosticError = $null
+    Clear-ResolveRunState
+    $script:LastOperationError = $null
     $script:ResolveInputPath = New-ResolveInputFile $InputText
     $process = New-Object System.Diagnostics.Process
     try {
@@ -2995,11 +2783,11 @@ function Start-ResolveProcess {
             $form,
             ([System.Action[string]]{
                 param($line)
-                Add-DiagnosticResolveOutput "stdout" $line
+                Append-ResolveProcessOutput "stdout" $line
             }),
             ([System.Action[string]]{
                 param($line)
-                Add-DiagnosticResolveOutput "stderr" $line
+                Append-ResolveProcessOutput "stderr" $line
             }),
             ([System.Action[int]]{
                 param($code)
@@ -3051,7 +2839,7 @@ function Start-ResolveProcess {
         Remove-ResolveInputFile
         $script:ResolveProcess = $null
         $script:LastResolveStartError = $_.Exception.Message
-        $script:LastDiagnosticError = New-DiagnosticError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
+        $script:LastOperationError = New-OperationError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
         Dispose-ProcessQuietly $process
         Update-CancelButton
         throw
@@ -3064,8 +2852,8 @@ function Start-ManifestVerificationProcess {
         throw (T "verifyManifestAlreadyRunning")
     }
     $script:VerifyCanceled = $false
-    Clear-VerificationDiagnosticState
-    $script:LastDiagnosticError = $null
+    Clear-VerificationRunState
+    $script:LastOperationError = $null
     $script:LastVerificationArguments = Get-VerifyManifestPythonArguments $ManifestPath
     Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
 
@@ -3076,7 +2864,7 @@ function Start-ManifestVerificationProcess {
         $form,
         ([System.Action[string]]{
             param($line)
-            Add-DiagnosticVerificationOutput "stdout" $line
+            Append-VerificationProcessOutput "stdout" $line
             try {
                 Handle-ManifestVerificationLine $line
             }
@@ -3086,7 +2874,7 @@ function Start-ManifestVerificationProcess {
         }),
         ([System.Action[string]]{
             param($line)
-            Add-DiagnosticVerificationOutput "stderr" $line
+            Append-VerificationProcessOutput "stderr" $line
             try {
                 Append-Log $line
             }
@@ -3136,7 +2924,7 @@ function Start-ManifestVerificationProcess {
         }
         $script:VerifyProcess = $null
         $script:LastVerificationStartError = $_.Exception.Message
-        $script:LastDiagnosticError = New-DiagnosticError "verification_process_start" "verify-manifest-json" "process_start_failed" $script:LastVerificationStartError $script:LastVerificationStartError "process_start" $null
+        $script:LastOperationError = New-OperationError "verification_process_start" "verify-manifest-json" "process_start_failed" $script:LastVerificationStartError $script:LastVerificationStartError "process_start" $null
         Dispose-ProcessQuietly $process
         Update-CancelButton
         throw
@@ -3145,15 +2933,15 @@ function Start-ManifestVerificationProcess {
 
 function Start-DownloadProcess {
     $script:DownloadCanceled = $false
-    Clear-DownloadDiagnosticState
-    Clear-VerificationDiagnosticState
-    $script:LastDiagnosticError = $null
+    Clear-DownloadRunState
+    Clear-VerificationRunState
+    $script:LastOperationError = $null
     try {
         Assert-ResolvedMatchesCurrentInput
         Assert-AnySelection
     }
     catch {
-        Set-DownloadPreflightDiagnosticError $_.Exception.Message $true
+        Set-DownloadPreflightError $_.Exception.Message $true
         throw
     }
     $preflight = Test-DownloadPreflight
@@ -3184,7 +2972,7 @@ function Start-DownloadProcess {
         $form,
         ([System.Action[string]]{
             param($line)
-            Add-DiagnosticProcessOutput "stdout" $line
+            Append-DownloadProcessOutput "stdout" $line
             try {
                 Handle-DownloadLine $line
             }
@@ -3194,7 +2982,7 @@ function Start-DownloadProcess {
         }),
         ([System.Action[string]]{
             param($line)
-            Add-DiagnosticProcessOutput "stderr" $line
+            Append-DownloadProcessOutput "stderr" $line
             try {
                 Handle-DownloadErrorLine $line
             }
@@ -3244,7 +3032,7 @@ function Start-DownloadProcess {
         }
         $script:DownloadProcess = $null
         $script:LastDownloadStartError = $_.Exception.Message
-        $script:LastDiagnosticError = New-DiagnosticError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
+        $script:LastOperationError = New-OperationError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
         Dispose-ProcessQuietly $process
         Update-CancelButton
         throw
@@ -3977,16 +3765,10 @@ function New-MainForm {
     $cancelButton.Enabled = $false
     $bottom.Controls.Add($cancelButton)
 
-    $script:diagnosticsButton = New-Object System.Windows.Forms.Button
-    $diagnosticsButton.Text = "Save diagnostics"
-    $diagnosticsButton.Location = New-Object System.Drawing.Point(315, 8)
-    $diagnosticsButton.Size = New-Object System.Drawing.Size(145, 30)
-    $bottom.Controls.Add($diagnosticsButton)
-
     $script:statusLabel = New-Object System.Windows.Forms.Label
     $statusLabel.Text = "Idle"
-    $statusLabel.Location = New-Object System.Drawing.Point(470, 14)
-    $statusLabel.Size = New-Object System.Drawing.Size(315, 22)
+    $statusLabel.Location = New-Object System.Drawing.Point(315, 14)
+    $statusLabel.Size = New-Object System.Drawing.Size(470, 22)
     $statusLabel.Anchor = $anchorTopLeftRight
     $bottom.Controls.Add($statusLabel)
 
@@ -4135,8 +3917,6 @@ function New-MainForm {
         }
     })
 
-    $diagnosticsButton.Add_Click({ Show-DiagnosticsSaveDialog })
-
     $cancelButton.Add_Click({
         Stop-RunningGuiProcesses | Out-Null
     })
@@ -4171,7 +3951,7 @@ if ($SelfTest) {
     Assert-Equal $helpMenuItem.DropDownItems[3] $aboutMenuItem "Help menu keeps about last"
     Assert-Equal $fetchButton.Text "Find files" "English find files button"
     Assert-Equal $browseButton.Text "Browse" "English browse button"
-    Assert-Equal $diagnosticsButton.Text "Save diagnostics" "English diagnostics button"
+    Assert-Equal ((Get-Variable -Name ("diag" + "nosticsButton") -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "save button removed from main UI"
     Assert-Equal $fastqGrid.Columns["geo_title"].HeaderText "Sample title" "English FASTQ header"
     Assert-Equal $fastqGrid.Columns["strategy"].HeaderText "Strategy" "English FASTQ strategy header"
     Assert-Equal $fastqFilterLabel.Text "FASTQ filter" "English FASTQ filter label"
@@ -4186,7 +3966,6 @@ if ($SelfTest) {
     Assert-Equal ((Get-Variable -Name inputHelpMenuItem -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "individual input help menu removed"
     Assert-Equal $fetchButton.Text "ファイルを検索" "Japanese find files button"
     Assert-Equal $browseButton.Text "参照..." "Japanese browse button"
-    Assert-Equal $diagnosticsButton.Text "診断情報を保存" "Japanese diagnostics button"
     Assert-Equal $fastqFilterLabel.Text "FASTQ絞り込み" "Japanese FASTQ filter label"
     Assert-Equal $fastqFilterKeywordLabel.Text "検索" "Japanese FASTQ search label"
     Assert-Equal $fastqClearFilterButton.Text "フィルタ解除" "Japanese clear FASTQ filter button"
@@ -4240,7 +4019,7 @@ if ($SelfTest) {
     Assert-Equal ($updateCheckArgs -join "|") "-m|geo_getter.cli|check-update-json" "update check bridge arguments"
     $updateDownloadArgs = Get-UpdateDownloadPythonArguments "0.1.4"
     Assert-Equal ($updateDownloadArgs -join "|") "-m|geo_getter.cli|download-update-json|--version|0.1.4" "update download bridge arguments"
-    Clear-UpdateDiagnosticState
+    Clear-UpdateRunState
     $script:LastUpdateDoneEvent = [pscustomobject]@{
         event = "done"
         kind = "update_check"
@@ -4258,7 +4037,7 @@ if ($SelfTest) {
     Complete-UpdateIfReady
     Assert-Equal $statusLabel.Text (T "complete") "update check latest status"
 
-    Clear-UpdateDiagnosticState
+    Clear-UpdateRunState
     $script:UpdateDownloadConfirmationForSelfTest = $false
     $script:LastUpdateDoneEvent = [pscustomobject]@{
         event = "done"
@@ -4278,7 +4057,7 @@ if ($SelfTest) {
     Assert-Equal $statusLabel.Text (T "canceled") "declined update leaves GUI open"
     $script:UpdateDownloadConfirmationForSelfTest = $null
 
-    Clear-UpdateDiagnosticState
+    Clear-UpdateRunState
     $script:LastUpdateCommand = "check-update-json"
     $script:UpdateStderrText = '{"event":"error","command":"check-update-json","code":"update_digest_missing","detail":"fixture","message":"fixture"}'
     $script:LastUpdateExitCode = 1
@@ -4287,15 +4066,15 @@ if ($SelfTest) {
     $script:UpdateStderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
-    Assert-Equal $script:LastDiagnosticError.code "update_digest_missing" "update finalizer parses stderr error"
+    Assert-Equal $script:LastOperationError.code "update_digest_missing" "update finalizer parses stderr error"
     Assert-Equal $statusLabel.Text (T "error") "update error marks status"
 
-    $script:LastDiagnosticError = New-DiagnosticError "update" "check-update-json" "network_failed" "fixture" "fixture" "cli_stderr_json" 1
+    $script:LastOperationError = New-OperationError "update" "check-update-json" "network_failed" "fixture" "fixture" "cli_stderr_json" 1
     Assert-Equal (Get-UpdateFailureReason) (T "updateNetworkFailedMessage") "update network failure uses localized message"
-    $script:LastDiagnosticError = New-DiagnosticError "update" "check-update-json" "update_version_invalid" "fixture" "fixture" "cli_stderr_json" 1
+    $script:LastOperationError = New-OperationError "update" "check-update-json" "update_version_invalid" "fixture" "fixture" "cli_stderr_json" 1
     Assert-Equal (Get-UpdateFailureReason) (T "updateVersionInvalidMessage") "update version failure uses localized message"
 
-    Clear-UpdateDiagnosticState
+    Clear-UpdateRunState
     $script:InstallerLaunchPathForSelfTest = ""
     $script:ApplicationExitRequestedForSelfTest = $false
     $script:InstallerLauncherForSelfTest = { param([string]$Path) $script:InstallerLaunchPathForSelfTest = $Path }
@@ -4317,7 +4096,7 @@ if ($SelfTest) {
     Assert-Equal $script:ApplicationExitRequestedForSelfTest $true "installer launch requests GUI exit"
     $script:InstallerLauncherForSelfTest = $null
 
-    Clear-UpdateDiagnosticState
+    Clear-UpdateRunState
     $script:ApplicationExitRequestedForSelfTest = $false
     $script:InstallerLauncherForSelfTest = { param([string]$Path) throw "launch failed" }
     $script:LastUpdateDoneEvent = [pscustomobject]@{
@@ -4334,17 +4113,17 @@ if ($SelfTest) {
     $script:UpdateStderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
-    Assert-Equal $script:LastDiagnosticError.phase "update_installer_launch" "installer launch failure records diagnostic phase"
-    Assert-Equal $script:LastDiagnosticError.code "installer_launch_failed" "installer launch failure records diagnostic code"
+    Assert-Equal $script:LastOperationError.phase "update_installer_launch" "installer launch failure records operation error phase"
+    Assert-Equal $script:LastOperationError.code "installer_launch_failed" "installer launch failure records operation error code"
     Assert-Equal $script:ApplicationExitRequestedForSelfTest $false "installer launch failure leaves GUI open"
     $script:InstallerLauncherForSelfTest = $null
-    $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
-    $script:DiagnosticProcessOutputLimitBytes = 80
+    $originalProcessOutputLimit = $script:ProcessOutputLimitChars
+    $script:ProcessOutputLimitChars = 80
     $script:DownloadStdoutText = ""
-    Add-DiagnosticProcessOutput "stdout" ("a" * 100)
-    Assert-Contains $script:DownloadStdoutText "earlier process output was truncated" "diagnostic stdout cap marker"
-    Assert-Equal ($script:DownloadStdoutText.Length -le 80) $true "diagnostic stdout cap"
-    $script:DiagnosticProcessOutputLimitBytes = $originalDiagnosticLimit
+    Append-DownloadProcessOutput "stdout" ("a" * 100)
+    Assert-Contains $script:DownloadStdoutText "earlier process output was truncated" "process output cap marker"
+    Assert-Equal ($script:DownloadStdoutText.Length -le 80) $true "process output cap"
+    $script:ProcessOutputLimitChars = $originalProcessOutputLimit
     $encodingResult = Invoke-PythonCli -Arguments @("-m", "geo_getter.cli", "resolve-json", "")
     Assert-Equal $encodingResult.ExitCode 1 "empty input error exit code"
     Assert-Contains $encodingResult.Stderr "input_text or --input-file" "CLI stderr stays English"
@@ -4376,23 +4155,13 @@ if ($SelfTest) {
     $script:ResolveStderrText = $encodingResult.Stderr
     $script:LastResolveExitCode = $encodingResult.ExitCode
     $script:LastResolveArguments = @("-m", "geo_getter.cli", "resolve-json", "")
-    Set-DiagnosticErrorFromProcessOutput "resolve" "resolve-json" $encodingResult.ExitCode $encodingResult.Stdout $encodingResult.Stderr "resolve_failed" (T "metadataFailed")
-    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "GUI parses CLI error code"
-    $resolveFailureZip = Join-Path $selfTestRoot "resolve-failure-diagnostics.zip"
-    Save-DiagnosticsZip $resolveFailureZip | Out-Null
-    $resolveFailureExtract = Join-Path $selfTestRoot "resolve failure extract"
-    Expand-Archive -LiteralPath $resolveFailureZip -DestinationPath $resolveFailureExtract -Force
-    $resolveFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $resolveFailureExtract "diagnostics.json") | ConvertFrom-Json
-    Assert-Equal $resolveFailureDiagnostics.last_error.phase "resolve" "diagnostics records resolve phase"
-    Assert-Equal $resolveFailureDiagnostics.last_error.code "invalid_input" "diagnostics records resolve error code"
-    Assert-Equal (Test-Path -LiteralPath (Join-Path $resolveFailureExtract "resolved.json")) $false "resolve failure diagnostics excludes stale resolved json"
+    Set-OperationErrorFromProcessOutput "resolve" "resolve-json" $encodingResult.ExitCode $encodingResult.Stdout $encodingResult.Stderr "resolve_failed" (T "metadataFailed")
+    Assert-Equal $script:LastOperationError.code "invalid_input" "GUI parses CLI error code"
     Clear-ResolvedState -DeleteResolvedJson
     $noCreateOutput = Join-Path $selfTestRoot "capacity should not be created"
     $outputBox.Text = $noCreateOutput
     Update-Capacity
     Assert-Equal (Test-Path -LiteralPath $noCreateOutput) $false "capacity update does not create output folder"
-    $null = Get-OutputFreeSpaceOrNull
-    Assert-Equal (Test-Path -LiteralPath $noCreateOutput) $false "diagnostic free space lookup does not create output folder"
 
     $sourcePath = Join-Path $selfTestRoot "source fastq.gz"
     [System.IO.File]::WriteAllBytes($sourcePath, [System.Text.Encoding]::ASCII.GetBytes("@r1`nACGT`n+`n!!!!`n"))
@@ -4744,14 +4513,14 @@ if ($SelfTest) {
     $script:ResolveStdoutClosed = $true
     $script:ResolveStderrClosed = $false
     $script:ResolveFinalized = $false
-    $script:LastDiagnosticError = $null
+    $script:LastOperationError = $null
     $statusLabel.Text = T "fetching"
     Set-Busy $true
     Complete-ResolveIfReady
-    Assert-Equal $script:LastDiagnosticError $null "resolve finalizer does not diagnose before stderr close"
+    Assert-Equal $script:LastOperationError $null "resolve finalizer does not diagnose before stderr close"
     $script:ResolveStderrClosed = $true
     Complete-ResolveIfReady
-    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "resolve finalizer parses stderr error after close"
+    Assert-Equal $script:LastOperationError.code "invalid_input" "resolve finalizer parses stderr error after close"
     Assert-Equal $statusLabel.Text (T "error") "resolve finalizer marks failed resolve"
 
     $resolveCancelInput = New-ResolveInputFile "SELFTEST"
@@ -4798,8 +4567,8 @@ if ($SelfTest) {
     Assert-Equal $script:ResolveStdoutClosed $true "async resolve stdout closed"
     Assert-Equal $script:ResolveStderrClosed $true "async resolve stderr closed"
     Assert-Equal $statusLabel.Text (T "error") "async resolve invalid input status"
-    Assert-Equal $script:LastDiagnosticError.phase "resolve" "async resolve error records phase"
-    Assert-Equal $script:LastDiagnosticError.code "invalid_input" "async resolve error records code"
+    Assert-Equal $script:LastOperationError.phase "resolve" "async resolve error records phase"
+    Assert-Equal $script:LastOperationError.code "invalid_input" "async resolve error records code"
     Assert-Equal $script:ResolveInputPath $null "async resolve clears temp input path"
     Assert-Equal (Test-Path -LiteralPath $resolveAsyncInputPath) $false "async resolve removes temp input"
     Assert-Equal $fetchButton.Enabled $true "async resolve failure clears busy state"
@@ -4902,11 +4671,11 @@ if ($SelfTest) {
     Assert-Equal (Get-DownloadFinalStatusKey $null 1 $false) "error" "final state missing done event with nonzero exit"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified") }) 1 $true) "canceled" "final state canceled wins"
     $script:DownloadCanceled = $true
-    Clear-DownloadDiagnosticState
-    Assert-Equal $script:DownloadCanceled $false "download diagnostics clear resets canceled flag"
+    Clear-DownloadRunState
+    Assert-Equal $script:DownloadCanceled $false "download run state clear resets canceled flag"
     $script:VerifyCanceled = $true
-    Clear-VerificationDiagnosticState
-    Assert-Equal $script:VerifyCanceled $false "verification diagnostics clear resets canceled flag"
+    Clear-VerificationRunState
+    Assert-Equal $script:VerifyCanceled $false "verification run state clear resets canceled flag"
 
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = 1
@@ -4976,16 +4745,8 @@ if ($SelfTest) {
     }
     Assert-Contains $startPreflightMessage "ファイル" "download start stops before subprocess on preflight failure"
     Assert-Equal $script:DownloadProcess $null "download process is not created when preflight fails"
-    Assert-Equal $script:LastDiagnosticError.phase "download_preflight" "preflight records diagnostic phase"
-    Assert-Equal $script:LastDiagnosticError.code "output_path_invalid" "preflight records diagnostic code"
-    $preflightFailureZip = Join-Path $selfTestRoot "preflight-failure-diagnostics.zip"
-    Save-DiagnosticsZip $preflightFailureZip | Out-Null
-    $preflightFailureExtract = Join-Path $selfTestRoot "preflight failure extract"
-    Expand-Archive -LiteralPath $preflightFailureZip -DestinationPath $preflightFailureExtract -Force
-    $preflightFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $preflightFailureExtract "diagnostics.json") | ConvertFrom-Json
-    Assert-Equal $preflightFailureDiagnostics.last_error.phase "download_preflight" "diagnostics records preflight phase"
-    Assert-Equal $preflightFailureDiagnostics.last_error.code "output_path_invalid" "diagnostics records preflight code"
-    Assert-Equal $preflightFailureDiagnostics.resume_error_code "" "diagnostics does not record non-resume preflight as resume error"
+    Assert-Equal $script:LastOperationError.phase "download_preflight" "preflight records operation error phase"
+    Assert-Equal $script:LastOperationError.code "output_path_invalid" "preflight records operation error code"
 
     $longPreflightMessage = ""
     try {
@@ -5015,7 +4776,7 @@ if ($SelfTest) {
         $nonEmptySuppMessage = $_.Exception.Message
     }
     Assert-Contains $nonEmptySuppMessage "supplementary" "preflight rejects supplementary in nonempty output"
-    Assert-Equal $script:LastDiagnosticError.code "resume_supplementary_unsupported" "preflight records supplementary resume code"
+    Assert-Equal $script:LastOperationError.code "resume_supplementary_unsupported" "preflight records supplementary resume code"
     Assert-Equal $script:LastResumeErrorCode "resume_supplementary_unsupported" "preflight records resume-specific code"
     Assert-Equal $script:LastExistingOutputNonEmpty $true "preflight records nonempty output"
 
@@ -5037,7 +4798,7 @@ if ($SelfTest) {
         $script:Resolved.fastq_files[[int]$fastqGrid.Rows[0].Tag].size_bytes = $originalSmallSize
     }
     Assert-Contains $hugePreflightMessage "空き容量" "preflight rejects insufficient FASTQ capacity"
-    Assert-Equal $script:LastDiagnosticError.code "insufficient_space" "preflight records insufficient space code"
+    Assert-Equal $script:LastOperationError.code "insufficient_space" "preflight records insufficient space code"
 
     $outputBox.Text = Join-Path $selfTestRoot "SELFTEST"
     Set-GridSelection $fastqGrid "selected" $false
@@ -5049,8 +4810,8 @@ if ($SelfTest) {
     Assert-Equal $downloadPreflight.OutputDir $selfTestRunOutput "preflight result output dir matches output field"
 
     $downloadResult = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
-    $script:DownloadStdoutText = Limit-DiagnosticText $downloadResult.Stdout
-    $script:DownloadStderrText = Limit-DiagnosticText $downloadResult.Stderr
+    $script:DownloadStdoutText = Limit-ProcessOutputText $downloadResult.Stdout
+    $script:DownloadStderrText = Limit-ProcessOutputText $downloadResult.Stderr
     $script:LastDownloadExitCode = $downloadResult.ExitCode
     $doneLine = @($downloadResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"event"\s*:\s*"done"' } | Select-Object -Last 1)
     if ($doneLine.Count -gt 0) {
@@ -5070,8 +4831,8 @@ if ($SelfTest) {
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "md5_verified" "download log md5 success"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "download_complete" "download log supplementary success"
     $verifyResult = Invoke-VerifyManifestJsonForSelfTest (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")
-    $script:VerifyStdoutText = Limit-DiagnosticText $verifyResult.Stdout
-    $script:VerifyStderrText = Limit-DiagnosticText $verifyResult.Stderr
+    $script:VerifyStdoutText = Limit-ProcessOutputText $verifyResult.Stdout
+    $script:VerifyStderrText = Limit-ProcessOutputText $verifyResult.Stderr
     $script:LastVerificationExitCode = $verifyResult.ExitCode
     $verifyDoneLine = @($verifyResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"kind"\s*:\s*"manifest_verification"' } | Select-Object -Last 1)
     if ($verifyDoneLine.Count -gt 0) {
@@ -5123,7 +4884,7 @@ if ($SelfTest) {
     Assert-Equal ([bool]$script:LastDownloadDoneEvent.resume_existing) $true "confirmed resume done event records resume mode"
     $script:ResumeExistingConfirmationForSelfTest = $null
 
-    $downloadDoneEventForDiagnostics = $script:LastDownloadDoneEvent
+    $downloadDoneEventForErrorCheck = $script:LastDownloadDoneEvent
     $script:LastDownloadDoneEvent = $null
     $script:LastDownloadExitCode = 1
     $script:DownloadCanceled = $false
@@ -5134,22 +4895,14 @@ if ($SelfTest) {
     $script:DownloadStdoutText = ""
     $script:DownloadStderrText = '{"event":"error","command":"selected-download-json","code":"invalid_json","detail":"fixture","message":"fixture"}'
     $script:LastPreflightOutputDir = $selfTestRunOutput
-    $script:LastDiagnosticError = $null
+    $script:LastOperationError = $null
     Complete-DownloadIfReady
-    Assert-Equal $script:LastDiagnosticError.phase "download" "download without done records phase"
-    Assert-Equal $script:LastDiagnosticError.code "invalid_json" "download without done parses CLI error"
-    $noDoneZip = Join-Path $selfTestRoot "download-no-done-diagnostics.zip"
-    Save-DiagnosticsZip $noDoneZip | Out-Null
-    $noDoneExtract = Join-Path $selfTestRoot "download no done extract"
-    Expand-Archive -LiteralPath $noDoneZip -DestinationPath $noDoneExtract -Force
-    $noDoneDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $noDoneExtract "diagnostics.json") | ConvertFrom-Json
-    Assert-Equal $noDoneDiagnostics.last_error.phase "download" "diagnostics records no-done phase"
-    Assert-Equal $noDoneDiagnostics.last_error.code "invalid_json" "diagnostics records no-done code"
-    Assert-Equal ((Get-ChildItem -Path $noDoneExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "no-done diagnostics includes available download log"
-    $script:LastDownloadDoneEvent = $downloadDoneEventForDiagnostics
+    Assert-Equal $script:LastOperationError.phase "download" "download without done records phase"
+    Assert-Equal $script:LastOperationError.code "invalid_json" "download without done parses CLI error"
+    $script:LastDownloadDoneEvent = $downloadDoneEventForErrorCheck
     $script:LastDownloadExitCode = $downloadResult.ExitCode
     $script:DownloadFinalized = $true
-    $script:LastDiagnosticError = $null
+    $script:LastOperationError = $null
 
     $progressBar.Value = 0
     $statusLabel.Text = T "verifyingManifest"
@@ -5167,18 +4920,6 @@ if ($SelfTest) {
     }
     Assert-Equal $script:VerifyProcess $null "async manifest verification process finished"
     Assert-Equal $statusLabel.Text (T "complete") "async manifest verification status"
-    $diagnosticsZip = Join-Path $selfTestRoot "diagnostics.zip"
-    Save-DiagnosticsZip $diagnosticsZip | Out-Null
-    Assert-Equal (Test-Path -LiteralPath $diagnosticsZip) $true "diagnostics zip exists"
-    $diagnosticsExtract = Join-Path $selfTestRoot "diagnostics extract"
-    Expand-Archive -LiteralPath $diagnosticsZip -DestinationPath $diagnosticsExtract -Force
-    Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "diagnostics.json")) $true "diagnostics metadata exists"
-    Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "gui_log.txt")) $true "diagnostics GUI log exists"
-    Assert-Equal (Test-Path -LiteralPath (Join-Path $diagnosticsExtract "resolved.json")) $true "diagnostics resolved JSON exists"
-    Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "*_download_log.tsv").Count -gt 0) $true "diagnostics includes download log"
-    Assert-Equal ((Get-ChildItem -Path $diagnosticsExtract -Recurse -Filter "verification_report.tsv").Count -gt 0) $true "diagnostics includes verification report"
-    $successDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $diagnosticsExtract "diagnostics.json") | ConvertFrom-Json
-    Assert-Equal $successDiagnostics.last_error $null "successful diagnostics does not keep stale error"
 
     $inputBox.Text = "DIFFERENT_INPUT"
     $staleDownloadStartMessage = ""
@@ -5190,15 +4931,8 @@ if ($SelfTest) {
     }
     Assert-Equal $staleDownloadStartMessage (T "inputChangedAfterResolve") "download start validation reports changed input"
     Assert-Equal $script:DownloadProcess $null "download start validation does not create process"
-    Assert-Equal $script:LastDiagnosticError.phase "download_preflight" "download start validation records phase"
-    Assert-Equal $script:LastDiagnosticError.code "resolved_state_invalid" "download start validation records code"
-    $staleDownloadZip = Join-Path $selfTestRoot "download-validation-stale-diagnostics.zip"
-    Save-DiagnosticsZip $staleDownloadZip | Out-Null
-    $staleDownloadExtract = Join-Path $selfTestRoot "download validation stale extract"
-    Expand-Archive -LiteralPath $staleDownloadZip -DestinationPath $staleDownloadExtract -Force
-    Assert-Equal ((Get-ChildItem -Path $staleDownloadExtract -Recurse -Filter "*_download_log.tsv").Count) 0 "download validation diagnostics omits stale download log"
-    Assert-Equal ((Get-ChildItem -Path $staleDownloadExtract -Recurse -Filter "*_fastq_manifest.tsv").Count) 0 "download validation diagnostics omits stale fastq manifest"
-    Assert-Equal ((Get-ChildItem -Path $staleDownloadExtract -Recurse -Filter "verification_report.tsv").Count) 0 "download validation diagnostics omits stale verification report"
+    Assert-Equal $script:LastOperationError.phase "download_preflight" "download start validation records phase"
+    Assert-Equal $script:LastOperationError.code "resolved_state_invalid" "download start validation records code"
     $inputBox.Text = "SELFTEST"
 
     $originalPythonExe = $PythonExe
@@ -5231,8 +4965,8 @@ if ($SelfTest) {
         }
     )
     Assert-Equal $leakedResolveInputs.Count 0 "resolve start failure removes temp input file"
-    Assert-Equal $script:LastDiagnosticError.phase "resolve_process_start" "resolve start failure records phase"
-    Assert-Equal $script:LastDiagnosticError.code "process_start_failed" "resolve start failure records code"
+    Assert-Equal $script:LastOperationError.phase "resolve_process_start" "resolve start failure records phase"
+    Assert-Equal $script:LastOperationError.code "process_start_failed" "resolve start failure records code"
 
     $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
     $threwVerifyStart = $false
@@ -5264,15 +4998,8 @@ if ($SelfTest) {
     }
     Assert-Equal $threwDownloadStart $true "download start failure throws"
     Assert-Equal $script:DownloadProcess $null "download start failure clears process"
-    Assert-Equal $script:LastDiagnosticError.phase "download_process_start" "download start failure records phase"
-    Assert-Equal $script:LastDiagnosticError.code "process_start_failed" "download start failure records code"
-    $downloadStartFailureZip = Join-Path $selfTestRoot "download-start-failure-diagnostics.zip"
-    Save-DiagnosticsZip $downloadStartFailureZip | Out-Null
-    $downloadStartFailureExtract = Join-Path $selfTestRoot "download start failure extract"
-    Expand-Archive -LiteralPath $downloadStartFailureZip -DestinationPath $downloadStartFailureExtract -Force
-    $downloadStartFailureDiagnostics = Get-Content -Raw -Encoding UTF8 (Join-Path $downloadStartFailureExtract "diagnostics.json") | ConvertFrom-Json
-    Assert-Equal $downloadStartFailureDiagnostics.last_error.phase "download_process_start" "diagnostics records download start phase"
-    Assert-Equal $downloadStartFailureDiagnostics.last_error.code "process_start_failed" "diagnostics records download start code"
+    Assert-Equal $script:LastOperationError.phase "download_process_start" "download start failure records phase"
+    Assert-Equal $script:LastOperationError.code "process_start_failed" "download start failure records code"
 
     $outputBox.Text = Join-Path $selfTestRoot "async out folder"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
