@@ -420,6 +420,10 @@ $script:Translations = @{
         updateDownloadFailedMessage = "更新インストーラーのダウンロードに失敗しました。"
         updateSha256MismatchMessage = "ダウンロードしたインストーラーのSHA256が一致しません。"
         updateNotAvailableMessage = "利用可能な新しい更新はありません。"
+        updateNetworkFailedMessage = "更新情報を取得できません。通信状態を確認して、時間をおいて再実行してください。"
+        updateFileErrorMessage = "更新インストーラーの保存先に読み書きできません。"
+        updateVersionInvalidMessage = "最新リリースのバージョンを確認できません。"
+        updateReleaseResponseInvalidMessage = "更新情報の応答を読み取れません。"
         resolveCancelRequestLog = "キャンセル要求: metadata取得を停止します。"
         verifyCancelRequestLog = "キャンセル要求: manifest確認を停止します。"
         progressDisplayError = "進捗表示エラー: {0}"
@@ -647,6 +651,10 @@ $script:Translations = @{
         updateDownloadFailedMessage = "The update installer download failed."
         updateSha256MismatchMessage = "The downloaded installer SHA256 did not match."
         updateNotAvailableMessage = "No newer update is available."
+        updateNetworkFailedMessage = "Could not retrieve update information. Check the connection and try again later."
+        updateFileErrorMessage = "Could not read or write the update installer location."
+        updateVersionInvalidMessage = "Could not verify the latest release version."
+        updateReleaseResponseInvalidMessage = "Could not read the update information response."
         resolveCancelRequestLog = "Cancel requested: stopping metadata retrieval."
         verifyCancelRequestLog = "Cancel requested: stopping manifest verification."
         progressDisplayError = "Progress display error: {0}"
@@ -2726,6 +2734,10 @@ function Get-UpdateFailureReason {
         "update_download_failed" { return T "updateDownloadFailedMessage" }
         "update_sha256_mismatch" { return T "updateSha256MismatchMessage" }
         "update_not_available" { return T "updateNotAvailableMessage" }
+        "network_failed" { return T "updateNetworkFailedMessage" }
+        "file_error" { return T "updateFileErrorMessage" }
+        "update_version_invalid" { return T "updateVersionInvalidMessage" }
+        "url_unavailable" { return T "updateReleaseResponseInvalidMessage" }
         default {
             if (-not [string]::IsNullOrWhiteSpace([string]$script:LastDiagnosticError.message)) {
                 return [string]$script:LastDiagnosticError.message
@@ -2935,7 +2947,11 @@ function Start-VerifiedUpdateInstallerAndExit {
     }
     catch {
         $statusLabel.Text = T "error"
-        Show-AppError ((T "updateInstallerLaunchFailed") -f $_.Exception.Message)
+        $detail = $_.Exception.Message
+        $message = (T "updateInstallerLaunchFailed") -f $detail
+        $script:LastDiagnosticError = New-DiagnosticError "update_installer_launch" "Start-Process" "installer_launch_failed" $detail $message "gui_update_installer" $null
+        Append-Log $message
+        Show-AppError $message
     }
 }
 
@@ -3433,7 +3449,9 @@ function Assert-Equal {
         [string]$Name
     )
     if ($Actual -ne $Expected) {
-        throw "$Name failed. expected=[$Expected] actual=[$Actual]"
+        $expectedText = try { [string]$Expected } catch { ($Expected | Out-String).Trim() }
+        $actualText = try { [string]$Actual } catch { ($Actual | Out-String).Trim() }
+        throw "$Name failed. expected=[$expectedText] actual=[$actualText]"
     }
 }
 
@@ -4272,6 +4290,11 @@ if ($SelfTest) {
     Assert-Equal $script:LastDiagnosticError.code "update_digest_missing" "update finalizer parses stderr error"
     Assert-Equal $statusLabel.Text (T "error") "update error marks status"
 
+    $script:LastDiagnosticError = New-DiagnosticError "update" "check-update-json" "network_failed" "fixture" "fixture" "cli_stderr_json" 1
+    Assert-Equal (Get-UpdateFailureReason) (T "updateNetworkFailedMessage") "update network failure uses localized message"
+    $script:LastDiagnosticError = New-DiagnosticError "update" "check-update-json" "update_version_invalid" "fixture" "fixture" "cli_stderr_json" 1
+    Assert-Equal (Get-UpdateFailureReason) (T "updateVersionInvalidMessage") "update version failure uses localized message"
+
     Clear-UpdateDiagnosticState
     $script:InstallerLaunchPathForSelfTest = ""
     $script:ApplicationExitRequestedForSelfTest = $false
@@ -4292,6 +4315,28 @@ if ($SelfTest) {
     Complete-UpdateIfReady
     Assert-Equal $script:InstallerLaunchPathForSelfTest "C:\tmp\GEOGetter-Setup-v0.1.4.exe" "verified installer is launched"
     Assert-Equal $script:ApplicationExitRequestedForSelfTest $true "installer launch requests GUI exit"
+    $script:InstallerLauncherForSelfTest = $null
+
+    Clear-UpdateDiagnosticState
+    $script:ApplicationExitRequestedForSelfTest = $false
+    $script:InstallerLauncherForSelfTest = { param([string]$Path) throw "launch failed" }
+    $script:LastUpdateDoneEvent = [pscustomobject]@{
+        event = "done"
+        kind = "update_installer"
+        version = "0.1.4"
+        installer_path = "C:\tmp\GEOGetter-Setup-v0.1.4.exe"
+        sha256 = ("1" * 64)
+        bytes = 12
+    }
+    $script:LastUpdateExitCode = 0
+    $script:UpdateExitObserved = $true
+    $script:UpdateStdoutClosed = $true
+    $script:UpdateStderrClosed = $true
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $script:LastDiagnosticError.phase "update_installer_launch" "installer launch failure records diagnostic phase"
+    Assert-Equal $script:LastDiagnosticError.code "installer_launch_failed" "installer launch failure records diagnostic code"
+    Assert-Equal $script:ApplicationExitRequestedForSelfTest $false "installer launch failure leaves GUI open"
     $script:InstallerLauncherForSelfTest = $null
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80
@@ -4779,6 +4824,29 @@ if ($SelfTest) {
         }
         Dispose-ProcessQuietly $cancelProbe
         $script:ResolveProcess = $null
+        Update-CancelButton
+    }
+
+    $updateCancelProbe = New-Object System.Diagnostics.Process
+    $updateCancelProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
+    try {
+        [void]$updateCancelProbe.Start()
+        $script:UpdateProcess = $updateCancelProbe
+        $script:UpdateCanceled = $false
+        Update-CancelButton
+        Assert-Equal $cancelButton.Enabled $true "cancel button enabled for update process"
+        Stop-RunningGuiProcesses | Out-Null
+        [void]$updateCancelProbe.WaitForExit(5000)
+        Assert-Equal $updateCancelProbe.HasExited $true "cancel button kills update process"
+        Assert-Equal $script:UpdateCanceled $true "cancel button marks update canceled"
+    }
+    finally {
+        if (Test-ProcessRunning $updateCancelProbe) {
+            try { $updateCancelProbe.Kill() } catch { }
+            try { [void]$updateCancelProbe.WaitForExit(5000) } catch { }
+        }
+        Dispose-ProcessQuietly $updateCancelProbe
+        $script:UpdateProcess = $null
         Update-CancelButton
     }
 

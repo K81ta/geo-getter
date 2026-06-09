@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import re
 import tempfile
 import urllib.error
@@ -115,7 +116,7 @@ def download_update_installer(
                     handle.write(chunk)
                     digest.update(chunk)
                     downloaded += len(chunk)
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
         _remove_if_exists(part_path)
         raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
 

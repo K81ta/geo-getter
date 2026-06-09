@@ -151,6 +151,12 @@ class CliTest(unittest.TestCase):
             payload = self.assert_cli_error(["check-update-json"], "update_digest_missing")
         self.assertEqual(payload["command"], "check-update-json")
 
+    def test_download_update_error_emits_structured_stderr_error(self):
+        with mock.patch("geo_getter.cli.download_update_installer", side_effect=GeoGetterError("update_download_failed", "fixture")):
+            payload = self.assert_cli_error(["download-update-json", "--version", "0.1.4"], "update_download_failed")
+        self.assertEqual(payload["command"], "download-update-json")
+        self.assertIn("fixture", payload["detail"])
+
     def test_selected_fastq_rejects_negative_index(self):
         payload = {
             "fastq_files": [

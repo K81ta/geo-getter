@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import tempfile
 import unittest
 import urllib.error
@@ -6,7 +7,10 @@ from pathlib import Path
 
 from geo_getter.errors import GeoGetterError
 from geo_getter.updater import (
+    GITHUB_API_HEADERS,
+    LATEST_RELEASE_URL,
     build_update_check_payload,
+    check_for_update,
     compare_versions,
     download_update_installer,
     extract_sha256_digest,
@@ -33,6 +37,17 @@ class FakeResponse:
         chunk = self.data[self.offset : self.offset + size]
         self.offset += len(chunk)
         return chunk
+
+
+class FailingReadResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        raise http.client.IncompleteRead(b"partial")
 
 
 class UpdaterTest(unittest.TestCase):
@@ -70,6 +85,18 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(payload["latest_version"], "0.1.3")
         self.assertIsNone(payload["asset"])
 
+    def test_check_for_update_passes_github_api_headers(self):
+        calls = []
+
+        def fetcher(url, **kwargs):
+            calls.append((url, kwargs))
+            return {"tag_name": "v0.1.3", "assets": []}
+
+        payload = check_for_update(current_version="0.1.3", fetcher=fetcher)
+
+        self.assertFalse(payload["update_available"])
+        self.assertEqual(calls, [(LATEST_RELEASE_URL, {"timeout": 60, "headers": GITHUB_API_HEADERS})])
+
     def test_newer_release_returns_installer_asset_and_digest(self):
         data = b"fixture"
         release = self.release_payload(data=data)
@@ -85,6 +112,12 @@ class UpdaterTest(unittest.TestCase):
         release = self.release_payload(asset_name="GEOGetter-v0.1.4-win-x64-portable.zip")
 
         self.assert_geo_error("update_asset_missing", build_update_check_payload, release, "0.1.3")
+
+    def test_newer_release_requires_installer_download_url(self):
+        release = self.release_payload()
+        release["assets"][0]["browser_download_url"] = ""
+
+        self.assert_geo_error("update_asset_url_missing", build_update_check_payload, release, "0.1.3")
 
     def test_digest_is_required(self):
         release = self.release_payload(digest="")
@@ -128,6 +161,44 @@ class UpdaterTest(unittest.TestCase):
                 opener=fail_open,
             )
             self.assertFalse(list(Path(temp).glob("*.exe")))
+
+    def test_download_size_mismatch_does_not_return_installer_path(self):
+        data = b"short installer"
+        release = self.release_payload(data=data)
+        release["assets"][0]["size"] = len(data) + 1
+        fetcher = lambda *_args, **_kwargs: release
+        opener = lambda *_args, **_kwargs: FakeResponse(data)
+
+        with tempfile.TemporaryDirectory() as temp:
+            self.assert_geo_error(
+                "update_download_failed",
+                download_update_installer,
+                "0.1.4",
+                output_dir=temp,
+                current_version="0.1.3",
+                fetcher=fetcher,
+                opener=opener,
+            )
+            self.assertFalse(list(Path(temp).glob("*.exe")))
+            self.assertFalse(list(Path(temp).glob("*.part")))
+
+    def test_incomplete_read_cleans_part_and_reports_download_failure(self):
+        release = self.release_payload()
+        fetcher = lambda *_args, **_kwargs: release
+        opener = lambda *_args, **_kwargs: FailingReadResponse()
+
+        with tempfile.TemporaryDirectory() as temp:
+            self.assert_geo_error(
+                "update_download_failed",
+                download_update_installer,
+                "0.1.4",
+                output_dir=temp,
+                current_version="0.1.3",
+                fetcher=fetcher,
+                opener=opener,
+            )
+            self.assertFalse(list(Path(temp).glob("*.exe")))
+            self.assertFalse(list(Path(temp).glob("*.part")))
 
     def test_sha256_mismatch_does_not_return_installer_path(self):
         data = b"downloaded installer"
