@@ -159,6 +159,11 @@ $script:VerifyBridge = $null
 $script:VerifyCanceled = $false
 $script:VerifyStdoutText = ""
 $script:VerifyStderrText = ""
+$script:UpdateProcess = $null
+$script:UpdateBridge = $null
+$script:UpdateCanceled = $false
+$script:UpdateStdoutText = ""
+$script:UpdateStderrText = ""
 $script:DiagnosticProcessOutputLimitBytes = 1048576
 $script:LastDiagnosticError = $null
 $script:LastResolveExitCode = $null
@@ -166,12 +171,17 @@ $script:LastResolveArguments = @()
 $script:LastResolveStartError = ""
 $script:LastDownloadArguments = @()
 $script:LastVerificationArguments = @()
+$script:LastUpdateArguments = @()
 $script:LastDownloadStartError = ""
 $script:LastVerificationStartError = ""
+$script:LastUpdateStartError = ""
 $script:LastDownloadDoneEvent = $null
 $script:LastDownloadExitCode = $null
 $script:LastVerificationDoneEvent = $null
 $script:LastVerificationExitCode = $null
+$script:LastUpdateDoneEvent = $null
+$script:LastUpdateExitCode = $null
+$script:LastUpdateCommand = ""
 $script:ResolveExitObserved = $false
 $script:ResolveStdoutClosed = $false
 $script:ResolveStderrClosed = $false
@@ -184,6 +194,10 @@ $script:VerifyExitObserved = $false
 $script:VerifyStdoutClosed = $false
 $script:VerifyStderrClosed = $false
 $script:VerifyFinalized = $false
+$script:UpdateExitObserved = $false
+$script:UpdateStdoutClosed = $false
+$script:UpdateStderrClosed = $false
+$script:UpdateFinalized = $false
 $script:LastPreflightStatus = ""
 $script:LastPreflightError = ""
 $script:LastPreflightOutputDir = ""
@@ -194,6 +208,9 @@ $script:LastResumeExistingRequested = $false
 $script:LastResumeRequiredBytes = $null
 $script:LastResumeErrorCode = ""
 $script:ResumeExistingConfirmationForSelfTest = $null
+$script:UpdateDownloadConfirmationForSelfTest = $null
+$script:InstallerLauncherForSelfTest = $null
+$script:ApplicationExitRequestedForSelfTest = $false
 $script:LastInputText = ""
 $script:LastResolvedInputText = ""
 $script:SuppressFastqFilterEvents = $false
@@ -209,6 +226,7 @@ $script:Translations = @{
         verifyManifestMenu = "保存済みFASTQを確認"
         helpMenu = "ヘルプ"
         helpOpen = "ヘルプを開く"
+        checkUpdatesMenu = "更新を確認"
         helpUsage = "基本の使い方"
         helpInput = "入力できるID"
         helpTables = "表の見方"
@@ -254,6 +272,8 @@ $script:Translations = @{
         fetching = "metadata取得中"
         downloading = "ダウンロード中"
         verifyingManifest = "manifest確認中"
+        checkingUpdates = "更新確認中"
+        downloadingUpdate = "更新インストーラー取得中"
         complete = "完了"
         completePartial = "完了（一部失敗あり）"
         completeUnverified = "完了（MD5未検証あり）"
@@ -368,6 +388,7 @@ $script:Translations = @{
         noFilesSelected = "FASTQまたはGEO supplementary/processed fileを選択してください。"
         resolveAlreadyRunning = "metadata取得が既に実行中です。"
         verifyManifestAlreadyRunning = "manifest確認が既に実行中です。"
+        updateAlreadyRunning = "更新確認が既に実行中です。"
         fastqCountLog = "{0}: FASTQ {1}件"
         supplementaryCountLog = "GEO supplementary/processed: {0}件"
         fastqManifestLog = "FASTQリスト: {0}"
@@ -381,6 +402,28 @@ $script:Translations = @{
         verifyManifestCompleteMessage = "確認レポートを作成しました: {0}"
         verifyManifestPartialMessage = "確認レポートを作成しました（一部要確認）: {0}"
         verifyManifestNoReport = "確認レポートが作成されませんでした。"
+        updateCheckStartedLog = "更新を確認します。"
+        updateLatestMessage = "最新版です。現在のバージョン: {0}"
+        updateAvailableLog = "新しいバージョンがあります: {0}"
+        updateAvailablePrompt = "GEOGetter {0} が利用できます。更新インストーラーをダウンロードして起動しますか?`n`n現在のバージョン: {1}`n新しいバージョン: {0}`nサイズ: {2}"
+        updateDownloadStartedLog = "更新インストーラーをダウンロードします: {0}"
+        updateDownloadedLog = "更新インストーラーを確認しました: {0}"
+        updateInstallerStartedLog = "更新インストーラーを起動しました。GEOGetterを終了します。"
+        updateDeclinedLog = "更新をキャンセルしました。"
+        updateCancelRequestLog = "キャンセル要求: 更新処理を停止します。"
+        updateNoResult = "更新結果を取得できませんでした。"
+        updateFailedMessage = "更新を中止しました: {0}"
+        updateInstallerLaunchFailed = "更新インストーラーを起動できません: {0}"
+        updateAssetMissingMessage = "更新インストーラーが最新リリースにありません。"
+        updateDigestMissingMessage = "更新インストーラーのSHA256 digestを取得できません。"
+        updateDigestInvalidMessage = "更新インストーラーのSHA256 digestが不正です。"
+        updateDownloadFailedMessage = "更新インストーラーのダウンロードに失敗しました。"
+        updateSha256MismatchMessage = "ダウンロードしたインストーラーのSHA256が一致しません。"
+        updateNotAvailableMessage = "利用可能な新しい更新はありません。"
+        updateNetworkFailedMessage = "更新情報を取得できません。通信状態を確認して、時間をおいて再実行してください。"
+        updateFileErrorMessage = "更新インストーラーの保存先に読み書きできません。"
+        updateVersionInvalidMessage = "最新リリースのバージョンを確認できません。"
+        updateReleaseResponseInvalidMessage = "更新情報の応答を読み取れません。"
         resolveCancelRequestLog = "キャンセル要求: metadata取得を停止します。"
         verifyCancelRequestLog = "キャンセル要求: manifest確認を停止します。"
         progressDisplayError = "進捗表示エラー: {0}"
@@ -414,6 +457,7 @@ $script:Translations = @{
         verifyManifestMenu = "Verify saved FASTQ"
         helpMenu = "Help"
         helpOpen = "Open help"
+        checkUpdatesMenu = "Check for updates"
         helpUsage = "Basic usage"
         helpInput = "Supported IDs"
         helpTables = "Reading the tables"
@@ -459,6 +503,8 @@ $script:Translations = @{
         fetching = "Fetching metadata"
         downloading = "Downloading"
         verifyingManifest = "Checking manifest"
+        checkingUpdates = "Checking for updates"
+        downloadingUpdate = "Downloading update installer"
         complete = "Complete"
         completePartial = "Complete with failures"
         completeUnverified = "Complete with unverified files"
@@ -573,6 +619,7 @@ $script:Translations = @{
         noFilesSelected = "Select at least one FASTQ or GEO supplementary/processed file."
         resolveAlreadyRunning = "Metadata retrieval is already running."
         verifyManifestAlreadyRunning = "Manifest verification is already running."
+        updateAlreadyRunning = "Update check is already running."
         fastqCountLog = "{0}: FASTQ {1} files"
         supplementaryCountLog = "GEO supplementary/processed: {0} files"
         fastqManifestLog = "FASTQ list: {0}"
@@ -586,6 +633,28 @@ $script:Translations = @{
         verifyManifestCompleteMessage = "Verification report created: {0}"
         verifyManifestPartialMessage = "Verification report created with issues: {0}"
         verifyManifestNoReport = "No verification report was created."
+        updateCheckStartedLog = "Checking for updates."
+        updateLatestMessage = "GEOGetter is up to date. Current version: {0}"
+        updateAvailableLog = "A new version is available: {0}"
+        updateAvailablePrompt = "GEOGetter {0} is available. Download and start the update installer?`n`nCurrent version: {1}`nNew version: {0}`nSize: {2}"
+        updateDownloadStartedLog = "Downloading update installer: {0}"
+        updateDownloadedLog = "Verified update installer: {0}"
+        updateInstallerStartedLog = "Started the update installer. GEOGetter will close."
+        updateDeclinedLog = "Update canceled."
+        updateCancelRequestLog = "Cancel requested: stopping update processing."
+        updateNoResult = "No update result was returned."
+        updateFailedMessage = "Update stopped: {0}"
+        updateInstallerLaunchFailed = "Could not start the update installer: {0}"
+        updateAssetMissingMessage = "The update installer is not attached to the latest release."
+        updateDigestMissingMessage = "The update installer SHA256 digest is unavailable."
+        updateDigestInvalidMessage = "The update installer SHA256 digest is invalid."
+        updateDownloadFailedMessage = "The update installer download failed."
+        updateSha256MismatchMessage = "The downloaded installer SHA256 did not match."
+        updateNotAvailableMessage = "No newer update is available."
+        updateNetworkFailedMessage = "Could not retrieve update information. Check the connection and try again later."
+        updateFileErrorMessage = "Could not read or write the update installer location."
+        updateVersionInvalidMessage = "Could not verify the latest release version."
+        updateReleaseResponseInvalidMessage = "Could not read the update information response."
         resolveCancelRequestLog = "Cancel requested: stopping metadata retrieval."
         verifyCancelRequestLog = "Cancel requested: stopping manifest verification."
         progressDisplayError = "Progress display error: {0}"
@@ -756,6 +825,7 @@ function Update-StaticTexts {
     if ($verifyManifestMenuItem) { $verifyManifestMenuItem.Text = T "verifyManifestMenu" }
     if ($helpMenuItem) { $helpMenuItem.Text = T "helpMenu" }
     if ($helpOpenMenuItem) { $helpOpenMenuItem.Text = T "helpOpen" }
+    if ($checkUpdatesMenuItem) { $checkUpdatesMenuItem.Text = T "checkUpdatesMenu" }
     if ($aboutMenuItem) { $aboutMenuItem.Text = T "about" }
     if ($inputLabel) { $inputLabel.Text = T "inputLabel" }
     if ($fetchButton) { $fetchButton.Text = T "fetchButton" }
@@ -1064,6 +1134,20 @@ function Add-DiagnosticVerificationOutput {
     $script:VerifyStderrText = Limit-DiagnosticText ($script:VerifyStderrText + $value)
 }
 
+function Add-DiagnosticUpdateOutput {
+    param(
+        [ValidateSet("stdout", "stderr")]
+        [string]$Stream,
+        [string]$Line
+    )
+    $value = $Line + [Environment]::NewLine
+    if ($Stream -eq "stdout") {
+        $script:UpdateStdoutText = Limit-DiagnosticText ($script:UpdateStdoutText + $value)
+        return
+    }
+    $script:UpdateStderrText = Limit-DiagnosticText ($script:UpdateStderrText + $value)
+}
+
 function Limit-DiagnosticText {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return "" }
@@ -1190,6 +1274,16 @@ function Save-DiagnosticsZip {
             verify_stdout_closed = $script:VerifyStdoutClosed
             verify_stderr_closed = $script:VerifyStderrClosed
             verify_finalized = $script:VerifyFinalized
+            last_update_arguments = @($script:LastUpdateArguments)
+            last_update_start_error = $script:LastUpdateStartError
+            last_update_exit_code = $script:LastUpdateExitCode
+            last_update_command = $script:LastUpdateCommand
+            last_update_done = $script:LastUpdateDoneEvent
+            update_canceled = $script:UpdateCanceled
+            update_exit_observed = $script:UpdateExitObserved
+            update_stdout_closed = $script:UpdateStdoutClosed
+            update_stderr_closed = $script:UpdateStderrClosed
+            update_finalized = $script:UpdateFinalized
         }
         Write-DiagnosticTextFile $stagingRoot "diagnostics.json" ($diagnostics | ConvertTo-Json -Depth 12)
         Write-DiagnosticTextFile $stagingRoot "resolve_stdout.txt" $script:ResolveStdoutText
@@ -1198,6 +1292,8 @@ function Save-DiagnosticsZip {
         Write-DiagnosticTextFile $stagingRoot "download_stderr.txt" $script:DownloadStderrText
         Write-DiagnosticTextFile $stagingRoot "verify_stdout.jsonl" $script:VerifyStdoutText
         Write-DiagnosticTextFile $stagingRoot "verify_stderr.txt" $script:VerifyStderrText
+        Write-DiagnosticTextFile $stagingRoot "update_stdout.jsonl" $script:UpdateStdoutText
+        Write-DiagnosticTextFile $stagingRoot "update_stderr.txt" $script:UpdateStderrText
         $guiLogText = ""
         if ($logBox) { $guiLogText = $logBox.Text }
         Write-DiagnosticTextFile $stagingRoot "gui_log.txt" $guiLogText
@@ -1334,6 +1430,21 @@ function Clear-VerificationDiagnosticState {
     $script:VerifyStdoutClosed = $false
     $script:VerifyStderrClosed = $false
     $script:VerifyFinalized = $false
+}
+
+function Clear-UpdateDiagnosticState {
+    $script:UpdateCanceled = $false
+    $script:UpdateStdoutText = ""
+    $script:UpdateStderrText = ""
+    $script:LastUpdateDoneEvent = $null
+    $script:LastUpdateExitCode = $null
+    $script:LastUpdateArguments = @()
+    $script:LastUpdateStartError = ""
+    $script:LastUpdateCommand = ""
+    $script:UpdateExitObserved = $false
+    $script:UpdateStdoutClosed = $false
+    $script:UpdateStderrClosed = $false
+    $script:UpdateFinalized = $false
 }
 
 function Clear-ResolvedState {
@@ -2264,6 +2375,7 @@ function Set-Busy {
     $browseButton.Enabled = -not $Busy
     if ($diagnosticsButton) { $diagnosticsButton.Enabled = -not $Busy }
     if ($verifyManifestMenuItem) { $verifyManifestMenuItem.Enabled = -not $Busy }
+    if ($checkUpdatesMenuItem) { $checkUpdatesMenuItem.Enabled = -not $Busy }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Enabled = -not $Busy }
     if ($fastqClearSelectionButton) { $fastqClearSelectionButton.Enabled = -not $Busy }
     if ($fastqFilterBox) { $fastqFilterBox.Enabled = -not $Busy }
@@ -2282,7 +2394,8 @@ function Update-CancelButton {
     $cancelButton.Enabled = (
         (Test-ProcessRunning $script:ResolveProcess) -or
         (Test-ProcessRunning $script:DownloadProcess) -or
-        (Test-ProcessRunning $script:VerifyProcess)
+        (Test-ProcessRunning $script:VerifyProcess) -or
+        (Test-ProcessRunning $script:UpdateProcess)
     )
 }
 
@@ -2321,6 +2434,17 @@ function Stop-RunningGuiProcesses {
             Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
         }
     }
+    if (Test-ProcessRunning $script:UpdateProcess) {
+        $canceledAny = $true
+        $script:UpdateCanceled = $true
+        Append-Log (T "updateCancelRequestLog")
+        try {
+            $script:UpdateProcess.Kill()
+        }
+        catch {
+            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
+        }
+    }
     if ($canceledAny) { Update-CancelButton }
     return $canceledAny
 }
@@ -2338,6 +2462,10 @@ function Stop-RunningGuiProcessesForShutdown {
     if (Test-ProcessRunning $script:VerifyProcess) {
         $script:VerifyCanceled = $true
         try { $script:VerifyProcess.Kill() } catch { }
+    }
+    if (Test-ProcessRunning $script:UpdateProcess) {
+        $script:UpdateCanceled = $true
+        try { $script:UpdateProcess.Kill() } catch { }
     }
     Update-CancelButton
 }
@@ -2551,6 +2679,301 @@ function Complete-ManifestVerificationIfReady {
     if (-not $SelfTest) {
         $icon = if ($script:LastVerificationExitCode -eq 0) { "Information" } else { "Warning" }
         [System.Windows.Forms.MessageBox]::Show($message, (T "verifyManifestDialogTitle"), "OK", $icon) | Out-Null
+    }
+}
+
+function Handle-UpdateLine {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return }
+    try {
+        $event = $Line | ConvertFrom-Json
+        if ($event.event -eq "done" -and ($event.kind -eq "update_check" -or $event.kind -eq "update_installer")) {
+            $script:LastUpdateDoneEvent = $event
+            if ($event.kind -eq "update_installer") {
+                $progressBar.Style = "Continuous"
+                $progressBar.Value = 100
+            }
+            Complete-UpdateIfReady
+        }
+        elseif ($event.event -eq "message") {
+            Append-Log ([string]$event.message)
+        }
+        else {
+            Append-Log $Line
+        }
+    }
+    catch {
+        Append-Log $Line
+    }
+}
+
+function Handle-UpdateErrorLine {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return }
+    try {
+        $event = $Line | ConvertFrom-Json
+        if ($event.event -eq "error") {
+            $script:LastDiagnosticError = New-DiagnosticError "update" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastUpdateExitCode
+            Append-Log (Get-UpdateFailureReason)
+            return
+        }
+    }
+    catch { }
+    Append-Log $Line
+}
+
+function Get-UpdateFailureReason {
+    if ($null -eq $script:LastDiagnosticError) {
+        return T "updateNoResult"
+    }
+    switch ([string]$script:LastDiagnosticError.code) {
+        "update_asset_missing" { return T "updateAssetMissingMessage" }
+        "update_asset_url_missing" { return T "updateAssetMissingMessage" }
+        "update_digest_missing" { return T "updateDigestMissingMessage" }
+        "update_digest_invalid" { return T "updateDigestInvalidMessage" }
+        "update_download_failed" { return T "updateDownloadFailedMessage" }
+        "update_sha256_mismatch" { return T "updateSha256MismatchMessage" }
+        "update_not_available" { return T "updateNotAvailableMessage" }
+        "network_failed" { return T "updateNetworkFailedMessage" }
+        "file_error" { return T "updateFileErrorMessage" }
+        "update_version_invalid" { return T "updateVersionInvalidMessage" }
+        "url_unavailable" { return T "updateReleaseResponseInvalidMessage" }
+        default {
+            if (-not [string]::IsNullOrWhiteSpace([string]$script:LastDiagnosticError.message)) {
+                return [string]$script:LastDiagnosticError.message
+            }
+        }
+    }
+    return T "updateNoResult"
+}
+
+function Confirm-UpdateDownload {
+    param([object]$UpdateEvent)
+    if ($SelfTest -and $null -ne $script:UpdateDownloadConfirmationForSelfTest) {
+        return [bool]$script:UpdateDownloadConfirmationForSelfTest
+    }
+    $sizeBytes = 0
+    if ($null -ne $UpdateEvent.asset -and $null -ne $UpdateEvent.asset.size) {
+        try { $sizeBytes = [Int64]$UpdateEvent.asset.size } catch { $sizeBytes = 0 }
+    }
+    $sizeText = if ($sizeBytes -gt 0) { Format-Bytes $sizeBytes } else { "-" }
+    $message = (T "updateAvailablePrompt") -f ([string]$UpdateEvent.latest_version), ([string]$UpdateEvent.current_version), $sizeText
+    return ([System.Windows.Forms.MessageBox]::Show($message, (T "checkUpdatesMenu"), "YesNo", "Information") -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+
+function Complete-UpdateIfReady {
+    if ($script:UpdateFinalized) { return }
+    if (-not $script:UpdateExitObserved -or -not $script:UpdateStdoutClosed -or -not $script:UpdateStderrClosed) { return }
+
+    $script:UpdateFinalized = $true
+    $process = $script:UpdateProcess
+    $script:UpdateProcess = $null
+    $progressBar.Style = "Continuous"
+    if ($null -ne $script:LastUpdateDoneEvent -and $script:LastUpdateDoneEvent.kind -eq "update_installer") {
+        $progressBar.Value = 100
+    }
+    else {
+        $progressBar.Value = 0
+    }
+    Set-Busy $false
+    Update-CancelButton
+    Dispose-ProcessQuietly $process
+
+    if ($script:UpdateCanceled) {
+        $statusLabel.Text = T "canceled"
+        return
+    }
+    if ($script:LastUpdateExitCode -ne 0 -or $null -eq $script:LastUpdateDoneEvent) {
+        $statusLabel.Text = T "error"
+        if ($null -eq $script:LastDiagnosticError -or $script:LastDiagnosticError.phase -ne "update") {
+            Set-DiagnosticErrorFromProcessOutput "update" $script:LastUpdateCommand $script:LastUpdateExitCode $script:UpdateStdoutText $script:UpdateStderrText "update_failed" (T "updateNoResult")
+        }
+        Show-AppError ((T "updateFailedMessage") -f (Get-UpdateFailureReason))
+        return
+    }
+
+    $event = $script:LastUpdateDoneEvent
+    if ($event.kind -eq "update_check") {
+        if (-not [bool]$event.update_available) {
+            $statusLabel.Text = T "complete"
+            $message = (T "updateLatestMessage") -f ([string]$event.current_version)
+            Append-Log $message
+            if (-not $SelfTest) {
+                [System.Windows.Forms.MessageBox]::Show($message, (T "checkUpdatesMenu"), "OK", "Information") | Out-Null
+            }
+            return
+        }
+        Append-Log ((T "updateAvailableLog") -f ([string]$event.latest_version))
+        if (Confirm-UpdateDownload $event) {
+            try {
+                Start-UpdateDownloadProcess ([string]$event.latest_version)
+            }
+            catch {
+                $statusLabel.Text = T "error"
+                Set-Busy $false
+                Show-AppError $_.Exception.Message
+            }
+            return
+        }
+        $statusLabel.Text = T "canceled"
+        Append-Log (T "updateDeclinedLog")
+        return
+    }
+
+    if ($event.kind -eq "update_installer") {
+        $statusLabel.Text = T "complete"
+        Append-Log ((T "updateDownloadedLog") -f ([string]$event.installer_path))
+        Start-VerifiedUpdateInstallerAndExit ([string]$event.installer_path)
+        return
+    }
+
+    $statusLabel.Text = T "error"
+    Show-AppError ((T "updateFailedMessage") -f (T "updateNoResult"))
+}
+
+function Start-UpdateCheckProcess {
+    Append-Log (T "updateCheckStartedLog")
+    Start-UpdateProcess (Get-UpdateCheckPythonArguments) "checkingUpdates"
+}
+
+function Start-UpdateDownloadProcess {
+    param([string]$Version)
+    Append-Log ((T "updateDownloadStartedLog") -f $Version)
+    Start-UpdateProcess (Get-UpdateDownloadPythonArguments $Version) "downloadingUpdate"
+}
+
+function Start-UpdateProcess {
+    param(
+        [string[]]$Arguments,
+        [string]$StatusKey
+    )
+    if (Test-ProcessRunning $script:UpdateProcess) {
+        throw (T "updateAlreadyRunning")
+    }
+    Clear-UpdateDiagnosticState
+    $script:LastDiagnosticError = $null
+    $script:LastUpdateArguments = @($Arguments)
+    if ($Arguments.Count -ge 3) {
+        $script:LastUpdateCommand = [string]$Arguments[2]
+    }
+    $process = New-Object System.Diagnostics.Process
+    try {
+        $process.StartInfo = New-UpdateProcessStartInfo $Arguments
+        $process.EnableRaisingEvents = $true
+        Set-Busy $true
+        $progressBar.Style = "Marquee"
+        $progressBar.MarqueeAnimationSpeed = 30
+        $progressBar.Value = 0
+        $statusLabel.Text = T $StatusKey
+        $script:UpdateBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
+            $form,
+            ([System.Action[string]]{
+                param($line)
+                Add-DiagnosticUpdateOutput "stdout" $line
+                try {
+                    Handle-UpdateLine $line
+                }
+                catch {
+                    try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
+                }
+            }),
+            ([System.Action[string]]{
+                param($line)
+                Add-DiagnosticUpdateOutput "stderr" $line
+                try {
+                    Handle-UpdateErrorLine $line
+                }
+                catch { }
+            }),
+            ([System.Action[int]]{
+                param($code)
+                try {
+                    $script:LastUpdateExitCode = $code
+                    $script:UpdateExitObserved = $true
+                    Complete-UpdateIfReady
+                }
+                catch {
+                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+                }
+            }),
+            ([System.Action]{
+                try {
+                    $script:UpdateStdoutClosed = $true
+                    Complete-UpdateIfReady
+                }
+                catch {
+                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+                }
+            }),
+            ([System.Action]{
+                try {
+                    $script:UpdateStderrClosed = $true
+                    Complete-UpdateIfReady
+                }
+                catch {
+                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+                }
+            })
+        )
+        $script:UpdateBridge.Attach($process)
+        $script:UpdateProcess = $process
+        [void]$process.Start()
+        Update-CancelButton
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
+    }
+    catch {
+        if (Test-ProcessRunning $process) {
+            try { $process.Kill() } catch { }
+        }
+        $script:UpdateProcess = $null
+        $script:LastUpdateStartError = $_.Exception.Message
+        $script:LastDiagnosticError = New-DiagnosticError "update_process_start" $script:LastUpdateCommand "process_start_failed" $script:LastUpdateStartError $script:LastUpdateStartError "process_start" $null
+        Dispose-ProcessQuietly $process
+        $progressBar.Style = "Continuous"
+        $progressBar.Value = 0
+        Set-Busy $false
+        Update-CancelButton
+        throw
+    }
+}
+
+function Start-VerifiedUpdateInstallerAndExit {
+    param([string]$InstallerPath)
+    try {
+        Start-UpdateInstallerProcess $InstallerPath
+        Append-Log (T "updateInstallerStartedLog")
+        Exit-ApplicationAfterUpdate
+    }
+    catch {
+        $statusLabel.Text = T "error"
+        $detail = $_.Exception.Message
+        $message = (T "updateInstallerLaunchFailed") -f $detail
+        $script:LastDiagnosticError = New-DiagnosticError "update_installer_launch" "Start-Process" "installer_launch_failed" $detail $message "gui_update_installer" $null
+        Append-Log $message
+        Show-AppError $message
+    }
+}
+
+function Start-UpdateInstallerProcess {
+    param([string]$InstallerPath)
+    if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
+        throw (T "updateNoResult")
+    }
+    if ($SelfTest -and $null -ne $script:InstallerLauncherForSelfTest) {
+        & $script:InstallerLauncherForSelfTest $InstallerPath | Out-Null
+        return
+    }
+    Start-Process -FilePath $InstallerPath -ErrorAction Stop | Out-Null
+}
+
+function Exit-ApplicationAfterUpdate {
+    if ($SelfTest) {
+        $script:ApplicationExitRequestedForSelfTest = $true
+        return
+    }
+    if ($form) {
+        $form.Close()
     }
 }
 
@@ -2847,6 +3270,11 @@ function New-VerifyManifestProcessStartInfo {
     return New-PythonProcessStartInfo -Arguments (Get-VerifyManifestPythonArguments $ManifestPath)
 }
 
+function New-UpdateProcessStartInfo {
+    param([string[]]$Arguments)
+    return New-PythonProcessStartInfo -Arguments $Arguments
+}
+
 function Get-ResolvePythonArguments {
     param([string]$InputPath)
     return @("-m", "geo_getter.cli", "resolve-json", "--input-file", $InputPath, "--out-json", $script:ResolvedJsonPath)
@@ -2868,6 +3296,15 @@ function Get-DownloadPythonArguments {
 function Get-VerifyManifestPythonArguments {
     param([string]$ManifestPath)
     return @("-m", "geo_getter.cli", "verify-manifest-json", "--manifest", $ManifestPath)
+}
+
+function Get-UpdateCheckPythonArguments {
+    return @("-m", "geo_getter.cli", "check-update-json")
+}
+
+function Get-UpdateDownloadPythonArguments {
+    param([string]$Version)
+    return @("-m", "geo_getter.cli", "download-update-json", "--version", $Version)
 }
 
 function New-PythonProcessStartInfo {
@@ -3012,7 +3449,9 @@ function Assert-Equal {
         [string]$Name
     )
     if ($Actual -ne $Expected) {
-        throw "$Name failed. expected=[$Expected] actual=[$Actual]"
+        $expectedText = try { [string]$Expected } catch { ($Expected | Out-String).Trim() }
+        $actualText = try { [string]$Actual } catch { ($Actual | Out-String).Trim() }
+        throw "$Name failed. expected=[$expectedText] actual=[$actualText]"
     }
 }
 
@@ -3142,12 +3581,14 @@ function New-MainForm {
     $script:verifyManifestMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:helpMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:helpOpenMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $script:checkUpdatesMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $script:aboutMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     [void]$languageMenuItem.DropDownItems.Add($japaneseMenuItem)
     [void]$languageMenuItem.DropDownItems.Add($englishMenuItem)
     [void]$settingsMenuItem.DropDownItems.Add($languageMenuItem)
     [void]$toolsMenuItem.DropDownItems.Add($verifyManifestMenuItem)
     [void]$helpMenuItem.DropDownItems.Add($helpOpenMenuItem)
+    [void]$helpMenuItem.DropDownItems.Add($checkUpdatesMenuItem)
     [void]$helpMenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
     [void]$helpMenuItem.DropDownItems.Add($aboutMenuItem)
     [void]$menuStrip.Items.Add($settingsMenuItem)
@@ -3594,6 +4035,15 @@ function New-MainForm {
     $englishMenuItem.Add_Click({ Set-Language "en" })
     $verifyManifestMenuItem.Add_Click({ Show-ManifestVerificationOpenDialog })
     $helpOpenMenuItem.Add_Click({ Show-HelpWindow })
+    $checkUpdatesMenuItem.Add_Click({
+        try {
+            Start-UpdateCheckProcess
+        }
+        catch {
+            Set-Busy $false
+            Show-AppError $_.Exception.Message
+        }
+    })
     $aboutMenuItem.Add_Click({
         [System.Windows.Forms.MessageBox]::Show((T "aboutText"), (T "about"), "OK", "Information") | Out-Null
     })
@@ -3714,7 +4164,11 @@ if ($SelfTest) {
     Assert-Equal $toolsMenuItem.Text "Tools" "English tools menu"
     Assert-Equal $verifyManifestMenuItem.Text "Verify saved FASTQ" "English verify manifest menu"
     Assert-Equal $helpOpenMenuItem.Text "Open help" "English open help menu"
-    Assert-Equal $helpMenuItem.DropDownItems.Count 3 "Help menu uses single help entry plus separator and about"
+    Assert-Equal $checkUpdatesMenuItem.Text "Check for updates" "English check updates menu"
+    Assert-Equal $helpMenuItem.DropDownItems.Count 4 "Help menu uses help, update, separator, and about"
+    Assert-Equal $helpMenuItem.DropDownItems[0] $helpOpenMenuItem "Help menu opens help first"
+    Assert-Equal $helpMenuItem.DropDownItems[1] $checkUpdatesMenuItem "Help menu checks updates second"
+    Assert-Equal $helpMenuItem.DropDownItems[3] $aboutMenuItem "Help menu keeps about last"
     Assert-Equal $fetchButton.Text "Find files" "English find files button"
     Assert-Equal $browseButton.Text "Browse" "English browse button"
     Assert-Equal $diagnosticsButton.Text "Save diagnostics" "English diagnostics button"
@@ -3726,6 +4180,7 @@ if ($SelfTest) {
     Assert-Equal $suppGrid.Columns["supp_type"].HeaderText "Estimated type" "English supplementary type header"
     Set-Language "ja"
     Assert-Equal $helpOpenMenuItem.Text "ヘルプを開く" "Japanese open help menu"
+    Assert-Equal $checkUpdatesMenuItem.Text "更新を確認" "Japanese check updates menu"
     Assert-Equal $toolsMenuItem.Text "ツール" "Japanese tools menu"
     Assert-Equal $verifyManifestMenuItem.Text "保存済みFASTQを確認" "Japanese verify manifest menu"
     Assert-Equal ((Get-Variable -Name inputHelpMenuItem -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "individual input help menu removed"
@@ -3741,6 +4196,10 @@ if ($SelfTest) {
     Assert-Equal $suppGrid.Columns["supp_extension"].HeaderText "拡張子" "Japanese supplementary extension header"
     Assert-Equal $suppGrid.Columns["supp_type"].HeaderText "推定種別" "Japanese supplementary type header"
     Assert-Equal $suppGrid.Columns["supp_verification"].HeaderText "検証" "Japanese supplementary verification header"
+    Set-Busy $true
+    Assert-Equal $checkUpdatesMenuItem.Enabled $false "busy disables check updates menu"
+    Set-Busy $false
+    Assert-Equal $checkUpdatesMenuItem.Enabled $true "idle enables check updates menu"
     Assert-Equal $outputBox.ReadOnly $true "output folder is browse-only"
     Assert-Equal $outputBox.Text (Get-DefaultOutputFolder) "default output folder"
     Assert-Equal $fastqGrid.Columns["run"].ReadOnly $true "FASTQ run column readonly"
@@ -3777,6 +4236,108 @@ if ($SelfTest) {
     Assert-Equal ($suppRuntimeNames -contains "processed.txt.existing.2") $true "preflight runtime includes supplementary numbered existing path"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
     Assert-PythonArgumentRoundTrip @("", 'C:\tmp\geo getter\a.txt', 'C:\tmp\日本語 path\manifest.tsv', 'C:\tmp\space path\', 'quote"name', 'C:\tmp\backslash\"quote') "process argument round trip"
+    $updateCheckArgs = Get-UpdateCheckPythonArguments
+    Assert-Equal ($updateCheckArgs -join "|") "-m|geo_getter.cli|check-update-json" "update check bridge arguments"
+    $updateDownloadArgs = Get-UpdateDownloadPythonArguments "0.1.4"
+    Assert-Equal ($updateDownloadArgs -join "|") "-m|geo_getter.cli|download-update-json|--version|0.1.4" "update download bridge arguments"
+    Clear-UpdateDiagnosticState
+    $script:LastUpdateDoneEvent = [pscustomobject]@{
+        event = "done"
+        kind = "update_check"
+        current_version = "0.1.3"
+        latest_version = "0.1.3"
+        update_available = $false
+        release_url = "https://example.invalid/release"
+        asset = $null
+    }
+    $script:LastUpdateExitCode = 0
+    $script:UpdateExitObserved = $true
+    $script:UpdateStdoutClosed = $true
+    $script:UpdateStderrClosed = $true
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $statusLabel.Text (T "complete") "update check latest status"
+
+    Clear-UpdateDiagnosticState
+    $script:UpdateDownloadConfirmationForSelfTest = $false
+    $script:LastUpdateDoneEvent = [pscustomobject]@{
+        event = "done"
+        kind = "update_check"
+        current_version = "0.1.3"
+        latest_version = "0.1.4"
+        update_available = $true
+        release_url = "https://example.invalid/release"
+        asset = [pscustomobject]@{ name = "GEOGetter-Setup-v0.1.4.exe"; size = 12; sha256 = ("1" * 64) }
+    }
+    $script:LastUpdateExitCode = 0
+    $script:UpdateExitObserved = $true
+    $script:UpdateStdoutClosed = $true
+    $script:UpdateStderrClosed = $true
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $statusLabel.Text (T "canceled") "declined update leaves GUI open"
+    $script:UpdateDownloadConfirmationForSelfTest = $null
+
+    Clear-UpdateDiagnosticState
+    $script:LastUpdateCommand = "check-update-json"
+    $script:UpdateStderrText = '{"event":"error","command":"check-update-json","code":"update_digest_missing","detail":"fixture","message":"fixture"}'
+    $script:LastUpdateExitCode = 1
+    $script:UpdateExitObserved = $true
+    $script:UpdateStdoutClosed = $true
+    $script:UpdateStderrClosed = $true
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $script:LastDiagnosticError.code "update_digest_missing" "update finalizer parses stderr error"
+    Assert-Equal $statusLabel.Text (T "error") "update error marks status"
+
+    $script:LastDiagnosticError = New-DiagnosticError "update" "check-update-json" "network_failed" "fixture" "fixture" "cli_stderr_json" 1
+    Assert-Equal (Get-UpdateFailureReason) (T "updateNetworkFailedMessage") "update network failure uses localized message"
+    $script:LastDiagnosticError = New-DiagnosticError "update" "check-update-json" "update_version_invalid" "fixture" "fixture" "cli_stderr_json" 1
+    Assert-Equal (Get-UpdateFailureReason) (T "updateVersionInvalidMessage") "update version failure uses localized message"
+
+    Clear-UpdateDiagnosticState
+    $script:InstallerLaunchPathForSelfTest = ""
+    $script:ApplicationExitRequestedForSelfTest = $false
+    $script:InstallerLauncherForSelfTest = { param([string]$Path) $script:InstallerLaunchPathForSelfTest = $Path }
+    $script:LastUpdateDoneEvent = [pscustomobject]@{
+        event = "done"
+        kind = "update_installer"
+        version = "0.1.4"
+        installer_path = "C:\tmp\GEOGetter-Setup-v0.1.4.exe"
+        sha256 = ("1" * 64)
+        bytes = 12
+    }
+    $script:LastUpdateExitCode = 0
+    $script:UpdateExitObserved = $true
+    $script:UpdateStdoutClosed = $true
+    $script:UpdateStderrClosed = $true
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $script:InstallerLaunchPathForSelfTest "C:\tmp\GEOGetter-Setup-v0.1.4.exe" "verified installer is launched"
+    Assert-Equal $script:ApplicationExitRequestedForSelfTest $true "installer launch requests GUI exit"
+    $script:InstallerLauncherForSelfTest = $null
+
+    Clear-UpdateDiagnosticState
+    $script:ApplicationExitRequestedForSelfTest = $false
+    $script:InstallerLauncherForSelfTest = { param([string]$Path) throw "launch failed" }
+    $script:LastUpdateDoneEvent = [pscustomobject]@{
+        event = "done"
+        kind = "update_installer"
+        version = "0.1.4"
+        installer_path = "C:\tmp\GEOGetter-Setup-v0.1.4.exe"
+        sha256 = ("1" * 64)
+        bytes = 12
+    }
+    $script:LastUpdateExitCode = 0
+    $script:UpdateExitObserved = $true
+    $script:UpdateStdoutClosed = $true
+    $script:UpdateStderrClosed = $true
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $script:LastDiagnosticError.phase "update_installer_launch" "installer launch failure records diagnostic phase"
+    Assert-Equal $script:LastDiagnosticError.code "installer_launch_failed" "installer launch failure records diagnostic code"
+    Assert-Equal $script:ApplicationExitRequestedForSelfTest $false "installer launch failure leaves GUI open"
+    $script:InstallerLauncherForSelfTest = $null
     $originalDiagnosticLimit = $script:DiagnosticProcessOutputLimitBytes
     $script:DiagnosticProcessOutputLimitBytes = 80
     $script:DownloadStdoutText = ""
@@ -4263,6 +4824,29 @@ if ($SelfTest) {
         }
         Dispose-ProcessQuietly $cancelProbe
         $script:ResolveProcess = $null
+        Update-CancelButton
+    }
+
+    $updateCancelProbe = New-Object System.Diagnostics.Process
+    $updateCancelProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
+    try {
+        [void]$updateCancelProbe.Start()
+        $script:UpdateProcess = $updateCancelProbe
+        $script:UpdateCanceled = $false
+        Update-CancelButton
+        Assert-Equal $cancelButton.Enabled $true "cancel button enabled for update process"
+        Stop-RunningGuiProcesses | Out-Null
+        [void]$updateCancelProbe.WaitForExit(5000)
+        Assert-Equal $updateCancelProbe.HasExited $true "cancel button kills update process"
+        Assert-Equal $script:UpdateCanceled $true "cancel button marks update canceled"
+    }
+    finally {
+        if (Test-ProcessRunning $updateCancelProbe) {
+            try { $updateCancelProbe.Kill() } catch { }
+            try { [void]$updateCancelProbe.WaitForExit(5000) } catch { }
+        }
+        Dispose-ProcessQuietly $updateCancelProbe
+        $script:UpdateProcess = $null
         Update-CancelButton
     }
 

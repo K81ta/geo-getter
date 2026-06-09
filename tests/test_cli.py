@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
+from geo_getter.errors import GeoGetterError
 from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path, verify_fastq_manifest
 
 
@@ -43,6 +44,8 @@ class CliTest(unittest.TestCase):
         self.assertIn("resolve-json", output)
         self.assertIn("selected-download-json", output)
         self.assertNotIn("verify-manifest-json", output)
+        self.assertNotIn("check-update-json", output)
+        self.assertNotIn("download-update-json", output)
         self.assertNotIn("verify-fastq-manifest", output)
         self.assertNotIn("plan-json", output)
         self.assertNotIn("verify-fixture", output)
@@ -110,6 +113,49 @@ class CliTest(unittest.TestCase):
             payload = self.assert_cli_error(["verify-manifest-json", "--manifest", str(manifest)], "invalid_manifest")
 
         self.assertEqual(payload["command"], "verify-manifest-json")
+
+    def test_check_update_hidden_bridge_writes_json_event(self):
+        event = {
+            "event": "done",
+            "kind": "update_check",
+            "current_version": "0.1.3",
+            "latest_version": "0.1.3",
+            "update_available": False,
+            "release_url": "https://example.invalid/release",
+            "asset": None,
+        }
+        with mock.patch("geo_getter.cli.check_for_update", return_value=event):
+            exit_code, stdout, stderr = self.run_cli_with_streams(["check-update-json"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(json.loads(stdout), event)
+
+    def test_download_update_hidden_bridge_writes_json_event(self):
+        event = {
+            "event": "done",
+            "kind": "update_installer",
+            "version": "0.1.4",
+            "installer_path": "C:\\tmp\\GEOGetter-Setup-v0.1.4.exe",
+            "sha256": "1" * 64,
+            "bytes": 10,
+        }
+        with mock.patch("geo_getter.cli.download_update_installer", return_value=event) as download_update:
+            exit_code, stdout, stderr = self.run_cli_with_streams(["download-update-json", "--version", "0.1.4", "--out-dir", "C:\\tmp"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(json.loads(stdout), event)
+        download_update.assert_called_once_with("0.1.4", output_dir="C:\\tmp")
+
+    def test_check_update_error_emits_structured_stderr_error(self):
+        with mock.patch("geo_getter.cli.check_for_update", side_effect=GeoGetterError("update_digest_missing", "fixture")):
+            payload = self.assert_cli_error(["check-update-json"], "update_digest_missing")
+        self.assertEqual(payload["command"], "check-update-json")
+
+    def test_download_update_error_emits_structured_stderr_error(self):
+        with mock.patch("geo_getter.cli.download_update_installer", side_effect=GeoGetterError("update_download_failed", "fixture")):
+            payload = self.assert_cli_error(["download-update-json", "--version", "0.1.4"], "update_download_failed")
+        self.assertEqual(payload["command"], "download-update-json")
+        self.assertIn("fixture", payload["detail"])
 
     def test_selected_fastq_rejects_negative_index(self):
         payload = {

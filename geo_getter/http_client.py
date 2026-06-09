@@ -12,8 +12,11 @@ from .errors import GeoGetterError
 USER_AGENT = f"geo-getter/{__version__}"
 
 
-def fetch_text(url: str, timeout: int = 60) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def fetch_text(url: str, timeout: int = 60, headers: dict[str, str] | None = None) -> str:
+    request_headers = {"User-Agent": USER_AGENT}
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, headers=request_headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = response.read()
@@ -22,8 +25,8 @@ def fetch_text(url: str, timeout: int = 60) -> str:
     return data.decode("utf-8", "replace")
 
 
-def fetch_json(url: str, timeout: int = 60) -> Any:
-    text = fetch_text(url, timeout=timeout)
+def fetch_json(url: str, timeout: int = 60, headers: dict[str, str] | None = None) -> Any:
+    text = fetch_text(url, timeout=timeout, headers=headers)
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
