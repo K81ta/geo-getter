@@ -178,6 +178,8 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 }
 ```
 
+`network_retry:` で始まる `message` は、通信失敗後の再試行待機を表す。GUI はログに残し、次の `progress` まで「通信再試行待機中」として表示する。
+
 `done`:
 
 ```json

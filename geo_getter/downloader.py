@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import http.client
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable
 import urllib.error
@@ -28,7 +30,10 @@ from .planner import ResumeArtifactDigest, ResumeArtifacts, append_download_log,
 ProgressCallback = Callable[[PlannedFile, int, int], None]
 MessageCallback = Callable[[str], None]
 ByteProgressCallback = Callable[[int, int], None]
+SleepCallback = Callable[[float], None]
+NowCallback = Callable[[], datetime]
 ResumeDigestLookup = dict[tuple[Path, str], ResumeArtifactDigest]
+DEFAULT_RETRY_DELAYS = (1.0, 3.0, 9.0)
 
 
 class DownloadSizeMismatchError(Exception):
@@ -36,7 +41,18 @@ class DownloadSizeMismatchError(Exception):
 
 
 class DownloadNetworkError(OSError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        retry_after: float | None = None,
+        status_code: int | None = None,
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.status_code = status_code
 
 
 class DownloadLocalIoError(OSError):
@@ -242,12 +258,19 @@ def download_url_to_part(
     progress_callback: ByteProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
     chunk_size: int = 1024 * 1024,
-    max_retries: int = 3,
+    max_attempts: int = 4,
     stream_md5: bool = False,
+    retry_delays: tuple[float, ...] = DEFAULT_RETRY_DELAYS,
+    sleep_func: SleepCallback | None = None,
+    now_func: NowCallback | None = None,
 ) -> DownloadedPart:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive.")
     part_path = _part_path(local_path)
     last_error: BaseException | None = None
-    for attempt in range(1, max_retries + 1):
+    sleep = sleep_func or time.sleep
+    now = now_func or _utc_now
+    for attempt in range(1, max_attempts + 1):
         try:
             return _download_url_to_part_once(
                 url,
@@ -256,6 +279,7 @@ def download_url_to_part(
                 progress_callback=progress_callback,
                 chunk_size=chunk_size,
                 stream_md5=stream_md5,
+                now_func=now,
             )
         except DownloadSizeMismatchError:
             raise
@@ -263,9 +287,14 @@ def download_url_to_part(
             raise
         except DownloadNetworkError as exc:
             last_error = exc
-            if attempt >= max_retries:
+            if not exc.retryable or attempt >= max_attempts:
                 raise
-            _emit(message_callback, f"network_retry: retrying after transfer failure ({attempt + 1}/{max_retries})")
+            delay = _retry_delay_seconds(exc, attempt, retry_delays)
+            _emit(
+                message_callback,
+                f"network_retry: waiting {delay:g}s before retry ({attempt + 1}/{max_attempts}) after {exc}",
+            )
+            sleep(delay)
     raise last_error or DownloadNetworkError("Download failed.")
 
 
@@ -280,6 +309,7 @@ def _download_url_to_part_once(
     progress_callback: ByteProgressCallback | None = None,
     chunk_size: int = 1024 * 1024,
     stream_md5: bool = False,
+    now_func: NowCallback | None = None,
 ) -> DownloadedPart:
     try:
         part_path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,10 +326,11 @@ def _download_url_to_part_once(
     try:
         request = urllib.request.Request(url, headers=headers)
     except ValueError as exc:
-        raise DownloadNetworkError(str(exc)) from exc
+        raise DownloadNetworkError(str(exc), retryable=False) from exc
     downloaded = 0
     streamed_digest = None
     resumed = False
+    now = now_func or _utc_now
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             status = _status_code(response)
@@ -345,7 +376,11 @@ def _download_url_to_part_once(
                 raise DownloadLocalIoError(f"Could not close partial download file: {part_path}") from exc
     except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError):
         raise
-    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+    except urllib.error.HTTPError as exc:
+        raise _http_network_error(exc, now) from exc
+    except urllib.error.URLError as exc:
+        raise _url_network_error(exc) from exc
+    except (http.client.HTTPException, OSError, ValueError) as exc:
         raise DownloadNetworkError(str(exc)) from exc
     final_size = _existing_size(part_path)
     if expected_size > 0 and final_size < expected_size:
@@ -374,7 +409,8 @@ def _validate_content_range(response: object, expected_start: int) -> None:
     start = _content_range_start(content_range)
     if start != expected_start:
         raise DownloadNetworkError(
-            f"Invalid Content-Range for resume: expected_start={expected_start} content_range={content_range!r}"
+            f"Invalid Content-Range for resume: expected_start={expected_start} content_range={content_range!r}",
+            retryable=False,
         )
 
 
@@ -392,6 +428,72 @@ def _status_code(response: object) -> int:
         return int(response.getcode() or 0)
     except (AttributeError, TypeError, ValueError):
         return 0
+
+
+def _http_network_error(error: urllib.error.HTTPError, now_func: NowCallback) -> DownloadNetworkError:
+    status = int(getattr(error, "code", 0) or 0)
+    retryable = status == 429 or status >= 500
+    retry_after = _parse_retry_after(_header_value(getattr(error, "headers", None), "Retry-After"), now_func)
+    message = str(error)
+    try:
+        error.close()
+    except Exception:
+        pass
+    return DownloadNetworkError(message, retryable=retryable, retry_after=retry_after, status_code=status)
+
+
+def _url_network_error(error: urllib.error.URLError) -> DownloadNetworkError:
+    message = str(error)
+    lower_message = message.lower()
+    reason = getattr(error, "reason", None)
+    retryable = not isinstance(reason, FileNotFoundError)
+    retryable = retryable and "unknown url type" not in lower_message and "no host given" not in lower_message
+    return DownloadNetworkError(message, retryable=retryable)
+
+
+def _header_value(headers: object, name: str) -> str | None:
+    if headers is None:
+        return None
+    try:
+        value = headers.get(name)
+    except AttributeError:
+        return None
+    return str(value) if value is not None else None
+
+
+def _parse_retry_after(value: str | None, now_func: NowCallback) -> float | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    now = now_func()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - now).total_seconds())
+
+
+def _retry_delay_seconds(error: DownloadNetworkError, attempt: int, retry_delays: tuple[float, ...]) -> float:
+    if error.retry_after is not None:
+        return max(0.0, error.retry_after)
+    if not retry_delays:
+        return 0.0
+    index = min(max(attempt - 1, 0), len(retry_delays) - 1)
+    return max(0.0, float(retry_delays[index]))
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _existing_size(path: Path) -> int:
