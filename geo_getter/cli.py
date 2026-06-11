@@ -369,12 +369,13 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict], r
                     flush=True,
                 )
 
-            _part_path, downloaded = download_url_to_part(
+            downloaded_part = download_url_to_part(
                 url,
                 local_path,
                 progress_callback=progress,
                 message_callback=lambda text: print(json.dumps({"event": "message", "message": text}, ensure_ascii=False), flush=True),
             )
+            downloaded = downloaded_part.bytes_downloaded
             finalize_downloaded_part(local_path)
             status = DOWNLOAD_COMPLETE
             message = "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
