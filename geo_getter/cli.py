@@ -169,6 +169,7 @@ def _selected_download_json(
     reserved_output_names = reserved_download_artifact_names(run_output_dir)
     resume_required_bytes: int | None = None
     resume_active = existing_output_nonempty and resume_existing
+    resume_artifacts = None
     if selected_fastq:
         plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
         if resume_active:
@@ -201,8 +202,7 @@ def _selected_download_json(
             plan,
             progress_callback=progress,
             message_callback=message,
-            required_bytes=resume_required_bytes,
-            preserve_manifest=resume_active,
+            resume_artifacts=resume_artifacts,
         )
         statuses.extend(status for _planned, status, _message in results)
     else:

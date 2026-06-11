@@ -53,11 +53,22 @@ DOWNLOAD_LOG_REQUIRED_COLUMNS = (
 
 
 @dataclass(frozen=True)
+class ResumeArtifactDigest:
+    path: Path
+    kind: str
+    expected_md5: str
+    actual_md5: str
+    size_bytes: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True)
 class ResumeArtifacts:
     manifest_path: Path
     download_log_path: Path
     required_bytes: int
     matched_fastq_count: int
+    verified_artifacts: tuple[ResumeArtifactDigest, ...] = ()
 
 
 def build_download_plan(
@@ -94,9 +105,9 @@ def ensure_capacity(plan: DownloadPlan, required_bytes: int | None = None) -> No
         )
 
 
-def write_fastq_outputs(plan: DownloadPlan, preserve_manifest: bool = False) -> None:
+def write_fastq_outputs(plan: DownloadPlan, resume_artifacts: ResumeArtifacts | None = None) -> None:
     plan.output_dir.mkdir(parents=True, exist_ok=True)
-    if not preserve_manifest:
+    if resume_artifacts is None:
         write_fastq_manifest(plan)
     initialize_log(plan.output_dir)
 
@@ -237,27 +248,46 @@ def validate_resume_artifacts(plan: DownloadPlan) -> ResumeArtifacts:
     log_rows = _read_tsv_rows(log, DOWNLOAD_LOG_REQUIRED_COLUMNS, "download_log")
     _assert_download_log_matches_plan(log, log_rows, plan)
 
+    required_bytes, verified_artifacts = _inspect_resume_artifacts(plan)
     return ResumeArtifacts(
         manifest_path=manifest,
         download_log_path=log,
-        required_bytes=calculate_resume_required_bytes(plan),
+        required_bytes=required_bytes,
         matched_fastq_count=len(plan.files),
+        verified_artifacts=verified_artifacts,
     )
 
 
-def calculate_resume_required_bytes(plan: DownloadPlan) -> int:
+def _inspect_resume_artifacts(plan: DownloadPlan) -> tuple[int, tuple[ResumeArtifactDigest, ...]]:
     required = 0
+    verified: list[ResumeArtifactDigest] = []
     for planned in plan.files:
         expected_size = max(0, int(planned.fastq.size_bytes))
-        if _completed_fastq_is_reusable(planned) or _complete_part_is_reusable(planned):
+        completed = _verified_resume_artifact(
+            planned.local_path,
+            "final",
+            planned.fastq.expected_md5,
+            expected_size,
+        )
+        if completed:
+            verified.append(completed)
             continue
         part_path = planned.local_path.with_name(planned.local_path.name + ".part")
         part_size = _existing_size(part_path)
         if expected_size > 0 and 0 < part_size < expected_size:
             required += expected_size - part_size
-        else:
-            required += expected_size
-    return required
+            continue
+        complete_part = _verified_resume_artifact(
+            part_path,
+            "complete_part",
+            planned.fastq.expected_md5,
+            expected_size,
+        )
+        if complete_part:
+            verified.append(complete_part)
+            continue
+        required += expected_size
+    return required, tuple(verified)
 
 
 def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> dict:
@@ -414,21 +444,27 @@ def _resume_log_key_from_row(row: dict[str, str]) -> tuple[str, ...]:
     )
 
 
-def _completed_fastq_is_reusable(planned: PlannedFile) -> bool:
-    return _file_is_reusable(planned.local_path, planned.fastq.expected_md5, planned.fastq.size_bytes)
-
-
-def _complete_part_is_reusable(planned: PlannedFile) -> bool:
-    part_path = planned.local_path.with_name(planned.local_path.name + ".part")
-    return _file_is_reusable(part_path, planned.fastq.expected_md5, planned.fastq.size_bytes)
-
-
-def _file_is_reusable(path: Path, expected_md5: str, expected_size: int) -> bool:
-    return (
-        path.is_file()
-        and bool(expected_md5)
-        and (expected_size <= 0 or _existing_size(path) == expected_size)
-        and _calculate_md5(path).lower() == expected_md5.lower()
+def _verified_resume_artifact(
+    path: Path,
+    kind: str,
+    expected_md5: str,
+    expected_size: int,
+) -> ResumeArtifactDigest | None:
+    if not expected_md5 or not path.is_file():
+        return None
+    stat = path.stat()
+    if expected_size > 0 and stat.st_size != expected_size:
+        return None
+    actual_md5 = _calculate_md5(path)
+    if actual_md5.lower() != expected_md5.lower():
+        return None
+    return ResumeArtifactDigest(
+        path=path,
+        kind=kind,
+        expected_md5=expected_md5,
+        actual_md5=actual_md5,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
     )
 
 
