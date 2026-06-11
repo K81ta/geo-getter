@@ -193,7 +193,7 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 }
 ```
 
-終了コード `0` は、選択ファイルの status がすべて `md5_verified` または `download_complete` の場合だけ返る。`md5_unavailable` はファイル保存済みでも MD5 未検証なので、終了コード `1` になる。
+終了コード `0` は、選択ファイルの status がすべて `md5_verified`、`md5_unavailable`、または `download_complete` の場合に返る。`md5_unavailable` は警告付き完了として扱い、GUI では「完了（MD5未検証あり）」と表示する。
 
 プロセス全体の失敗では、CLI は stderr に 1 行の error JSON を出す。stdout の `progress` / `message` / `done` 契約には混ぜない。
 
@@ -375,9 +375,9 @@ download log:
 | `timestamp` | UTC ISO timestamp |
 | `run_accession` | FASTQ run accession。supplementary は `GEO_SUPPLEMENTARY` |
 | `file_name` | ファイル名 |
-| `status` | `md5_verified`, `md5_unavailable`, `md5_mismatch`, `size_mismatch`, `network_failed`, `download_complete` など |
+| `status` | `md5_verified`, `md5_unavailable`, `md5_mismatch`, `size_mismatch`, `network_failed`, `local_io_failed`, `download_complete` など |
 | `expected_md5` | FASTQ の期待 MD5。supplementary は空 |
-| `actual_md5` | 実計算した MD5。supplementary は空 |
+| `actual_md5` | 期待 MD5 がある FASTQ で実計算した MD5。期待 MD5 なし FASTQ と supplementary は空 |
 | `bytes_expected` | FASTQ の期待サイズ。supplementary は `0` |
 | `bytes_downloaded` | 保存済み bytes |
 | `message` | 人間向けメッセージ |
@@ -420,7 +420,7 @@ FASTQ 保存処理:
 9. 途中 `.part` がある場合、HTTP `Range` で再開を試みる。期待 MD5 がない場合も、同じ local path の途中 `.part` であれば Range 再開の対象になる。
 10. 保存後、期待 MD5 があれば照合する。
 11. MD5 一致なら `.part` を正式ファイル名へ置き換える。
-12. 期待 MD5 がなければ正式ファイル名へ置き換え、`md5_unavailable` を記録する。
+12. 期待 MD5 がなければ正式ファイル名へ置き換え、actual MD5 は計算せずに `md5_unavailable` を記録する。
 13. MD5 不一致またはサイズ過大なら正式名にせず quarantine 名へ退避する。
 14. 結果を download log に追記する。
 
@@ -441,7 +441,8 @@ Python 側の status / error code は英語で統一する。GUI の主要ラベ
 | `md5_mismatch` | FASTQ の MD5 が一致せず、正式ファイル名で保存しなかった |
 | `size_mismatch` | 期待サイズと保存サイズが合わなかった |
 | `missing` | manifest に記載された確認対象ファイルが存在しない |
-| `network_failed` | 通信または OS error で保存できなかった |
+| `network_failed` | 通信に失敗して保存できなかった |
+| `local_io_failed` | 保存先フォルダの作成、書き込み、ファイル移動などに失敗した |
 | `download_complete` | supplementary / processed file を保存した |
 
 保存済み FASTQ manifest 再確認では、すべての FASTQ が `md5_verified` の場合だけ終了コード `0` を返す。`md5_unavailable`, `missing`, `size_mismatch`, `md5_mismatch` がある場合は、`verification_report.tsv` を作成したうえで終了コード `1` を返す。

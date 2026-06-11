@@ -4,7 +4,7 @@
 
 GEOGetter is a Windows desktop app for saving raw FASTQ files and GEO supplementary / processed files from public GEO and ENA data.
 
-Enter a GEO accession, GEO page URL, SRA / ENA accession, BioProject accession, or BioSample accession, then choose the files to save from the displayed list. FASTQ files are checked against MD5 values during download.
+Enter a GEO accession, GEO page URL, SRA / ENA accession, BioProject accession, or BioSample accession, then choose the files to save from the displayed list. FASTQ files are checked during download when ENA provides expected MD5 values.
 
 ## Install and Start
 

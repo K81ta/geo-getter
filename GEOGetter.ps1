@@ -325,7 +325,9 @@ $script:Translations = @{
             "- md5_verified: MD5が一致しました。"
             "- md5_unavailable: ENAから照合用MD5値を取得できなかったため、保存はしますが検証はできません。"
             "- md5_mismatch: 正式なFASTQとしては保存せず、退避名に変更します。"
+            "- size_mismatch: ENAの期待サイズと保存サイズが一致しません。"
             "- network_failed: 通信に失敗しました。時間をおいて再実行してください。"
+            "- local_io_failed: 保存先フォルダへの書き込みやファイル移動に失敗しました。"
         ) -join [Environment]::NewLine)
         helpCancelRetryText = (@(
             "キャンセル:"
@@ -526,7 +528,9 @@ $script:Translations = @{
             "- md5_verified: the expected and actual MD5 matched."
             "- md5_unavailable: ENA did not provide an expected MD5, so the file is saved but not verified."
             "- md5_mismatch: the file is not kept as the final FASTQ and is moved aside."
+            "- size_mismatch: the saved size did not match the expected ENA size."
             "- network_failed: the transfer failed. Check the connection and try again later."
+            "- local_io_failed: writing or moving files in the output folder failed."
         ) -join [Environment]::NewLine)
         helpCancelRetryText = (@(
             "Cancel:"
@@ -4523,8 +4527,9 @@ if ($SelfTest) {
     Handle-DownloadLine '{"event":"done","statuses":["md5_unavailable"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv"}'
     Assert-Equal $statusLabel.Text (T "downloading") "done event does not finalize status before exit and stdout close"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified", "download_complete") }) 0 $false) "complete" "final state all ok"
-    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_unavailable") }) 1 $false) "completeUnverified" "final state md5 unavailable"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_unavailable") }) 0 $false) "completeUnverified" "final state md5 unavailable"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("network_failed") }) 1 $false) "completePartial" "final state network failed"
+    Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("local_io_failed") }) 1 $false) "completePartial" "final state local I/O failed"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_mismatch") }) 1 $false) "completePartial" "final state md5 mismatch"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("size_mismatch") }) 1 $false) "completePartial" "final state size mismatch"
     Assert-Equal (Get-DownloadFinalStatusKey $null 0 $false) "error" "final state missing done event with zero exit"
