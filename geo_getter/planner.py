@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import shutil
 from collections import Counter
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from .errors import (
     SIZE_MISMATCH,
     GeoGetterError,
 )
+from .hashing import calculate_md5 as _calculate_md5
 from .models import DownloadPlan, FastqFile, PlannedFile
 from .path_safety import child_path, name_collision_key, reserve_unique_download_name, safe_file_name
 
@@ -518,14 +518,6 @@ def _existing_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
-
-
-def _calculate_md5(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _should_calculate_md5(exists: bool, expected_size: int, actual_size: int, expected_md5: str) -> bool:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import http.client
 import re
 import tempfile
@@ -21,6 +20,7 @@ from .errors import (
     UPDATE_VERSION_INVALID,
     GeoGetterError,
 )
+from .hashing import DEFAULT_CHUNK_SIZE, new_digest
 from .http_client import USER_AGENT, fetch_json
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/K81ta/geo-getter/releases/latest"
@@ -105,12 +105,12 @@ def download_update_installer(
         part_path.unlink()
     request = urllib.request.Request(str(asset["download_url"]), headers={"User-Agent": USER_AGENT})
     downloaded = 0
-    digest = hashlib.sha256()
+    digest = new_digest("sha256")
     try:
         with opener(request, timeout=120) as response:
             with part_path.open("wb") as handle:
                 while True:
-                    chunk = response.read(1024 * 1024)
+                    chunk = response.read(DEFAULT_CHUNK_SIZE)
                     if not chunk:
                         break
                     handle.write(chunk)

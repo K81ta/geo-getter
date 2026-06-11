@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import http.client
 import re
 from datetime import datetime, timezone
@@ -19,6 +18,7 @@ from .errors import (
     OUTPUT_PATH_INVALID,
     SIZE_MISMATCH,
 )
+from .hashing import calculate_md5, verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
 from .planner import append_download_log, ensure_capacity, write_fastq_outputs
@@ -30,19 +30,6 @@ ByteProgressCallback = Callable[[int, int], None]
 
 class DownloadSizeMismatchError(Exception):
     pass
-
-
-def verify_md5(path: str | Path, expected_md5: str) -> tuple[bool, str]:
-    actual = calculate_md5(path)
-    return actual.lower() == expected_md5.lower(), actual
-
-
-def calculate_md5(path: str | Path) -> str:
-    digest = hashlib.md5()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def download_plan(
