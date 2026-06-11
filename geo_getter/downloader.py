@@ -321,23 +321,28 @@ def _download_url_to_part_once(
                 handle = part_path.open(mode)
             except OSError as exc:
                 raise DownloadLocalIoError(f"Could not open partial download file: {part_path}") from exc
-            with handle:
-                while True:
-                    try:
-                        chunk = response.read(chunk_size)
-                    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
-                        raise DownloadNetworkError(str(exc)) from exc
-                    if not chunk:
-                        break
-                    try:
-                        handle.write(chunk)
-                    except OSError as exc:
-                        raise DownloadLocalIoError(f"Could not write partial download file: {part_path}") from exc
-                    if streamed_digest:
-                        streamed_digest.update(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(resume_from + downloaded, total)
+            try:
+                with handle:
+                    while True:
+                        try:
+                            chunk = response.read(chunk_size)
+                        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+                            raise DownloadNetworkError(str(exc)) from exc
+                        if not chunk:
+                            break
+                        try:
+                            handle.write(chunk)
+                        except OSError as exc:
+                            raise DownloadLocalIoError(f"Could not write partial download file: {part_path}") from exc
+                        if streamed_digest:
+                            streamed_digest.update(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(resume_from + downloaded, total)
+            except (DownloadNetworkError, DownloadLocalIoError):
+                raise
+            except OSError as exc:
+                raise DownloadLocalIoError(f"Could not close partial download file: {part_path}") from exc
     except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError):
         raise
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:

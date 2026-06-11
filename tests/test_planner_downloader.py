@@ -67,6 +67,17 @@ class FailAfterFirstChunkResponse(FakeUrlopenResponse):
         return super().read(size)
 
 
+class CloseFailingHandle:
+    def write(self, data: bytes) -> int:
+        return len(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        raise OSError("fixture close failure")
+
+
 class PlannerDownloaderTest(unittest.TestCase):
     def test_plan_and_manifest_are_written(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -340,6 +351,41 @@ class PlannerDownloaderTest(unittest.TestCase):
                 rows = list(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(rows[-1]["status"], "local_io_failed")
             self.assertIn("fixture replace failure", rows[-1]["message"])
+
+    def test_partial_file_close_failure_is_logged_as_local_io_failed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            response = FakeUrlopenResponse(data=data, status=200, headers={"Content-Length": str(len(data))})
+            original_open = Path.open
+
+            def open_part_only(path, *args, **kwargs):
+                if str(path).endswith(".part"):
+                    return CloseFailingHandle()
+                return original_open(path, *args, **kwargs)
+
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response),
+                mock.patch("pathlib.Path.open", open_part_only),
+            ):
+                results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "local_io_failed")
+            with download_log_path(output_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "local_io_failed")
+            self.assertIn("Could not close partial download file", rows[-1]["message"])
 
     def test_existing_matching_file_is_reused(self):
         with tempfile.TemporaryDirectory() as temp:

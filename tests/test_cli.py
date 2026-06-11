@@ -886,6 +886,29 @@ class CliTest(unittest.TestCase):
             self.assertEqual(event["status_counts"], {"md5_verified": 1})
             self.assertEqual(Path(event["report"]), root / "verification_report.tsv")
 
+    def test_internal_manifest_verification_bridge_returns_failure_for_unverified_md5(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = b"unverified\n"
+            fastq_path = root / "unverified.fastq.gz"
+            fastq_path.write_bytes(data)
+            manifest = root / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tRUN1\t1\tunverified.fastq.gz\thttps://example.invalid/unverified\t\t{len(data)}\t{fastq_path}\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["verify-manifest-json", "--manifest", str(manifest)]), 1)
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["status_counts"], {"md5_unavailable": 1})
+
     def test_internal_manifest_verification_bridge_returns_failure_for_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
