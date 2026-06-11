@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -18,7 +19,7 @@ from .errors import (
     OUTPUT_PATH_INVALID,
     SIZE_MISMATCH,
 )
-from .hashing import calculate_md5, verify_md5
+from .hashing import calculate_md5, new_digest, verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
 from .planner import append_download_log, ensure_capacity, write_fastq_outputs
@@ -30,6 +31,14 @@ ByteProgressCallback = Callable[[int, int], None]
 
 class DownloadSizeMismatchError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class DownloadedPart:
+    path: Path
+    bytes_downloaded: int
+    streamed_md5: str | None = None
+    resumed: bool = False
 
 
 def download_plan(
@@ -82,18 +91,24 @@ def download_plan(
                 results.append((planned, status, message))
                 continue
 
-            part_path, downloaded = download_one(
+            downloaded_part = download_one(
                 planned,
                 progress_callback=progress_callback,
                 message_callback=message_callback,
             )
+            part_path = downloaded_part.path
+            downloaded = downloaded_part.bytes_downloaded
             if not planned.fastq.expected_md5:
                 status = MD5_UNAVAILABLE
                 message = ERROR_MESSAGES[status]
-                actual_md5 = calculate_md5(part_path)
+                actual_md5 = downloaded_part.streamed_md5 if downloaded_part.streamed_md5 else calculate_md5(part_path)
                 _finalize_part(part_path, planned.local_path)
             else:
-                ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+                if downloaded_part.streamed_md5 and not downloaded_part.resumed:
+                    actual_md5 = downloaded_part.streamed_md5
+                    ok = actual_md5.lower() == planned.fastq.expected_md5.lower()
+                else:
+                    ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
                 status = MD5_VERIFIED if ok else MD5_MISMATCH
                 message = ERROR_MESSAGES[status]
                 if ok:
@@ -175,7 +190,7 @@ def download_one(
     progress_callback: ProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
     chunk_size: int = 1024 * 1024,
-) -> tuple[Path, int]:
+) -> DownloadedPart:
     def progress(downloaded: int, total: int) -> None:
         if progress_callback:
             progress_callback(planned, downloaded, total)
@@ -187,6 +202,7 @@ def download_one(
         progress_callback=progress,
         message_callback=message_callback,
         chunk_size=chunk_size,
+        stream_md5=True,
     )
 
 
@@ -198,7 +214,8 @@ def download_url_to_part(
     message_callback: MessageCallback | None = None,
     chunk_size: int = 1024 * 1024,
     max_retries: int = 3,
-) -> tuple[Path, int]:
+    stream_md5: bool = False,
+) -> DownloadedPart:
     part_path = _part_path(local_path)
     last_error: BaseException | None = None
     for attempt in range(1, max_retries + 1):
@@ -209,6 +226,7 @@ def download_url_to_part(
                 expected_size=expected_size,
                 progress_callback=progress_callback,
                 chunk_size=chunk_size,
+                stream_md5=stream_md5,
             )
         except DownloadSizeMismatchError:
             raise
@@ -230,7 +248,8 @@ def _download_url_to_part_once(
     expected_size: int = 0,
     progress_callback: ByteProgressCallback | None = None,
     chunk_size: int = 1024 * 1024,
-) -> tuple[Path, int]:
+    stream_md5: bool = False,
+) -> DownloadedPart:
     part_path.parent.mkdir(parents=True, exist_ok=True)
     resume_from = _existing_size(part_path)
     if expected_size > 0 and resume_from > expected_size:
@@ -242,13 +261,18 @@ def _download_url_to_part_once(
         headers["Range"] = f"bytes={resume_from}-"
     request = urllib.request.Request(url, headers=headers)
     downloaded = 0
+    streamed_digest = None
+    resumed = False
     with urllib.request.urlopen(request, timeout=120) as response:
         status = _status_code(response)
         appending = resume_from > 0 and status == 206
         if appending:
             _validate_content_range(response, resume_from)
+            resumed = True
         if not appending:
             resume_from = 0
+            if stream_md5:
+                streamed_digest = new_digest("md5")
         total = _content_length(response)
         if total and appending:
             total += resume_from
@@ -261,6 +285,8 @@ def _download_url_to_part_once(
                 if not chunk:
                     break
                 handle.write(chunk)
+                if streamed_digest:
+                    streamed_digest.update(chunk)
                 downloaded += len(chunk)
                 if progress_callback:
                     progress_callback(resume_from + downloaded, total)
@@ -271,7 +297,8 @@ def _download_url_to_part_once(
         raise DownloadSizeMismatchError(
             f"Downloaded size exceeds expected size: expected={expected_size} actual={final_size}"
         )
-    return part_path, final_size
+    streamed_md5 = streamed_digest.hexdigest() if streamed_digest else None
+    return DownloadedPart(part_path, final_size, streamed_md5=streamed_md5, resumed=resumed)
 
 
 def _content_length(response: object) -> int:
