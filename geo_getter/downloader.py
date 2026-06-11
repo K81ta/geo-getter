@@ -42,6 +42,15 @@ class DownloadedPart:
     resumed: bool = False
 
 
+@dataclass(frozen=True)
+class DownloadOutcome:
+    status: str
+    message: str
+    actual_md5: str = ""
+    bytes_downloaded: int = 0
+    result_message: str | None = None
+
+
 def download_plan(
     plan: DownloadPlan,
     progress_callback: ProgressCallback | None = None,
@@ -58,38 +67,12 @@ def download_plan(
             _emit(message_callback, f"download_started: {planned.fastq.file_name}")
             existing_result = _reuse_or_quarantine_existing(planned, resume_digests, message_callback)
             if existing_result:
-                status, message, actual_md5, downloaded = existing_result
-                append_download_log(
-                    plan.output_dir,
-                    planned.fastq.run_accession,
-                    planned.fastq.file_name,
-                    status,
-                    planned.fastq.expected_md5,
-                    actual_md5,
-                    planned.fastq.size_bytes,
-                    downloaded,
-                    message,
-                )
-                _emit(message_callback, f"{status}: {planned.fastq.file_name}")
-                results.append((planned, status, message))
+                _record_outcome(plan, planned, existing_result, results, message_callback)
                 continue
 
             part_result = _reuse_or_quarantine_complete_part(planned, resume_digests, message_callback)
             if part_result:
-                status, message, actual_md5, downloaded = part_result
-                append_download_log(
-                    plan.output_dir,
-                    planned.fastq.run_accession,
-                    planned.fastq.file_name,
-                    status,
-                    planned.fastq.expected_md5,
-                    actual_md5,
-                    planned.fastq.size_bytes,
-                    downloaded,
-                    message,
-                )
-                _emit(message_callback, f"{status}: {planned.fastq.file_name}")
-                results.append((planned, status, message))
+                _record_outcome(plan, planned, part_result, results, message_callback)
                 continue
 
             downloaded_part = download_one(
@@ -97,39 +80,8 @@ def download_plan(
                 progress_callback=progress_callback,
                 message_callback=message_callback,
             )
-            part_path = downloaded_part.path
-            downloaded = downloaded_part.bytes_downloaded
-            if not planned.fastq.expected_md5:
-                status = MD5_UNAVAILABLE
-                message = ERROR_MESSAGES[status]
-                actual_md5 = downloaded_part.streamed_md5 if downloaded_part.streamed_md5 else calculate_md5(part_path)
-                _finalize_part(part_path, planned.local_path)
-            else:
-                if downloaded_part.streamed_md5 and not downloaded_part.resumed:
-                    actual_md5 = downloaded_part.streamed_md5
-                    ok = actual_md5.lower() == planned.fastq.expected_md5.lower()
-                else:
-                    ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
-                status = MD5_VERIFIED if ok else MD5_MISMATCH
-                message = ERROR_MESSAGES[status]
-                if ok:
-                    _finalize_part(part_path, planned.local_path)
-                else:
-                    quarantined = _quarantine_file(part_path, "bad-md5")
-                    message = f"{message} The mismatched file was moved aside instead of being saved under the final name: {quarantined}"
-            append_download_log(
-                plan.output_dir,
-                planned.fastq.run_accession,
-                planned.fastq.file_name,
-                status,
-                planned.fastq.expected_md5,
-                actual_md5,
-                planned.fastq.size_bytes,
-                downloaded,
-                message,
-            )
-            _emit(message_callback, f"{status}: {planned.fastq.file_name}")
-            results.append((planned, status, message))
+            outcome = _downloaded_part_outcome(planned, downloaded_part)
+            _record_outcome(plan, planned, outcome, results, message_callback)
         except DownloadSizeMismatchError as exc:
             status = SIZE_MISMATCH
             part_path = _part_path(planned.local_path)
@@ -138,52 +90,97 @@ def download_plan(
             if part_path.exists():
                 quarantined = _quarantine_file(part_path, "size-mismatch")
                 message = f"{message} Quarantine path: {quarantined}"
-            append_download_log(
-                plan.output_dir,
-                planned.fastq.run_accession,
-                planned.fastq.file_name,
-                status,
-                planned.fastq.expected_md5,
-                "",
-                planned.fastq.size_bytes,
-                downloaded,
-                f"{message} Detail: {exc}",
+            _record_outcome(
+                plan,
+                planned,
+                DownloadOutcome(
+                    status,
+                    f"{message} Detail: {exc}",
+                    bytes_downloaded=downloaded,
+                    result_message=str(exc),
+                ),
+                results,
+                message_callback,
             )
-            _emit(message_callback, f"{status}: {planned.fastq.file_name}")
-            results.append((planned, status, str(exc)))
         except (urllib.error.URLError, http.client.HTTPException, ValueError) as exc:
             status = NETWORK_FAILED
             message = ERROR_MESSAGES[status]
-            append_download_log(
-                plan.output_dir,
-                planned.fastq.run_accession,
-                planned.fastq.file_name,
-                status,
-                planned.fastq.expected_md5,
-                "",
-                planned.fastq.size_bytes,
-                _existing_size(_part_path(planned.local_path)),
-                f"{message} Detail: {exc}",
+            _record_outcome(
+                plan,
+                planned,
+                DownloadOutcome(
+                    status,
+                    f"{message} Detail: {exc}",
+                    bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+                    result_message=str(exc),
+                ),
+                results,
+                message_callback,
             )
-            _emit(message_callback, f"{status}: {planned.fastq.file_name}")
-            results.append((planned, status, str(exc)))
         except OSError as exc:
             status = NETWORK_FAILED
-            append_download_log(
-                plan.output_dir,
-                planned.fastq.run_accession,
-                planned.fastq.file_name,
-                status,
-                planned.fastq.expected_md5,
-                "",
-                planned.fastq.size_bytes,
-                _existing_size(_part_path(planned.local_path)),
-                str(exc),
+            _record_outcome(
+                plan,
+                planned,
+                DownloadOutcome(
+                    status,
+                    str(exc),
+                    bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+                    result_message=str(exc),
+                ),
+                results,
+                message_callback,
             )
-            _emit(message_callback, f"{status}: {planned.fastq.file_name}")
-            results.append((planned, status, str(exc)))
 
     return results
+
+
+def _record_outcome(
+    plan: DownloadPlan,
+    planned: PlannedFile,
+    outcome: DownloadOutcome,
+    results: list[tuple[PlannedFile, str, str]],
+    message_callback: MessageCallback | None,
+) -> None:
+    append_download_log(
+        plan.output_dir,
+        planned.fastq.run_accession,
+        planned.fastq.file_name,
+        outcome.status,
+        planned.fastq.expected_md5,
+        outcome.actual_md5,
+        planned.fastq.size_bytes,
+        outcome.bytes_downloaded,
+        outcome.message,
+    )
+    _emit(message_callback, f"{outcome.status}: {planned.fastq.file_name}")
+    result_message = outcome.result_message if outcome.result_message is not None else outcome.message
+    results.append((planned, outcome.status, result_message))
+
+
+def _downloaded_part_outcome(planned: PlannedFile, downloaded_part: DownloadedPart) -> DownloadOutcome:
+    part_path = downloaded_part.path
+    downloaded = downloaded_part.bytes_downloaded
+    if not planned.fastq.expected_md5:
+        actual_md5 = downloaded_part.streamed_md5 if downloaded_part.streamed_md5 else calculate_md5(part_path)
+        _finalize_part(part_path, planned.local_path)
+        return DownloadOutcome(MD5_UNAVAILABLE, ERROR_MESSAGES[MD5_UNAVAILABLE], actual_md5, downloaded)
+
+    if downloaded_part.streamed_md5 and not downloaded_part.resumed:
+        actual_md5 = downloaded_part.streamed_md5
+        ok = actual_md5.lower() == planned.fastq.expected_md5.lower()
+    else:
+        ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+    if ok:
+        _finalize_part(part_path, planned.local_path)
+        return DownloadOutcome(MD5_VERIFIED, ERROR_MESSAGES[MD5_VERIFIED], actual_md5, downloaded)
+
+    quarantined = _quarantine_file(part_path, "bad-md5")
+    message = (
+        f"{ERROR_MESSAGES[MD5_MISMATCH]} "
+        f"The mismatched file was moved aside instead of being saved under the final name: {quarantined}"
+    )
+    return DownloadOutcome(MD5_MISMATCH, message, actual_md5, downloaded)
 
 
 def download_one(
@@ -380,7 +377,7 @@ def _reuse_or_quarantine_existing(
     planned: PlannedFile,
     resume_digests: ResumeDigestLookup,
     message_callback: MessageCallback | None = None,
-) -> tuple[str, str, str, int] | None:
+) -> DownloadOutcome | None:
     if not planned.local_path.exists():
         return None
     if not planned.local_path.is_file():
@@ -405,7 +402,7 @@ def _reuse_or_quarantine_existing(
             stale_part = _part_path(planned.local_path)
             if stale_part.exists():
                 stale_part.unlink()
-            return (
+            return DownloadOutcome(
                 MD5_VERIFIED,
                 "Existing file MD5 matched, so the file was reused without downloading again.",
                 actual_md5,
@@ -424,7 +421,7 @@ def _reuse_or_quarantine_complete_part(
     planned: PlannedFile,
     resume_digests: ResumeDigestLookup,
     message_callback: MessageCallback | None = None,
-) -> tuple[str, str, str, int] | None:
+) -> DownloadOutcome | None:
     part_path = _part_path(planned.local_path)
     if not part_path.exists():
         return None
@@ -454,7 +451,7 @@ def _reuse_or_quarantine_complete_part(
         ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
     if ok:
         _finalize_part(part_path, planned.local_path)
-        return (
+        return DownloadOutcome(
             MD5_VERIFIED,
             "Previous partial file MD5 matched, so it was promoted to the final file name.",
             actual_md5,
