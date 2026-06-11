@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
+from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
 from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path, verify_fastq_manifest
 
@@ -768,7 +769,7 @@ class CliTest(unittest.TestCase):
 
             def fail_with_part(_url, local_path, **_kwargs):
                 local_path.with_name(local_path.name + ".part").write_bytes(b"abc")
-                raise OSError("fixture transfer failure")
+                raise DownloadNetworkError("fixture transfer failure")
 
             stdout = io.StringIO()
             with mock.patch("geo_getter.cli.download_url_to_part", side_effect=fail_with_part):
@@ -819,6 +820,46 @@ class CliTest(unittest.TestCase):
             self.assertIn("network_failed", log_text)
             self.assertIn("unknown url type", log_text)
 
+    def test_selected_download_reports_local_io_failure_in_done_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000004",
+                "primary_accession": "GSE000004",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000004",
+                        "query_accession": "SRP000004",
+                        "run_accession": "SRR000004",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            stdout = io.StringIO()
+
+            with mock.patch("geo_getter.downloader._finalize_part", side_effect=OSError("fixture replace failure")):
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = _selected_download_json(input_json, "0", "", root / "out")
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 1)
+            done = json.loads(output.splitlines()[-1])
+            self.assertEqual(done["statuses"], ["local_io_failed"])
+            with download_log_path(root / "out").open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "local_io_failed")
+            self.assertIn("fixture replace failure", rows[-1]["message"])
+
     def test_internal_manifest_verification_bridge_writes_json_event(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -868,7 +909,7 @@ class CliTest(unittest.TestCase):
             event = json.loads(stdout.getvalue())
             self.assertEqual(event["status_counts"], {"md5_mismatch": 1})
 
-    def test_selected_download_without_md5_emits_done_and_returns_nonzero(self):
+    def test_selected_download_without_md5_emits_done_and_returns_zero(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "source.fastq.gz"
@@ -900,7 +941,7 @@ class CliTest(unittest.TestCase):
                 exit_code = _selected_download_json(input_json, "0", "", out_dir)
 
             output = stdout.getvalue()
-            self.assertEqual(exit_code, 1)
+            self.assertEqual(exit_code, 0)
             self.assertIn('"event": "done"', output)
             self.assertNotIn('"event": "error"', output)
             self.assertIn('"md5_unavailable"', output)
@@ -911,6 +952,10 @@ class CliTest(unittest.TestCase):
             self.assertEqual(done["supplementary_manifest"], "")
             self.assertEqual(done["download_log"], str(download_log_path(resolved_out_dir)))
             self.assertTrue((out_dir / "source.fastq.gz").exists())
+            with download_log_path(out_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "md5_unavailable")
+            self.assertEqual(rows[-1]["actual_md5"], "")
 
 
 if __name__ == "__main__":

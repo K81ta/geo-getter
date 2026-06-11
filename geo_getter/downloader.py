@@ -12,6 +12,7 @@ import urllib.request
 from .errors import (
     ERROR_MESSAGES,
     GeoGetterError,
+    LOCAL_IO_FAILED,
     MD5_MISMATCH,
     MD5_UNAVAILABLE,
     MD5_VERIFIED,
@@ -19,7 +20,7 @@ from .errors import (
     OUTPUT_PATH_INVALID,
     SIZE_MISMATCH,
 )
-from .hashing import calculate_md5, new_digest, verify_md5
+from .hashing import new_digest, verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
 from .planner import ResumeArtifactDigest, ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
@@ -31,6 +32,14 @@ ResumeDigestLookup = dict[tuple[Path, str], ResumeArtifactDigest]
 
 
 class DownloadSizeMismatchError(Exception):
+    pass
+
+
+class DownloadNetworkError(OSError):
+    pass
+
+
+class DownloadLocalIoError(OSError):
     pass
 
 
@@ -87,9 +96,13 @@ def download_plan(
             part_path = _part_path(planned.local_path)
             downloaded = _existing_size(part_path)
             message = ERROR_MESSAGES[status]
-            if part_path.exists():
-                quarantined = _quarantine_file(part_path, "size-mismatch")
-                message = f"{message} Quarantine path: {quarantined}"
+            try:
+                if part_path.exists():
+                    quarantined = _quarantine_file(part_path, "size-mismatch")
+                    message = f"{message} Quarantine path: {quarantined}"
+            except DownloadLocalIoError as io_exc:
+                status = LOCAL_IO_FAILED
+                message = f"{ERROR_MESSAGES[status]} Detail: {io_exc}"
             _record_outcome(
                 plan,
                 planned,
@@ -102,7 +115,7 @@ def download_plan(
                 results,
                 message_callback,
             )
-        except (urllib.error.URLError, http.client.HTTPException, ValueError) as exc:
+        except DownloadNetworkError as exc:
             status = NETWORK_FAILED
             message = ERROR_MESSAGES[status]
             _record_outcome(
@@ -117,14 +130,30 @@ def download_plan(
                 results,
                 message_callback,
             )
-        except OSError as exc:
-            status = NETWORK_FAILED
+        except DownloadLocalIoError as exc:
+            status = LOCAL_IO_FAILED
+            message = ERROR_MESSAGES[status]
             _record_outcome(
                 plan,
                 planned,
                 DownloadOutcome(
                     status,
-                    str(exc),
+                    f"{message} Detail: {exc}",
+                    bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+                    result_message=str(exc),
+                ),
+                results,
+                message_callback,
+            )
+        except OSError as exc:
+            status = LOCAL_IO_FAILED
+            message = ERROR_MESSAGES[status]
+            _record_outcome(
+                plan,
+                planned,
+                DownloadOutcome(
+                    status,
+                    f"{message} Detail: {exc}",
                     bytes_downloaded=_existing_size(_part_path(planned.local_path)),
                     result_message=str(exc),
                 ),
@@ -162,15 +191,17 @@ def _downloaded_part_outcome(planned: PlannedFile, downloaded_part: DownloadedPa
     part_path = downloaded_part.path
     downloaded = downloaded_part.bytes_downloaded
     if not planned.fastq.expected_md5:
-        actual_md5 = downloaded_part.streamed_md5 if downloaded_part.streamed_md5 else calculate_md5(part_path)
         _finalize_part(part_path, planned.local_path)
-        return DownloadOutcome(MD5_UNAVAILABLE, ERROR_MESSAGES[MD5_UNAVAILABLE], actual_md5, downloaded)
+        return DownloadOutcome(MD5_UNAVAILABLE, ERROR_MESSAGES[MD5_UNAVAILABLE], "", downloaded)
 
     if downloaded_part.streamed_md5 and not downloaded_part.resumed:
         actual_md5 = downloaded_part.streamed_md5
         ok = actual_md5.lower() == planned.fastq.expected_md5.lower()
     else:
-        ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+        try:
+            ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+        except OSError as exc:
+            raise DownloadLocalIoError(f"Could not read partial FASTQ for MD5 verification: {part_path}") from exc
     if ok:
         _finalize_part(part_path, planned.local_path)
         return DownloadOutcome(MD5_VERIFIED, ERROR_MESSAGES[MD5_VERIFIED], actual_md5, downloaded)
@@ -200,7 +231,7 @@ def download_one(
         progress_callback=progress,
         message_callback=message_callback,
         chunk_size=chunk_size,
-        stream_md5=True,
+        stream_md5=bool(planned.fastq.expected_md5),
     )
 
 
@@ -228,12 +259,14 @@ def download_url_to_part(
             )
         except DownloadSizeMismatchError:
             raise
-        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+        except DownloadLocalIoError:
+            raise
+        except DownloadNetworkError as exc:
             last_error = exc
             if attempt >= max_retries:
                 raise
             _emit(message_callback, f"network_retry: retrying after transfer failure ({attempt + 1}/{max_retries})")
-    raise last_error or OSError("Download failed.")
+    raise last_error or DownloadNetworkError("Download failed.")
 
 
 def finalize_downloaded_part(local_path: Path) -> None:
@@ -248,7 +281,10 @@ def _download_url_to_part_once(
     chunk_size: int = 1024 * 1024,
     stream_md5: bool = False,
 ) -> DownloadedPart:
-    part_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        part_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not create output folder: {part_path.parent}") from exc
     resume_from = _existing_size(part_path)
     if expected_size > 0 and resume_from > expected_size:
         raise DownloadSizeMismatchError(
@@ -257,40 +293,60 @@ def _download_url_to_part_once(
     headers = {"User-Agent": USER_AGENT}
     if resume_from > 0:
         headers["Range"] = f"bytes={resume_from}-"
-    request = urllib.request.Request(url, headers=headers)
+    try:
+        request = urllib.request.Request(url, headers=headers)
+    except ValueError as exc:
+        raise DownloadNetworkError(str(exc)) from exc
     downloaded = 0
     streamed_digest = None
     resumed = False
-    with urllib.request.urlopen(request, timeout=120) as response:
-        status = _status_code(response)
-        appending = resume_from > 0 and status == 206
-        if appending:
-            _validate_content_range(response, resume_from)
-            resumed = True
-        if not appending:
-            resume_from = 0
-            if stream_md5:
-                streamed_digest = new_digest("md5")
-        total = _content_length(response)
-        if total and appending:
-            total += resume_from
-        if not total:
-            total = expected_size
-        mode = "ab" if appending else "wb"
-        with part_path.open(mode) as handle:
-            while True:
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                if streamed_digest:
-                    streamed_digest.update(chunk)
-                downloaded += len(chunk)
-                if progress_callback:
-                    progress_callback(resume_from + downloaded, total)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            status = _status_code(response)
+            appending = resume_from > 0 and status == 206
+            if appending:
+                _validate_content_range(response, resume_from)
+                resumed = True
+            if not appending:
+                resume_from = 0
+                if stream_md5:
+                    streamed_digest = new_digest("md5")
+            total = _content_length(response)
+            if total and appending:
+                total += resume_from
+            if not total:
+                total = expected_size
+            mode = "ab" if appending else "wb"
+            try:
+                handle = part_path.open(mode)
+            except OSError as exc:
+                raise DownloadLocalIoError(f"Could not open partial download file: {part_path}") from exc
+            with handle:
+                while True:
+                    try:
+                        chunk = response.read(chunk_size)
+                    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+                        raise DownloadNetworkError(str(exc)) from exc
+                    if not chunk:
+                        break
+                    try:
+                        handle.write(chunk)
+                    except OSError as exc:
+                        raise DownloadLocalIoError(f"Could not write partial download file: {part_path}") from exc
+                    if streamed_digest:
+                        streamed_digest.update(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(resume_from + downloaded, total)
+    except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError):
+        raise
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+        raise DownloadNetworkError(str(exc)) from exc
     final_size = _existing_size(part_path)
     if expected_size > 0 and final_size < expected_size:
-        raise OSError(f"Downloaded size is smaller than expected: expected={expected_size} actual={final_size}")
+        raise DownloadSizeMismatchError(
+            f"Downloaded size is smaller than expected: expected={expected_size} actual={final_size}"
+        )
     if expected_size > 0 and final_size > expected_size:
         raise DownloadSizeMismatchError(
             f"Downloaded size exceeds expected size: expected={expected_size} actual={final_size}"
@@ -312,7 +368,9 @@ def _validate_content_range(response: object, expected_start: int) -> None:
     content_range = headers.get("Content-Range") if headers is not None else None
     start = _content_range_start(content_range)
     if start != expected_start:
-        raise OSError(f"Invalid Content-Range for resume: expected_start={expected_start} content_range={content_range!r}")
+        raise DownloadNetworkError(
+            f"Invalid Content-Range for resume: expected_start={expected_start} content_range={content_range!r}"
+        )
 
 
 def _content_range_start(value: object) -> int | None:
@@ -397,11 +455,17 @@ def _reuse_or_quarantine_existing(
         )
         ok = actual_md5 is not None
         if actual_md5 is None:
-            ok, actual_md5 = verify_md5(planned.local_path, planned.fastq.expected_md5)
+            try:
+                ok, actual_md5 = verify_md5(planned.local_path, planned.fastq.expected_md5)
+            except OSError as exc:
+                raise DownloadLocalIoError(f"Could not read existing FASTQ for MD5 verification: {planned.local_path}") from exc
         if ok:
             stale_part = _part_path(planned.local_path)
             if stale_part.exists():
-                stale_part.unlink()
+                try:
+                    stale_part.unlink()
+                except OSError as exc:
+                    raise DownloadLocalIoError(f"Could not remove stale partial download: {stale_part}") from exc
             return DownloadOutcome(
                 MD5_VERIFIED,
                 "Existing file MD5 matched, so the file was reused without downloading again.",
@@ -448,7 +512,10 @@ def _reuse_or_quarantine_complete_part(
     )
     ok = actual_md5 is not None
     if actual_md5 is None:
-        ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+        try:
+            ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+        except OSError as exc:
+            raise DownloadLocalIoError(f"Could not read partial FASTQ for MD5 verification: {part_path}") from exc
     if ok:
         _finalize_part(part_path, planned.local_path)
         return DownloadOutcome(
@@ -464,8 +531,11 @@ def _reuse_or_quarantine_complete_part(
 
 
 def _finalize_part(part_path: Path, local_path: Path) -> None:
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    part_path.replace(local_path)
+    try:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        part_path.replace(local_path)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not move partial download into place: {part_path} -> {local_path}") from exc
 
 
 def _part_path(local_path: Path) -> Path:
@@ -476,8 +546,11 @@ def _quarantine_file(path: Path, reason: str) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     candidate = path.with_name(f"{path.name}.{reason}-{timestamp}")
     counter = 2
-    while candidate.exists():
-        candidate = path.with_name(f"{path.name}.{reason}-{timestamp}.{counter}")
-        counter += 1
-    path.replace(candidate)
+    try:
+        while candidate.exists():
+            candidate = path.with_name(f"{path.name}.{reason}-{timestamp}.{counter}")
+            counter += 1
+        path.replace(candidate)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not move file aside: {path}") from exc
     return candidate

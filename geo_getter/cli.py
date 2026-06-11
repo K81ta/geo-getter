@@ -2,20 +2,28 @@ from __future__ import annotations
 
 import argparse
 import csv
-import http.client
 import json
 import sys
-import urllib.error
 from pathlib import Path
 
 from . import __version__
-from .downloader import download_plan, download_url_to_part, finalize_downloaded_part
+from .downloader import (
+    DownloadLocalIoError,
+    DownloadNetworkError,
+    DownloadSizeMismatchError,
+    download_plan,
+    download_url_to_part,
+    finalize_downloaded_part,
+)
 from .errors import (
     DOWNLOAD_COMPLETE,
+    LOCAL_IO_FAILED,
+    MD5_UNAVAILABLE,
     MD5_VERIFIED,
     NETWORK_FAILED,
     RESUME_REQUIRED,
     RESUME_SUPPLEMENTARY_UNSUPPORTED,
+    SIZE_MISMATCH,
     GeoGetterError,
 )
 from .models import FastqFile
@@ -228,7 +236,7 @@ def _selected_download_json(
         ),
         flush=True,
     )
-    ok_statuses = {MD5_VERIFIED, DOWNLOAD_COMPLETE}
+    ok_statuses = {MD5_VERIFIED, MD5_UNAVAILABLE, DOWNLOAD_COMPLETE}
     return 0 if statuses and all(status in ok_statuses for status in statuses) else 1
 
 
@@ -379,8 +387,16 @@ def _download_supplementary_files(output_dir: Path, selected_supp: list[dict], r
             finalize_downloaded_part(local_path)
             status = DOWNLOAD_COMPLETE
             message = "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
-        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+        except DownloadSizeMismatchError as exc:
+            status = SIZE_MISMATCH
+            message = str(exc)
+            downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
+        except DownloadNetworkError as exc:
             status = NETWORK_FAILED
+            message = str(exc)
+            downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
+        except (DownloadLocalIoError, OSError) as exc:
+            status = LOCAL_IO_FAILED
             message = str(exc)
             downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
         append_download_log(

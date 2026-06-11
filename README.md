@@ -4,7 +4,7 @@
 
 GEOGetter は、GEO・ENA の公開データから raw FASTQ と GEO supplementary / processed file を保存する Windows デスクトップアプリです。
 
-GEO accession、GEO ページ URL、SRA / ENA accession、BioProject accession、BioSample accession を入力し、表示されたリストから保存するファイルを選びます。FASTQ は保存時に MD5 を照合します。
+GEO accession、GEO ページ URL、SRA / ENA accession、BioProject accession、BioSample accession を入力し、表示されたリストから保存するファイルを選びます。FASTQ は ENA から MD5 が得られる場合に保存時に照合します。
 
 ## インストールして起動する
 

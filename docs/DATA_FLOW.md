@@ -73,7 +73,7 @@ GEO supplementary / processed file を選んだ場合は `*_supplementary_manife
 | 期待 MD5 なし raw FASTQ | ENA `fastq_ftp` | 期待 MD5 がないため行えない | `md5_unavailable` |
 | supplementary / processed file | GEO SOFT の supplementary URL | 行わない | `download_complete` |
 
-`md5_unavailable` は、ファイルは保存されたが MD5 で完全性を確認できない状態を表す。`download_complete` は、GEO supplementary / processed file を保存した状態を表す。
+`md5_unavailable` は、ファイルは保存されたが MD5 で完全性を確認できない状態を表す。この場合、照合対象となる期待 MD5 がないため、保存時の download log に実測 MD5 は記録しない。`download_complete` は、GEO supplementary / processed file を保存した状態を表す。
 
 保存済み FASTQ の確認では、manifest に記録されたサイズと MD5 を使って確認する。期待 MD5 がない FASTQ は、ファイルが存在していても `md5_unavailable` になる。ファイルがない場合は `missing`、サイズが合わない場合は `size_mismatch`、MD5 が合わない場合は `md5_mismatch` になる。
 
