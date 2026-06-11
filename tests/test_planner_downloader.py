@@ -3,10 +3,12 @@ import http.client
 import tempfile
 import unittest
 import hashlib
+import os
 import urllib.error
 from pathlib import Path
 from unittest import mock
 
+from geo_getter import planner as planner_module
 from geo_getter.downloader import download_plan, download_url_to_part, verify_md5
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DownloadPlan, FastqFile
@@ -614,9 +616,147 @@ class PlannerDownloaderTest(unittest.TestCase):
             (output_dir / "complete.fastq.gz").write_bytes(complete_data)
             (output_dir / "partial.fastq.gz.part").write_bytes(partial_data)
 
-            resume = validate_resume_artifacts(plan)
+            original_calculate_md5 = planner_module._calculate_md5
+            calculate_calls = []
+
+            def calculate_resume_md5(path):
+                calculate_calls.append(Path(path).name)
+                return original_calculate_md5(path)
+
+            with mock.patch("geo_getter.planner._calculate_md5", side_effect=calculate_resume_md5):
+                resume = validate_resume_artifacts(plan)
 
             self.assertEqual(resume.required_bytes, 3)
+            self.assertEqual(calculate_calls, ["complete.fastq.gz"])
+            self.assertEqual(
+                [(artifact.kind, artifact.path.name) for artifact in resume.verified_artifacts],
+                [("final", "complete.fastq.gz")],
+            )
+
+    def test_resume_preflight_md5_cache_reuses_existing_fastq_without_rehashing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            data = b"already downloaded\n"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="file:///definitely/not/used.fastq.gz",
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(data)
+            resume = validate_resume_artifacts(plan)
+
+            with mock.patch("geo_getter.downloader.verify_md5", side_effect=AssertionError("unexpected md5 reread")):
+                results = download_plan(plan, resume_artifacts=resume)
+
+            self.assertEqual(results[0][1], "md5_verified")
+            self.assertEqual(existing.read_bytes(), data)
+            self.assertEqual(
+                [(artifact.kind, artifact.path.name) for artifact in resume.verified_artifacts],
+                [("final", "fixture.fastq.gz")],
+            )
+
+    def test_resume_preflight_md5_cache_reuses_complete_part_without_rehashing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            data = b"complete part\n"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="file:///definitely/not/used.fastq.gz",
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            part = output_dir / "fixture.fastq.gz.part"
+            part.write_bytes(data)
+            resume = validate_resume_artifacts(plan)
+
+            with mock.patch("geo_getter.downloader.verify_md5", side_effect=AssertionError("unexpected md5 reread")):
+                results = download_plan(plan, resume_artifacts=resume)
+
+            self.assertEqual(results[0][1], "md5_verified")
+            self.assertFalse(part.exists())
+            self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
+            self.assertEqual(
+                [(artifact.kind, artifact.path.name) for artifact in resume.verified_artifacts],
+                [("complete_part", "fixture.fastq.gz.part")],
+            )
+
+    def test_resume_preflight_md5_cache_is_invalidated_by_mtime(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            data = b"already downloaded\n"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="file:///definitely/not/used.fastq.gz",
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(data)
+            resume = validate_resume_artifacts(plan)
+            stat = existing.stat()
+            os.utime(existing, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+            original_verify_md5 = verify_md5
+            verify_calls = []
+
+            def verify_existing(path, expected_md5):
+                verify_calls.append(Path(path).name)
+                return original_verify_md5(path, expected_md5)
+
+            with mock.patch("geo_getter.downloader.verify_md5", side_effect=verify_existing):
+                results = download_plan(plan, resume_artifacts=resume)
+
+            self.assertEqual(results[0][1], "md5_verified")
+            self.assertEqual(verify_calls, ["fixture.fastq.gz"])
+
+    def test_resume_preflight_md5_cache_is_invalidated_by_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output_dir = root / "out"
+            data = b"already downloaded\n"
+            source = root / "source.fastq.gz"
+            source.write_bytes(data)
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url=source.as_uri(),
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(data)
+            resume = validate_resume_artifacts(plan)
+            existing.write_bytes(data + b"x")
+
+            results = download_plan(plan, resume_artifacts=resume)
+
+            self.assertEqual(results[0][1], "md5_verified")
+            self.assertEqual(existing.read_bytes(), data)
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.size-mismatch-existing-*")))
 
     def test_oversized_part_file_is_quarantined(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -691,6 +831,11 @@ class PlannerDownloaderTest(unittest.TestCase):
                 size_bytes=len(source_data),
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            with mock.patch("geo_getter.planner._calculate_md5", side_effect=AssertionError("unexpected preflight md5")):
+                resume = validate_resume_artifacts(plan)
+            self.assertEqual(resume.required_bytes, 3)
+            self.assertEqual(resume.verified_artifacts, ())
             original_verify_md5 = verify_md5
             verify_calls = []
 
@@ -706,7 +851,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_resume),
                 mock.patch("geo_getter.downloader.verify_md5", side_effect=verify_complete_part),
             ):
-                results = download_plan(plan)
+                results = download_plan(plan, resume_artifacts=resume)
 
             self.assertEqual(results[0][1], "md5_verified")
             self.assertEqual(range_headers, ["bytes=3-"])
