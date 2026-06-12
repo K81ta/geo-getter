@@ -301,7 +301,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
 
             with (
-                mock.patch("geo_getter.downloader.new_digest", side_effect=AssertionError("unexpected md5 setup")),
+                mock.patch("geo_getter.downloader.hashlib.md5", side_effect=AssertionError("unexpected md5 setup")),
                 mock.patch("geo_getter.downloader.verify_md5", side_effect=AssertionError("unexpected md5 reread")),
             ):
                 results = download_plan(plan)
