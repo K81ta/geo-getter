@@ -94,6 +94,46 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["command"], "selected-download-json")
         self.assertIn("required", payload["message"])
 
+    def test_selected_download_rejects_invalid_download_workers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [],
+                        "supplementary_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "scope": "GEO Series supplementary/processed",
+                                "name": "supplementary.txt",
+                                "url": "https://example.invalid/supplementary.txt",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--supp-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                    "--download-workers",
+                    "5",
+                ],
+                "invalid_input",
+            )
+
+        self.assertIn("download_workers", payload["message"])
+
     def test_selected_download_out_of_range_index_emits_structured_stderr_error(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -562,6 +602,50 @@ class CliTest(unittest.TestCase):
             )
 
             self.assertIn(str(out_dir.resolve()), payload["detail"])
+
+    def test_selected_download_passes_download_workers_to_fastq_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            captured_workers = []
+
+            def fake_download_plan(plan, **kwargs):
+                captured_workers.append(kwargs["download_workers"])
+                return [(plan.files[0], "md5_verified", "fixture")]
+
+            stdout = io.StringIO()
+            with mock.patch("geo_getter.cli.download_plan", side_effect=fake_download_plan):
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(_selected_download_json(input_json, "0", "", root / "out", download_workers=4), 0)
+
+            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(captured_workers, [4])
+            self.assertEqual(done["download_workers"], 4)
 
     def test_selected_download_rejects_resume_when_manifest_is_missing(self):
         with tempfile.TemporaryDirectory() as temp:

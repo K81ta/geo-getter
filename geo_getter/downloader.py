@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import http.client
 import re
 import time
@@ -37,6 +38,8 @@ DEFAULT_RETRY_DELAYS = (1.0, 3.0, 9.0)
 DEFAULT_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS = 0.250
 DEFAULT_PROGRESS_MIN_BYTES = 16 * 1024 * 1024
+DEFAULT_DOWNLOAD_WORKERS = 2
+MAX_DOWNLOAD_WORKERS = 4
 
 
 class DownloadSizeMismatchError(Exception):
@@ -117,103 +120,110 @@ def download_plan(
     progress_callback: ProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
     resume_artifacts: ResumeArtifacts | None = None,
+    download_workers: int = DEFAULT_DOWNLOAD_WORKERS,
 ) -> list[tuple[PlannedFile, str, str]]:
     ensure_capacity(plan, required_bytes=resume_artifacts.required_bytes if resume_artifacts else None)
     write_fastq_outputs(plan, resume_artifacts=resume_artifacts)
     resume_digests = _resume_digest_lookup(resume_artifacts)
     results: list[tuple[PlannedFile, str, str]] = []
+    worker_count = normalize_download_workers(download_workers)
 
-    for planned in plan.files:
-        try:
-            _emit(message_callback, f"download_started: {planned.fastq.file_name}")
-            existing_result = _reuse_or_quarantine_existing(planned, resume_digests, message_callback)
-            if existing_result:
-                _record_outcome(plan, planned, existing_result, results, message_callback)
-                continue
-
-            part_result = _reuse_or_quarantine_complete_part(planned, resume_digests, message_callback)
-            if part_result:
-                _record_outcome(plan, planned, part_result, results, message_callback)
-                continue
-
-            downloaded_part = download_one(
-                planned,
-                progress_callback=progress_callback,
-                message_callback=message_callback,
-            )
-            outcome = _downloaded_part_outcome(planned, downloaded_part)
+    if worker_count == 1 or len(plan.files) <= 1:
+        for planned in plan.files:
+            outcome = _download_planned_file(planned, resume_digests, progress_callback, message_callback)
             _record_outcome(plan, planned, outcome, results, message_callback)
-        except DownloadSizeMismatchError as exc:
-            status = SIZE_MISMATCH
-            part_path = _part_path(planned.local_path)
-            downloaded = _existing_size(part_path)
-            message = ERROR_MESSAGES[status]
-            try:
-                if part_path.exists():
-                    quarantined = _quarantine_file(part_path, "size-mismatch")
-                    message = f"{message} Quarantine path: {quarantined}"
-            except DownloadLocalIoError as io_exc:
-                status = LOCAL_IO_FAILED
-                message = f"{ERROR_MESSAGES[status]} Detail: {io_exc}"
-            _record_outcome(
-                plan,
-                planned,
-                DownloadOutcome(
-                    status,
-                    f"{message} Detail: {exc}",
-                    bytes_downloaded=downloaded,
-                    result_message=str(exc),
-                ),
-                results,
-                message_callback,
-            )
-        except DownloadNetworkError as exc:
-            status = NETWORK_FAILED
-            message = ERROR_MESSAGES[status]
-            _record_outcome(
-                plan,
-                planned,
-                DownloadOutcome(
-                    status,
-                    f"{message} Detail: {exc}",
-                    bytes_downloaded=_existing_size(_part_path(planned.local_path)),
-                    result_message=str(exc),
-                ),
-                results,
-                message_callback,
-            )
-        except DownloadLocalIoError as exc:
-            status = LOCAL_IO_FAILED
-            message = ERROR_MESSAGES[status]
-            _record_outcome(
-                plan,
-                planned,
-                DownloadOutcome(
-                    status,
-                    f"{message} Detail: {exc}",
-                    bytes_downloaded=_existing_size(_part_path(planned.local_path)),
-                    result_message=str(exc),
-                ),
-                results,
-                message_callback,
-            )
-        except OSError as exc:
-            status = LOCAL_IO_FAILED
-            message = ERROR_MESSAGES[status]
-            _record_outcome(
-                plan,
-                planned,
-                DownloadOutcome(
-                    status,
-                    f"{message} Detail: {exc}",
-                    bytes_downloaded=_existing_size(_part_path(planned.local_path)),
-                    result_message=str(exc),
-                ),
-                results,
-                message_callback,
-            )
+        return results
+
+    worker_count = min(worker_count, len(plan.files))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(_download_planned_file, planned, resume_digests, progress_callback, message_callback)
+            for planned in plan.files
+        ]
+        for planned, future in zip(plan.files, futures):
+            outcome = future.result()
+            _record_outcome(plan, planned, outcome, results, message_callback)
 
     return results
+
+
+def normalize_download_workers(value: int) -> int:
+    try:
+        worker_count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"download_workers must be an integer from 1 to {MAX_DOWNLOAD_WORKERS}.") from exc
+    if worker_count < 1 or worker_count > MAX_DOWNLOAD_WORKERS:
+        raise ValueError(f"download_workers must be from 1 to {MAX_DOWNLOAD_WORKERS}: {worker_count}")
+    return worker_count
+
+
+def _download_planned_file(
+    planned: PlannedFile,
+    resume_digests: ResumeDigestLookup,
+    progress_callback: ProgressCallback | None,
+    message_callback: MessageCallback | None,
+) -> DownloadOutcome:
+    try:
+        _emit(message_callback, f"download_started: {planned.fastq.file_name}")
+        existing_result = _reuse_or_quarantine_existing(planned, resume_digests, message_callback)
+        if existing_result:
+            return existing_result
+
+        part_result = _reuse_or_quarantine_complete_part(planned, resume_digests, message_callback)
+        if part_result:
+            return part_result
+
+        downloaded_part = download_one(
+            planned,
+            progress_callback=progress_callback,
+            message_callback=message_callback,
+        )
+        return _downloaded_part_outcome(planned, downloaded_part)
+    except DownloadSizeMismatchError as exc:
+        status = SIZE_MISMATCH
+        part_path = _part_path(planned.local_path)
+        downloaded = _existing_size(part_path)
+        message = ERROR_MESSAGES[status]
+        try:
+            if part_path.exists():
+                quarantined = _quarantine_file(part_path, "size-mismatch")
+                message = f"{message} Quarantine path: {quarantined}"
+        except DownloadLocalIoError as io_exc:
+            status = LOCAL_IO_FAILED
+            message = f"{ERROR_MESSAGES[status]} Detail: {io_exc}"
+        return DownloadOutcome(
+            status,
+            f"{message} Detail: {exc}",
+            bytes_downloaded=downloaded,
+            result_message=str(exc),
+        )
+    except DownloadNetworkError as exc:
+        status = NETWORK_FAILED
+        message = ERROR_MESSAGES[status]
+        return DownloadOutcome(
+            status,
+            f"{message} Detail: {exc}",
+            bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+            result_message=str(exc),
+        )
+    except DownloadLocalIoError as exc:
+        status = LOCAL_IO_FAILED
+        message = ERROR_MESSAGES[status]
+        return DownloadOutcome(
+            status,
+            f"{message} Detail: {exc}",
+            bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+            result_message=str(exc),
+        )
+    except OSError as exc:
+        status = LOCAL_IO_FAILED
+        message = ERROR_MESSAGES[status]
+        return DownloadOutcome(
+            status,
+            f"{message} Detail: {exc}",
+            bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+            result_message=str(exc),
+        )
 
 
 def _record_outcome(

@@ -1,6 +1,7 @@
 import csv
 import http.client
 import tempfile
+import threading
 import unittest
 import hashlib
 import os
@@ -12,9 +13,13 @@ from unittest import mock
 from geo_getter import planner as planner_module
 from geo_getter.downloader import (
     DEFAULT_DOWNLOAD_CHUNK_SIZE,
+    DEFAULT_DOWNLOAD_WORKERS,
+    DownloadedPart,
     DownloadNetworkError,
+    MAX_DOWNLOAD_WORKERS,
     download_plan,
     download_url_to_part,
+    normalize_download_workers,
     verify_md5,
 )
 from geo_getter.errors import GeoGetterError
@@ -148,6 +153,79 @@ class PlannerDownloaderTest(unittest.TestCase):
             log_text = download_log_path(output_dir).read_text(encoding="utf-8-sig")
             self.assertIn("md5_verified", log_text)
             self.assertFalse((output_dir / "fixture.fastq.gz.part").exists())
+
+    def test_download_worker_normalization_bounds(self):
+        self.assertEqual(DEFAULT_DOWNLOAD_WORKERS, 2)
+        self.assertEqual(MAX_DOWNLOAD_WORKERS, 4)
+        self.assertEqual(normalize_download_workers(1), 1)
+        self.assertEqual(normalize_download_workers(2), 2)
+        self.assertEqual(normalize_download_workers(4), 4)
+        with self.assertRaises(ValueError):
+            normalize_download_workers(0)
+        with self.assertRaises(ValueError):
+            normalize_download_workers(5)
+
+    def test_download_plan_parallel_workers_return_results_for_main_thread_logging(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            data_by_name = {
+                "fixture1.fastq.gz": b"@r1\nACGT\n+\n!!!!\n",
+                "fixture2.fastq.gz": b"@r2\nTGCA\n+\n!!!!\n",
+            }
+            fastq_files = [
+                FastqFile(
+                    source_accession="FIXTURE",
+                    query_accession="FIXTURE",
+                    run_accession=f"FIXTURE_RUN_{index}",
+                    file_index=1,
+                    file_name=file_name,
+                    url=f"https://example.invalid/{file_name}",
+                    expected_md5=hashlib.md5(data).hexdigest(),
+                    size_bytes=len(data),
+                )
+                for index, (file_name, data) in enumerate(data_by_name.items(), start=1)
+            ]
+            plan = build_download_plan("FIXTURE", "FIXTURE", fastq_files, output_dir)
+            active = 0
+            max_active = 0
+            lock = threading.Lock()
+            both_started = threading.Event()
+            log_threads = []
+            main_thread_name = threading.current_thread().name
+            original_append_download_log = append_download_log
+
+            def fake_download_one(planned, progress_callback=None, message_callback=None):
+                nonlocal active, max_active
+                data = data_by_name[planned.fastq.file_name]
+                part_path = planned.local_path.with_name(planned.local_path.name + ".part")
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                    if max_active == 2:
+                        both_started.set()
+                self.assertTrue(both_started.wait(2))
+                part_path.write_bytes(data)
+                if progress_callback:
+                    progress_callback(planned, len(data), len(data))
+                with lock:
+                    active -= 1
+                return DownloadedPart(part_path, len(data), streamed_md5=hashlib.md5(data).hexdigest())
+
+            def record_log_thread(*args, **kwargs):
+                log_threads.append(threading.current_thread().name)
+                return original_append_download_log(*args, **kwargs)
+
+            with (
+                mock.patch("geo_getter.downloader.download_one", side_effect=fake_download_one),
+                mock.patch("geo_getter.downloader.append_download_log", side_effect=record_log_thread),
+            ):
+                results = download_plan(plan, download_workers=2)
+
+            self.assertEqual(max_active, 2)
+            self.assertEqual([status for _planned, status, _message in results], ["md5_verified", "md5_verified"])
+            self.assertEqual(log_threads, [main_thread_name, main_thread_name])
+            self.assertEqual((output_dir / "fixture1.fastq.gz").read_bytes(), data_by_name["fixture1.fastq.gz"])
+            self.assertEqual((output_dir / "fixture2.fastq.gz").read_bytes(), data_by_name["fixture2.fastq.gz"])
 
     def test_new_download_uses_streaming_md5_without_rereading_part_file(self):
         with tempfile.TemporaryDirectory() as temp:
