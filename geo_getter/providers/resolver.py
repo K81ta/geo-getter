@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 from ..accession import extract_accession
@@ -7,6 +8,9 @@ from ..errors import GeoGetterError
 from ..models import DatasetMetadata, FastqFile, ResolveResult, SupplementaryFile
 from .ena import EnaProvider
 from .geo import GeoProvider
+
+
+MAX_ENA_FILE_REPORT_WORKERS = 4
 
 
 class MetadataResolver:
@@ -37,8 +41,8 @@ class MetadataResolver:
             raise GeoGetterError("unsupported_accession", f"Unsupported accession: {parsed.accession}")
 
         fastq_files: list[FastqFile] = []
-        for accession in query_accessions:
-            for item in self.ena_provider.get_fastq_files(accession, parsed.accession):
+        for accession_files in self._get_fastq_files_for_accessions(query_accessions, parsed.accession):
+            for item in accession_files:
                 fastq_files.append(_with_geo_sample_metadata(item, sample_metadata_by_accession))
 
         fastq_files = _deduplicate_fastq(fastq_files)
@@ -56,6 +60,23 @@ class MetadataResolver:
             dataset_metadata=dataset_metadata,
             warnings=warnings,
         )
+
+    def _get_fastq_files_for_accessions(
+        self, query_accessions: list[str], source_accession: str
+    ) -> list[list[FastqFile]]:
+        if not query_accessions:
+            return []
+        if len(query_accessions) == 1:
+            accession = query_accessions[0]
+            return [self.ena_provider.get_fastq_files(accession, source_accession)]
+
+        worker_count = min(MAX_ENA_FILE_REPORT_WORKERS, len(query_accessions))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(self.ena_provider.get_fastq_files, accession, source_accession)
+                for accession in query_accessions
+            ]
+            return [future.result() for future in futures]
 
 
 def _deduplicate_fastq(files: list[FastqFile]) -> list[FastqFile]:
