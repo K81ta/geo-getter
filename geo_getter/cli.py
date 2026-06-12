@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import shutil
 import sys
@@ -44,6 +43,7 @@ from .planner import (
     supplementary_manifest_path,
     validate_resume_artifacts,
     verify_fastq_manifest,
+    write_supplementary_manifest,
 )
 from .providers.resolver import MetadataResolver
 from .updater import check_for_update, download_update_installer
@@ -296,7 +296,7 @@ def _selected_download_json(
         initialize_log(cli_plan.output_dir)
 
     if cli_plan.planned_supplementary:
-        _write_supplementary_manifest(cli_plan.output_dir, cli_plan.planned_supplementary)
+        write_supplementary_manifest(cli_plan.output_dir, cli_plan.planned_supplementary)
         statuses.extend(_download_supplementary_files(cli_plan.output_dir, cli_plan.planned_supplementary))
 
     print(
@@ -489,27 +489,6 @@ def _directory_has_entries(path: Path) -> bool:
         return True
     except StopIteration:
         return False
-
-
-def _write_supplementary_manifest(output_dir: Path, planned_supplementary: list[tuple[dict, Path]]) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = supplementary_manifest_path(output_dir)
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(["source_accession", "scope", "file_name", "url", "local_path", "status"])
-        for item, local_path in planned_supplementary:
-            writer.writerow(
-                [
-                    item.get("source_accession", ""),
-                    item.get("scope", ""),
-                    item.get("name", ""),
-                    item.get("url", ""),
-                    str(local_path),
-                    "planned",
-                ]
-            )
-    initialize_log(output_dir)
-    return path
 
 
 def _download_supplementary_files(output_dir: Path, planned_supplementary: list[tuple[dict, Path]]) -> list[str]:
