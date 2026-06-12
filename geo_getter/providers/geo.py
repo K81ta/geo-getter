@@ -40,7 +40,7 @@ class GeoSampleMetadata:
     geo_sample_title: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class GeoSoftParseResult:
     related_accessions: list[str]
     supplementary_files: list[SupplementaryFile]
