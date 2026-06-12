@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from pathlib import Path
@@ -54,6 +55,20 @@ class VersionTest(unittest.TestCase):
         self.assertIn('"/DAppVersion=$version"', text)
         self.assertIn('"/DSourceDir=$payloadDir"', text)
         self.assertIn('"/DOutputDir=$DistRoot"', text)
+
+    def test_release_payload_includes_gui_resources(self):
+        build_script = Path(__file__).resolve().parents[1] / "tools" / "build_release.ps1"
+        text = build_script.read_text(encoding="utf-8")
+        self.assertIn('"resources"', text)
+
+    def test_gui_text_resource_has_matching_languages(self):
+        resource = Path(__file__).resolve().parents[1] / "resources" / "gui_text.json"
+        self.assertTrue(resource.exists())
+        payload = json.loads(resource.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload), {"ja", "en"})
+        self.assertEqual(set(payload["ja"]), set(payload["en"]))
+        self.assertTrue(payload["ja"]["helpUsageText"])
+        self.assertTrue(payload["en"]["helpUsageText"])
 
     def test_release_does_not_publish_checksum_assets(self):
         root = Path(__file__).resolve().parents[1]

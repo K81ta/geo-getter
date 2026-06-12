@@ -216,419 +216,75 @@ $script:LastResolvedInputText = ""
 $script:SuppressFastqFilterEvents = $false
 $script:Language = $UiLanguage
 $script:GridCopyMenuItems = @()
-$script:Translations = @{
-    ja = @{
-        appTitle = "GEOGetter"
-        settingsMenu = "設定"
-        languageMenu = "言語"
-        japanese = "日本語"
-        english = "English"
-        toolsMenu = "ツール"
-        verifyManifestMenu = "保存済みFASTQを確認"
-        helpMenu = "ヘルプ"
-        helpOpen = "ヘルプを開く"
-        checkUpdatesMenu = "更新を確認"
-        helpUsage = "基本の使い方"
-        helpInput = "入力できるID"
-        helpTables = "表の見方"
-        helpOutputFiles = "保存されるファイル"
-        helpIntegrity = "MD5・エラーの見方"
-        helpCancelRetry = "キャンセルと再試行"
-        helpClose = "閉じる"
-        copyCellMenu = "コピー"
-        inputLabel = "GEO accession / URL"
-        fetchButton = "ファイルを検索"
-        outputLabel = "保存先"
-        browseButton = "参照..."
-        datasetTitleLabel = "GEO情報"
-        capacityInitial = "必要容量: - / 空き容量: -"
-        capacityText = "必要容量(FASTQ): {0} / 空き容量: {1}"
-        capacityUnknown = "必要容量(FASTQ): {0} / 空き容量: 取得不可"
-        selectionSummary = "選択内容: FASTQ {0} 件 / {1}、GEO supplementary/processed {2}、保存先: {3}"
-        supplementaryNoneSummary = "{0} 件"
-        supplementarySelectedSummary = "{0} 件"
-        fastqTitle = "raw FASTQ（ENA direct FASTQ）: {0}件"
-        fastqFilteredTitle = "raw FASTQ（ENA direct FASTQ）: {0}/{1}件表示"
-        supplementaryTitle = "GEO supplementary / processed file（raw FASTQ以外）: {0}件"
-        fastqFilterLabel = "Filter"
-        fastqFilterKeywordLabel = "検索"
-        fastqFilterLayoutLabel = "Layout"
-        fastqFilterStrategyLabel = "Strategy"
-        fastqFilterAll = "すべて"
-        clearFastqFilterButton = "フィルタ解除"
-        downloadButton = "選択ファイルをダウンロード"
-        downloadWorkersLabel = "同時FASTQ"
-        cancelButton = "キャンセル"
-        selectAllButton = "すべて選択"
-        clearSelectionButton = "選択解除"
-        idle = "待機中"
-        fetching = "metadata取得中"
-        downloading = "ダウンロード中"
-        downloadRetryWaiting = "通信再試行待機中"
-        verifyingManifest = "manifest確認中"
-        checkingUpdates = "更新確認中"
-        downloadingUpdate = "更新インストーラー取得中"
-        complete = "完了"
-        completePartial = "完了（一部失敗あり）"
-        completeUnverified = "完了（MD5未検証あり）"
-        error = "エラー"
-        canceled = "キャンセルしました"
-        overallDesign = "Overall design"
-        helpUsageText = (@(
-            "1. GEO accession、GEO URL、またはSRA/ENA/Project/BioSample系 accessionを入力します。"
-            "2. [ファイルを検索] を押します。"
-            "3. GEO情報欄で Accession / Organism / Status を確認します。"
-            "4. raw FASTQ と GEO supplementary / processed file は別の表で確認します。"
-            "5. 保存したい行だけを選択し、保存先と必要容量を確認します。"
-            "6. [選択ファイルをダウンロード] を押します。"
-        ) -join [Environment]::NewLine)
-        helpInputText = (@(
-            "対応している入力:"
-            "- GSE、GSM"
-            "- GEOページURL"
-            "- SRP / SRX / SRR / SRS"
-            "- ERP / ERX / ERR / ERS"
-            "- DRP / DRX / DRR / DRS"
-            "- PRJNA / PRJEB / PRJDB"
-            "- SAMN / SAMEA / SAMD"
-            ""
-            "GSE/GSMを入力した場合は、GEOのSOFT情報から関連するSRA/ENA/BioProject/BioSample accessionを探します。SRA/ENA/Project/BioSample系 accessionを入力した場合は、直接ENAに問い合わせます。"
-            ""
-            "入力欄に複数のIDやURLが含まれている場合、最初に見つかった対応 accession を使います。"
-        ) -join [Environment]::NewLine)
-        helpTablesText = (@(
-            "raw FASTQ（ENA direct FASTQ）:"
-            "ENA Portal APIから取得したraw read候補です。Run、GEO Sample、サンプル名、Layout、Strategy、ファイル名、サイズ、MD5、FASTQ URLを確認できます。"
-            "Filterは検索、Layout、Strategyで絞り込めます。絞り込み中の一括選択は、表示中の行だけに適用されます。"
-            ""
-            "GEO supplementary / processed file:"
-            "GEOページに登録されている補足ファイルやprocessed fileです。由来、ファイル名、GEO URLを確認して選択します。raw FASTQとは別の保存対象です。"
-            ""
-            "表のセルを右クリックして [コピー] を選ぶか、セルを選んで Ctrl+C を押すと、そのセルの値だけをコピーできます。"
-        ) -join [Environment]::NewLine)
-        helpOutputFilesText = (@(
-            "検索後、保存先には実際に保存する accession フォルダが表示されます。"
-            "別の場所に保存したい場合は、保存先で実際に使うフォルダを選びます。"
-            ""
-            "例:"
-            "downloads\GSE52778\"
-            "  GSE52778_fastq_manifest.tsv"
-            "  GSE52778_supplementary_manifest.tsv"
-            "  GSE52778_download_log.tsv"
-            "  SRR1039508_1.fastq.gz"
-            ""
-            "download logには、FASTQとsupplementary fileの保存結果を記録します。FASTQを選んだ場合はfastq manifest、supplementary fileを選んだ場合はsupplementary manifestも作成します。"
-        ) -join [Environment]::NewLine)
-        helpIntegrityText = (@(
-            "FASTQ:"
-            "照合用MD5値がある場合、ダウンロード後に実際のMD5と照合します。一致した場合だけ正式なFASTQファイル名に変更します。"
-            ""
-            "主な状態:"
-            "- md5_verified: MD5が一致しました。"
-            "- md5_unavailable: ENAから照合用MD5値を取得できなかったため、保存はしますが検証はできません。"
-            "- md5_mismatch: 正式なFASTQとしては保存せず、退避名に変更します。"
-            "- size_mismatch: ENAの期待サイズと保存サイズが一致しません。"
-            "- network_failed: 通信に失敗しました。時間をおいて再実行してください。"
-            "- local_io_failed: 保存先フォルダへの書き込みやファイル移動に失敗しました。"
-        ) -join [Environment]::NewLine)
-        helpCancelRetryText = (@(
-            "キャンセル:"
-            "metadata取得、ダウンロード、manifest確認は [キャンセル] で停止できます。ダウンロード停止時は途中ファイルが .part として残ることがあります。"
-            ""
-            "再試行:"
-            "通信失敗時は自動で再試行します。再試行しても失敗したファイルはdownload logに失敗として記録されます。"
-            ""
-            "既存ファイル:"
-            "同名FASTQが既にあり期待サイズとMD5が一致する場合は、再ダウンロードせず再利用します。サイズまたはMD5が一致しない場合は、既存ファイルを退避してから取り直します。"
-            ""
-            "保存先の空き容量が不足している場合は、保存先を変更するか、選択するFASTQを減らしてください。"
-        ) -join [Environment]::NewLine)
-        colSelect = "選択"
-        colRun = "Run"
-        colGeoSample = "GEO Sample"
-        colGeoTitle = "サンプル名"
-        colFileName = "ファイル名"
-        colEnaSample = "ENA Sample"
-        colLayout = "Layout"
-        colStrategy = "Strategy"
-        colSize = "サイズ"
-        colMd5 = "MD5"
-        colFastqUrl = "FASTQ URL"
-        colScope = "区分"
-        colOrigin = "由来"
-        colGeoUrl = "GEO URL"
-        suppOriginSeries = "Series: {0}"
-        suppOriginSample = "Sample: {0}"
-        suppOriginUnknown = "GEO: {0}"
-        metadataFailed = "metadata取得に失敗しました。"
-        searchRequiredBeforeDownload = "現在の入力に対する検索結果がありません。もう一度ファイルを検索してください。"
-        inputChangedAfterResolve = "入力内容が変更されています。現在の入力で再度ファイルを検索してください。"
-        noFastqSelected = "FASTQが選択されていません。"
-        noFilesSelected = "FASTQまたはGEO supplementary/processed fileを選択してください。"
-        resolveAlreadyRunning = "metadata取得が既に実行中です。"
-        verifyManifestAlreadyRunning = "manifest確認が既に実行中です。"
-        updateAlreadyRunning = "更新確認が既に実行中です。"
-        fastqCountLog = "{0}: FASTQ {1}件"
-        supplementaryCountLog = "GEO supplementary/processed: {0}件"
-        fastqManifestLog = "FASTQリスト: {0}"
-        supplementaryManifestLog = "GEO supplementaryリスト: {0}"
-        downloadLogLog = "ログファイル: {0}"
-        verifyManifestDialogTitle = "FASTQ manifestを選択"
-        verifyManifestFilter = "FASTQ manifest (*_fastq_manifest.tsv)|*_fastq_manifest.tsv|TSVファイル (*.tsv)|*.tsv|すべてのファイル (*.*)|*.*"
-        verifyManifestStartedLog = "FASTQ manifestを確認します: {0}"
-        verifyManifestReportLog = "確認レポート: {0}"
-        verifyManifestSummaryLog = "確認結果: {0}"
-        verifyManifestCompleteMessage = "確認レポートを作成しました: {0}"
-        verifyManifestPartialMessage = "確認レポートを作成しました（一部要確認）: {0}"
-        verifyManifestNoReport = "確認レポートが作成されませんでした。"
-        updateCheckStartedLog = "更新を確認します。"
-        updateLatestMessage = "最新版です。現在のバージョン: {0}"
-        updateAvailableLog = "新しいバージョンがあります: {0}"
-        updateAvailablePrompt = "GEOGetter {0} が利用できます。更新インストーラーをダウンロードして起動しますか?`n`n現在のバージョン: {1}`n新しいバージョン: {0}`nサイズ: {2}"
-        updateDownloadStartedLog = "更新インストーラーをダウンロードします: {0}"
-        updateDownloadedLog = "更新インストーラーを確認しました: {0}"
-        updateInstallerStartedLog = "更新インストーラーを起動しました。GEOGetterを終了します。"
-        updateDeclinedLog = "更新をキャンセルしました。"
-        updateCancelRequestLog = "キャンセル要求: 更新処理を停止します。"
-        updateNoResult = "更新結果を取得できませんでした。"
-        updateFailedMessage = "更新を中止しました: {0}"
-        updateInstallerLaunchFailed = "更新インストーラーを起動できません: {0}"
-        updateAssetMissingMessage = "更新インストーラーが最新リリースにありません。"
-        updateDigestMissingMessage = "更新インストーラーのSHA256 digestを取得できません。"
-        updateDigestInvalidMessage = "更新インストーラーのSHA256 digestが不正です。"
-        updateDownloadFailedMessage = "更新インストーラーのダウンロードに失敗しました。"
-        updateSha256MismatchMessage = "ダウンロードしたインストーラーのSHA256が一致しません。"
-        updateNotAvailableMessage = "利用可能な新しい更新はありません。"
-        updateNetworkFailedMessage = "更新情報を取得できません。通信状態を確認して、時間をおいて再実行してください。"
-        updateFileErrorMessage = "更新インストーラーの保存先に読み書きできません。"
-        updateVersionInvalidMessage = "最新リリースのバージョンを確認できません。"
-        updateReleaseResponseInvalidMessage = "更新情報の応答を読み取れません。"
-        resolveCancelRequestLog = "キャンセル要求: metadata取得を停止します。"
-        verifyCancelRequestLog = "キャンセル要求: manifest確認を停止します。"
-        progressDisplayError = "進捗表示エラー: {0}"
-        exitHandlerError = "終了処理エラー: {0}"
-        processEnvError = "ProcessStartInfoの環境変数を設定できません。"
-        cancelRequestLog = "キャンセル要求: 実行中のダウンロードを停止します。途中ファイルは .part として残ります。"
-        cancelFailedLog = "キャンセル失敗: {0}"
-        preflightFailedLog = "保存先preflight失敗: {0}"
-        preflightOutputRequired = "保存先を選択してください。"
-        preflightOutputIsFile = "保存先にファイルが指定されています。フォルダを選択してください: {0}"
-        preflightCannotCreateOutput = "保存先フォルダを作成できません: {0}"
-        preflightCannotWrite = "保存先に書き込めません: {0}"
-        preflightInsufficientSpace = "空き容量が足りません。必要容量(FASTQ): {0} / 空き容量: {1}"
-        preflightPathTooLong = "保存先パスが長すぎます: {0}"
-        resumeExistingTitle = "既存フォルダから再開"
-        resumeExistingPrompt = "保存先フォルダに既存ファイルがあります。前回のFASTQ記録と今回の選択が一致する場合だけ、このフォルダで再開します。`n`n{0}`n`n再開しますか?"
-        resumeDeclinedLog = "既存フォルダからの再開をキャンセルしました。"
-        resumeSupplementaryUnsupported = "既存ファイルがある保存先では、GEO supplementary / processed file は保存できません。空の保存先を選んでください。"
+$script:GuiTextResourcePath = Join-Path $AppRoot "resources\gui_text.json"
+
+function Get-GuiTextResourcePath {
+    return $script:GuiTextResourcePath
+}
+
+function Assert-GuiTextResource {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Translations,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    foreach ($language in @("ja", "en")) {
+        if (-not $Translations.ContainsKey($language)) {
+            throw "GUI text resource missing language '$language': $Path"
+        }
+        if ($Translations[$language].Count -eq 0) {
+            throw "GUI text resource language '$language' has no entries: $Path"
+        }
     }
-    en = @{
-        appTitle = "GEOGetter"
-        settingsMenu = "Settings"
-        languageMenu = "Language"
-        japanese = "Japanese"
-        english = "English"
-        toolsMenu = "Tools"
-        verifyManifestMenu = "Verify saved FASTQ"
-        helpMenu = "Help"
-        helpOpen = "Open help"
-        checkUpdatesMenu = "Check for updates"
-        helpUsage = "Basic usage"
-        helpInput = "Supported IDs"
-        helpTables = "Reading the tables"
-        helpOutputFiles = "Saved files"
-        helpIntegrity = "MD5 and errors"
-        helpCancelRetry = "Cancel and retry"
-        helpClose = "Close"
-        copyCellMenu = "Copy"
-        inputLabel = "GEO accession / URL"
-        fetchButton = "Find files"
-        outputLabel = "Output folder"
-        browseButton = "Browse"
-        datasetTitleLabel = "GEO info"
-        capacityInitial = "Required: - / Free: -"
-        capacityText = "Required (FASTQ): {0} / Free: {1}"
-        capacityUnknown = "Required (FASTQ): {0} / Free: unavailable"
-        selectionSummary = "Selection: FASTQ {0} files / {1}, GEO supplementary/processed {2}, output: {3}"
-        supplementaryNoneSummary = "{0} files"
-        supplementarySelectedSummary = "{0} files"
-        fastqTitle = "raw FASTQ (ENA direct FASTQ): {0} files"
-        fastqFilteredTitle = "raw FASTQ (ENA direct FASTQ): {0}/{1} shown"
-        supplementaryTitle = "GEO supplementary / processed files (not raw FASTQ): {0} files"
-        fastqFilterLabel = "FASTQ filter"
-        fastqFilterKeywordLabel = "Search"
-        fastqFilterLayoutLabel = "Layout"
-        fastqFilterStrategyLabel = "Strategy"
-        fastqFilterAll = "All"
-        clearFastqFilterButton = "Clear filter"
-        downloadButton = "Download selected files"
-        downloadWorkersLabel = "FASTQ workers"
-        cancelButton = "Cancel"
-        selectAllButton = "Select all"
-        clearSelectionButton = "Clear selection"
-        idle = "Idle"
-        fetching = "Fetching metadata"
-        downloading = "Downloading"
-        downloadRetryWaiting = "Waiting to retry"
-        verifyingManifest = "Checking manifest"
-        checkingUpdates = "Checking for updates"
-        downloadingUpdate = "Downloading update installer"
-        complete = "Complete"
-        completePartial = "Complete with failures"
-        completeUnverified = "Complete with unverified files"
-        error = "Error"
-        canceled = "Canceled"
-        overallDesign = "Overall design"
-        helpUsageText = (@(
-            "1. Enter a GEO accession, GEO URL, or SRA/ENA/Project/BioSample accession."
-            "2. Click [Find files]."
-            "3. Check Accession / Organism / Status in the GEO info area."
-            "4. Review raw FASTQ and GEO supplementary / processed files in separate tables."
-            "5. Select only the rows you want, then confirm the output folder and required space."
-            "6. Click [Download selected files]."
-        ) -join [Environment]::NewLine)
-        helpInputText = (@(
-            "Supported input:"
-            "- GSE, GSM"
-            "- GEO page URL"
-            "- SRP / SRX / SRR / SRS"
-            "- ERP / ERX / ERR / ERS"
-            "- DRP / DRX / DRR / DRS"
-            "- PRJNA / PRJEB / PRJDB"
-            "- SAMN / SAMEA / SAMD"
-            ""
-            "For GSE/GSM input, GEOGetter reads GEO SOFT metadata and searches for related SRA/ENA/BioProject/BioSample accessions. For SRA/ENA/Project/BioSample accessions, it queries ENA directly."
-            ""
-            "If the input contains multiple IDs or URLs, GEOGetter uses the first supported accession it finds."
-        ) -join [Environment]::NewLine)
-        helpTablesText = (@(
-            "raw FASTQ (ENA direct FASTQ):"
-            "Raw read candidates returned by the ENA Portal API. The table shows Run, GEO Sample, Sample title, Layout, Strategy, file name, size, MD5, and FASTQ URL."
-            "Filter can narrow rows by search text, Layout, and Strategy. While filtered, bulk selection applies only to visible rows."
-            ""
-            "GEO supplementary / processed files:"
-            "Supplementary or processed files registered on the GEO page. Select them by checking origin, file name, and GEO URL. They are saved separately from raw FASTQ files."
-            ""
-            "Right-click a table cell and choose [Copy], or select a cell and press Ctrl+C, to copy only that cell value."
-        ) -join [Environment]::NewLine)
-        helpOutputFilesText = (@(
-            "After search, the output field shows the accession folder that GEOGetter will write to."
-            "To save somewhere else, choose the actual folder you want to use."
-            ""
-            "Example:"
-            "downloads\GSE52778\"
-            "  GSE52778_fastq_manifest.tsv"
-            "  GSE52778_supplementary_manifest.tsv"
-            "  GSE52778_download_log.tsv"
-            "  SRR1039508_1.fastq.gz"
-            ""
-            "The download log records save results for FASTQ and supplementary files. A FASTQ manifest is created when FASTQ files are selected, and a supplementary manifest is created when supplementary files are selected."
-        ) -join [Environment]::NewLine)
-        helpIntegrityText = (@(
-            "FASTQ:"
-            "When an expected MD5 is available, GEOGetter compares it with the actual MD5 after download. The file is moved to the final FASTQ name only when the MD5 matches."
-            ""
-            "Common statuses:"
-            "- md5_verified: the expected and actual MD5 matched."
-            "- md5_unavailable: ENA did not provide an expected MD5, so the file is saved but not verified."
-            "- md5_mismatch: the file is not kept as the final FASTQ and is moved aside."
-            "- size_mismatch: the saved size did not match the expected ENA size."
-            "- network_failed: the transfer failed. Check the connection and try again later."
-            "- local_io_failed: writing or moving files in the output folder failed."
-        ) -join [Environment]::NewLine)
-        helpCancelRetryText = (@(
-            "Cancel:"
-            "Use [Cancel] to stop metadata retrieval, download, or manifest verification. During download cancellation, partial files may remain as .part files."
-            ""
-            "Retry:"
-            "Network failures are retried automatically. Files that still fail after retry are recorded as failures in the download log."
-            ""
-            "Existing files:"
-            "If a FASTQ file with the same name already exists and both its expected size and MD5 match, GEOGetter reuses it instead of downloading again. If the size or MD5 does not match, the existing file is moved aside and downloaded again."
-            ""
-            "If the output folder does not have enough free space, change the output folder or select fewer FASTQ files."
-        ) -join [Environment]::NewLine)
-        colSelect = "Select"
-        colRun = "Run"
-        colGeoSample = "GEO Sample"
-        colGeoTitle = "Sample title"
-        colFileName = "File name"
-        colEnaSample = "ENA Sample"
-        colLayout = "Layout"
-        colStrategy = "Strategy"
-        colSize = "Size"
-        colMd5 = "MD5"
-        colFastqUrl = "FASTQ URL"
-        colScope = "Type"
-        colOrigin = "Origin"
-        colGeoUrl = "GEO URL"
-        suppOriginSeries = "Series: {0}"
-        suppOriginSample = "Sample: {0}"
-        suppOriginUnknown = "GEO: {0}"
-        metadataFailed = "Metadata retrieval failed."
-        searchRequiredBeforeDownload = "No search result is available for the current input. Search files again."
-        inputChangedAfterResolve = "The input has changed. Search files again for the current input."
-        noFastqSelected = "No FASTQ files are selected."
-        noFilesSelected = "Select at least one FASTQ or GEO supplementary/processed file."
-        resolveAlreadyRunning = "Metadata retrieval is already running."
-        verifyManifestAlreadyRunning = "Manifest verification is already running."
-        updateAlreadyRunning = "Update check is already running."
-        fastqCountLog = "{0}: FASTQ {1} files"
-        supplementaryCountLog = "GEO supplementary/processed: {0} files"
-        fastqManifestLog = "FASTQ list: {0}"
-        supplementaryManifestLog = "GEO supplementary list: {0}"
-        downloadLogLog = "Download log: {0}"
-        verifyManifestDialogTitle = "Select FASTQ manifest"
-        verifyManifestFilter = "FASTQ manifest (*_fastq_manifest.tsv)|*_fastq_manifest.tsv|TSV file (*.tsv)|*.tsv|All files (*.*)|*.*"
-        verifyManifestStartedLog = "Checking FASTQ manifest: {0}"
-        verifyManifestReportLog = "Verification report: {0}"
-        verifyManifestSummaryLog = "Verification results: {0}"
-        verifyManifestCompleteMessage = "Verification report created: {0}"
-        verifyManifestPartialMessage = "Verification report created with issues: {0}"
-        verifyManifestNoReport = "No verification report was created."
-        updateCheckStartedLog = "Checking for updates."
-        updateLatestMessage = "GEOGetter is up to date. Current version: {0}"
-        updateAvailableLog = "A new version is available: {0}"
-        updateAvailablePrompt = "GEOGetter {0} is available. Download and start the update installer?`n`nCurrent version: {1}`nNew version: {0}`nSize: {2}"
-        updateDownloadStartedLog = "Downloading update installer: {0}"
-        updateDownloadedLog = "Verified update installer: {0}"
-        updateInstallerStartedLog = "Started the update installer. GEOGetter will close."
-        updateDeclinedLog = "Update canceled."
-        updateCancelRequestLog = "Cancel requested: stopping update processing."
-        updateNoResult = "No update result was returned."
-        updateFailedMessage = "Update stopped: {0}"
-        updateInstallerLaunchFailed = "Could not start the update installer: {0}"
-        updateAssetMissingMessage = "The update installer is not attached to the latest release."
-        updateDigestMissingMessage = "The update installer SHA256 digest is unavailable."
-        updateDigestInvalidMessage = "The update installer SHA256 digest is invalid."
-        updateDownloadFailedMessage = "The update installer download failed."
-        updateSha256MismatchMessage = "The downloaded installer SHA256 did not match."
-        updateNotAvailableMessage = "No newer update is available."
-        updateNetworkFailedMessage = "Could not retrieve update information. Check the connection and try again later."
-        updateFileErrorMessage = "Could not read or write the update installer location."
-        updateVersionInvalidMessage = "Could not verify the latest release version."
-        updateReleaseResponseInvalidMessage = "Could not read the update information response."
-        resolveCancelRequestLog = "Cancel requested: stopping metadata retrieval."
-        verifyCancelRequestLog = "Cancel requested: stopping manifest verification."
-        progressDisplayError = "Progress display error: {0}"
-        exitHandlerError = "Exit handler error: {0}"
-        processEnvError = "Could not set ProcessStartInfo environment variables."
-        cancelRequestLog = "Cancel requested: stopping the running download. Partial files may remain as .part files."
-        cancelFailedLog = "Cancel failed: {0}"
-        preflightFailedLog = "Output preflight failed: {0}"
-        preflightOutputRequired = "Select an output folder."
-        preflightOutputIsFile = "The output path is a file. Select a folder: {0}"
-        preflightCannotCreateOutput = "Could not create the output folder: {0}"
-        preflightCannotWrite = "Could not write to the output folder: {0}"
-        preflightInsufficientSpace = "Not enough free space. Required (FASTQ): {0} / Free: {1}"
-        preflightPathTooLong = "The output path is too long: {0}"
-        resumeExistingTitle = "Resume from existing folder"
-        resumeExistingPrompt = "The output folder already contains files. GEOGetter will resume in this folder only if the previous FASTQ records match the current selection.`n`n{0}`n`nResume?"
-        resumeDeclinedLog = "Resume from the existing folder was canceled."
-        resumeSupplementaryUnsupported = "GEO supplementary/processed files cannot be saved to an output folder that already contains files. Choose an empty output folder."
+
+    $missingInEnglish = @($Translations["ja"].Keys | Where-Object { -not $Translations["en"].ContainsKey($_) } | Sort-Object)
+    $missingInJapanese = @($Translations["en"].Keys | Where-Object { -not $Translations["ja"].ContainsKey($_) } | Sort-Object)
+    if ($missingInEnglish.Count -gt 0 -or $missingInJapanese.Count -gt 0) {
+        throw "GUI text resource key mismatch in $Path. Missing in en: $($missingInEnglish -join ', '); missing in ja: $($missingInJapanese -join ', ')"
+    }
+
+    foreach ($requiredKey in @("appTitle", "idle", "helpUsage", "helpUsageText", "helpInputText", "helpTablesText", "helpOutputFilesText", "helpIntegrityText", "helpCancelRetryText")) {
+        foreach ($language in @("ja", "en")) {
+            if (-not $Translations[$language].ContainsKey($requiredKey) -or [string]::IsNullOrWhiteSpace([string]$Translations[$language][$requiredKey])) {
+                throw "GUI text resource missing required key '$requiredKey' for '$language': $Path"
+            }
+        }
     }
 }
 
+function Import-GuiTextResource {
+    param([string]$Path = (Get-GuiTextResourcePath))
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "GUI text resource not found: $Path"
+    }
+
+    try {
+        $resource = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        throw "GUI text resource could not be read: $Path. Detail: $($_.Exception.Message)"
+    }
+    if ($null -eq $resource) {
+        throw "GUI text resource is empty: $Path"
+    }
+
+    $translations = @{}
+    foreach ($language in @("ja", "en")) {
+        $languageProperty = @($resource.PSObject.Properties | Where-Object { $_.Name -eq $language } | Select-Object -First 1)
+        if ($languageProperty.Count -eq 0) {
+            throw "GUI text resource missing language '$language': $Path"
+        }
+        $languageTable = @{}
+        foreach ($entry in $languageProperty[0].Value.PSObject.Properties) {
+            $languageTable[$entry.Name] = [string]$entry.Value
+        }
+        $translations[$language] = $languageTable
+    }
+
+    Assert-GuiTextResource -Translations $translations -Path $Path
+    return $translations
+}
+
+$script:Translations = Import-GuiTextResource
 function Format-Bytes {
     param([Int64]$Bytes)
     $units = @("B", "KB", "MB", "GB", "TB")
@@ -651,7 +307,10 @@ function T {
     if ($table.ContainsKey($Key)) {
         return $table[$Key]
     }
-    return $script:Translations["ja"][$Key]
+    if ($script:Translations["ja"].ContainsKey($Key)) {
+        return $script:Translations["ja"][$Key]
+    }
+    throw "GUI text resource key not found: $Key"
 }
 
 function Get-HelpTopics {
@@ -3759,6 +3418,25 @@ if ($SelfTest) {
     $selfTestSucceeded = $false
     try {
     Assert-Equal $form.Text "GEOGetter" "window title unchanged"
+    Assert-Equal (Test-Path -LiteralPath (Get-GuiTextResourcePath) -PathType Leaf) $true "GUI text resource file exists"
+    $resourceReload = Import-GuiTextResource
+    Assert-Equal ($resourceReload["ja"].Keys.Count -gt 0) $true "Japanese GUI text resource has entries"
+    Assert-Equal $resourceReload["ja"].Keys.Count $resourceReload["en"].Keys.Count "GUI text resource language key count"
+    foreach ($topic in Get-HelpTopics) {
+        foreach ($language in @("ja", "en")) {
+            Assert-Equal $script:Translations[$language].ContainsKey($topic.TitleKey) $true "$language help title key $($topic.TitleKey)"
+            Assert-Equal $script:Translations[$language].ContainsKey($topic.TextKey) $true "$language help body key $($topic.TextKey)"
+            Assert-Equal ([string]::IsNullOrWhiteSpace([string]$script:Translations[$language][$topic.TextKey])) $false "$language help body text $($topic.TextKey)"
+        }
+    }
+    $missingResourceError = ""
+    try {
+        Import-GuiTextResource -Path (Join-Path ([System.IO.Path]::GetTempPath()) ("geo_getter_missing_resource_" + [System.Guid]::NewGuid().ToString("N") + ".json")) | Out-Null
+    }
+    catch {
+        $missingResourceError = $_.Exception.Message
+    }
+    Assert-Contains $missingResourceError "GUI text resource not found" "missing GUI text resource error"
     Set-Language "en"
     Assert-Equal $settingsMenuItem.Text "Settings" "English settings menu"
     Assert-Equal $toolsMenuItem.Text "Tools" "English tools menu"

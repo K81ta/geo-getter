@@ -231,7 +231,7 @@ foreach ($file in @(
     Copy-FileToPayload -RelativePath $file -PayloadDir $payloadDir
 }
 
-foreach ($dir in @("geo_getter", "docs", "licenses")) {
+foreach ($dir in @("geo_getter", "docs", "licenses", "resources")) {
     Copy-DirectoryToPayload -RelativePath $dir -PayloadDir $payloadDir
 }
 
