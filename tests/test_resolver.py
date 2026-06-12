@@ -133,6 +133,11 @@ class PartiallyFailingEnaProvider:
         return [_fastq(accession, source_accession)]
 
 
+class AlwaysFailingEnaProvider:
+    def get_fastq_files(self, accession, source_accession):
+        raise GeoGetterError(URL_UNAVAILABLE, accession)
+
+
 class DuplicateFastqEnaProvider:
     def get_fastq_files(self, accession, source_accession):
         return [
@@ -228,15 +233,47 @@ class ResolverTest(unittest.TestCase):
         )
         self.assertEqual(result.fastq_files[0].geo_sample_accession, "GSM000001")
 
-    def test_geo_related_accession_failure_propagates_without_partial_result(self):
+    def test_geo_related_accession_partial_failure_returns_successes_with_warning(self):
+        result = MetadataResolver(
+            MultiGeoProvider(["SRP000001", "SRP000002", "SRP000003"]),
+            PartiallyFailingEnaProvider(),
+        ).resolve("GSE000005")
+
+        self.assertEqual(result.query_accessions, ["SRP000001", "SRP000002", "SRP000003"])
+        self.assertEqual(
+            [item.query_accession for item in result.fastq_files],
+            ["SRP000001", "SRP000003"],
+        )
+        self.assertTrue(
+            any("SRP000002" in warning and URL_UNAVAILABLE in warning for warning in result.warnings)
+        )
+
+    def test_direct_ena_accession_failure_still_raises(self):
+        with self.assertRaises(GeoGetterError) as raised:
+            MetadataResolver(FailingGeoProvider(), PartiallyFailingEnaProvider()).resolve("SRP000002")
+
+        self.assertEqual(raised.exception.code, URL_UNAVAILABLE)
+        self.assertEqual(raised.exception.detail, "SRP000002")
+
+    def test_single_geo_related_accession_failure_still_raises(self):
         with self.assertRaises(GeoGetterError) as raised:
             MetadataResolver(
-                MultiGeoProvider(["SRP000001", "SRP000002", "SRP000003"]),
+                MultiGeoProvider(["SRP000002"]),
                 PartiallyFailingEnaProvider(),
             ).resolve("GSE000005")
 
         self.assertEqual(raised.exception.code, URL_UNAVAILABLE)
         self.assertEqual(raised.exception.detail, "SRP000002")
+
+    def test_all_geo_related_accession_failures_still_raise(self):
+        with self.assertRaises(GeoGetterError) as raised:
+            MetadataResolver(
+                MultiGeoProvider(["SRP000001", "SRP000002"]),
+                AlwaysFailingEnaProvider(),
+            ).resolve("GSE000005")
+
+        self.assertEqual(raised.exception.code, URL_UNAVAILABLE)
+        self.assertEqual(raised.exception.detail, "SRP000001")
 
     def test_parallel_fastq_dedup_keeps_first_query_order(self):
         result = MetadataResolver(

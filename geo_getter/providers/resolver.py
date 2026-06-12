@@ -41,7 +41,11 @@ class MetadataResolver:
             raise GeoGetterError("unsupported_accession", f"Unsupported accession: {parsed.accession}")
 
         fastq_files: list[FastqFile] = []
-        for accession_files in self._get_fastq_files_for_accessions(query_accessions, parsed.accession):
+        accession_file_groups, ena_warnings = self._get_fastq_files_for_accessions(
+            query_accessions, parsed.accession
+        )
+        warnings.extend(ena_warnings)
+        for accession_files in accession_file_groups:
             for item in accession_files:
                 fastq_files.append(_with_geo_sample_metadata(item, sample_metadata_by_accession))
 
@@ -63,12 +67,12 @@ class MetadataResolver:
 
     def _get_fastq_files_for_accessions(
         self, query_accessions: list[str], source_accession: str
-    ) -> list[list[FastqFile]]:
+    ) -> tuple[list[list[FastqFile]], list[str]]:
         if not query_accessions:
-            return []
+            return [], []
         if len(query_accessions) == 1:
             accession = query_accessions[0]
-            return [self.ena_provider.get_fastq_files(accession, source_accession)]
+            return [self.ena_provider.get_fastq_files(accession, source_accession)], []
 
         worker_count = min(MAX_ENA_FILE_REPORT_WORKERS, len(query_accessions))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -76,7 +80,22 @@ class MetadataResolver:
                 executor.submit(self.ena_provider.get_fastq_files, accession, source_accession)
                 for accession in query_accessions
             ]
-            return [future.result() for future in futures]
+            results: list[list[FastqFile]] = []
+            warnings: list[str] = []
+            first_error: GeoGetterError | None = None
+            for accession, future in zip(query_accessions, futures):
+                try:
+                    results.append(future.result())
+                except GeoGetterError as exc:
+                    if first_error is None:
+                        first_error = exc
+                    warnings.append(
+                        f"ENA FASTQ lookup failed for {accession}; "
+                        f"continuing with other accessions. Detail: {exc.code}"
+                    )
+            if not results and first_error is not None:
+                raise first_error
+            return results, warnings
 
 
 def _deduplicate_fastq(files: list[FastqFile]) -> list[FastqFile]:
