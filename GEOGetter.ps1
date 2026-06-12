@@ -930,12 +930,16 @@ function Clear-ResolvedState {
     if ($suppGrid) { $suppGrid.Rows.Clear() }
     Reset-FastqFilterControls -SkipApply
     Refresh-FastqFilterValueOptions
-    if ($DeleteResolvedJson -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
-        Remove-Item -LiteralPath $script:ResolvedJsonPath -Force -ErrorAction SilentlyContinue
-    }
+    if ($DeleteResolvedJson) { Remove-ResolvedJsonFile }
     Update-ResultTitles
     Update-DatasetInfo
     Update-Capacity
+}
+
+function Remove-ResolvedJsonFile {
+    if ($script:ResolvedJsonPath -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
+        Remove-Item -LiteralPath $script:ResolvedJsonPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Assert-ResolvedMatchesCurrentInput {
@@ -2885,7 +2889,7 @@ function New-MainForm {
     $inputBox.Location = New-Object System.Drawing.Point(145, 10)
     $inputBox.Size = New-Object System.Drawing.Size(810, 24)
     $inputBox.Anchor = $anchorTopLeftRight
-    $inputBox.Text = "GSE30567"
+    $inputBox.Text = ""
     $topPanel.Controls.Add($inputBox)
 
     $script:fetchButton = New-Object System.Windows.Forms.Button
@@ -3402,6 +3406,7 @@ function New-MainForm {
 
     $formLocal.add_FormClosing({
         Stop-RunningGuiProcessesForShutdown
+        Remove-ResolvedJsonFile
     })
     $formLocal.add_Shown({ Set-ResultSplitDistance })
     $formLocal.add_SizeChanged({ Set-ResultSplitDistance })
@@ -3418,6 +3423,7 @@ if ($SelfTest) {
     $selfTestSucceeded = $false
     try {
     Assert-Equal $form.Text "GEOGetter" "window title unchanged"
+    Assert-Equal $inputBox.Text "" "initial input box is empty"
     Assert-Equal (Test-Path -LiteralPath (Get-GuiTextResourcePath) -PathType Leaf) $true "GUI text resource file exists"
     $resourceReload = Import-GuiTextResource
     Assert-Equal ($resourceReload["ja"].Keys.Count -gt 0) $true "Japanese GUI text resource has entries"
@@ -3984,6 +3990,10 @@ if ($SelfTest) {
     Update-ResultTitles
     Update-DatasetInfo
     Update-Capacity
+
+    Remove-ResolvedJsonFile
+    Assert-Equal (Test-Path -LiteralPath $script:ResolvedJsonPath) $false "shutdown cleanup removes resolved json"
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
 
     Clear-ResolvedState -DeleteResolvedJson
     [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
@@ -4557,9 +4567,7 @@ if ($SelfTest) {
     }
     finally {
         if ($form -and -not $form.IsDisposed) { $form.Dispose() }
-        if ($script:ResolvedJsonPath -and (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
-            Remove-Item -LiteralPath $script:ResolvedJsonPath -Force -ErrorAction SilentlyContinue
-        }
+        Remove-ResolvedJsonFile
         if ($selfTestRoot -and (Test-Path -LiteralPath $selfTestRoot)) {
             Remove-Item -LiteralPath $selfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
         }

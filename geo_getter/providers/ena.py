@@ -65,28 +65,37 @@ def parse_file_report(
         for file_index, raw_url in urls:
             if not raw_url:
                 continue
+            download_url = _download_url(raw_url)
+            if not download_url:
+                continue
             fastq_files.append(
                 FastqFile(
                     source_accession=source_accession,
                     query_accession=query_accession,
-                    run_accession=str(row.get("run_accession", "")),
+                    run_accession=_clean_metadata_value(row.get("run_accession", "")),
                     file_index=file_index + 1,
                     file_name=_file_name_from_url(raw_url),
-                    url=_download_url(raw_url),
+                    url=download_url,
                     expected_md5=_value_at(md5s, file_index),
                     size_bytes=_int_at(sizes, file_index),
-                    experiment_accession=str(row.get("experiment_accession", "")),
-                    sample_accession=str(row.get("sample_accession", "")),
-                    secondary_sample_accession=str(row.get("secondary_sample_accession", "")),
-                    study_accession=str(row.get("study_accession", "")),
-                    secondary_study_accession=str(row.get("secondary_study_accession", "")),
-                    scientific_name=str(row.get("scientific_name", "")),
-                    instrument_platform=str(row.get("instrument_platform", "")),
-                    library_layout=str(row.get("library_layout", "")),
-                    library_strategy=str(row.get("library_strategy", "")),
+                    experiment_accession=_clean_metadata_value(row.get("experiment_accession", "")),
+                    sample_accession=_clean_metadata_value(row.get("sample_accession", "")),
+                    secondary_sample_accession=_clean_metadata_value(row.get("secondary_sample_accession", "")),
+                    study_accession=_clean_metadata_value(row.get("study_accession", "")),
+                    secondary_study_accession=_clean_metadata_value(row.get("secondary_study_accession", "")),
+                    scientific_name=_clean_metadata_value(row.get("scientific_name", "")),
+                    instrument_platform=_clean_metadata_value(row.get("instrument_platform", "")),
+                    library_layout=_clean_metadata_value(row.get("library_layout", "")),
+                    library_strategy=_clean_metadata_value(row.get("library_strategy", "")),
                 )
             )
     return fastq_files
+
+
+def _clean_metadata_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _split_url_values(value: Any) -> list[tuple[int, str]]:
@@ -121,7 +130,7 @@ def _download_url(raw_url: str) -> str:
     if raw_url.startswith("ftp.sra.ebi.ac.uk/"):
         return "https://" + raw_url
     if raw_url.startswith("fasp.sra.ebi.ac.uk/"):
-        return raw_url
+        return ""
     return raw_url
 
 

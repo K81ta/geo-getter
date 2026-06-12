@@ -242,7 +242,7 @@ def _append_supplementary_file(
 
 def _build_parse_result(state: _SoftParseState, source_accession: str) -> GeoSoftParseResult:
     return GeoSoftParseResult(
-        related_accessions=state.series_related or state.sample_related,
+        related_accessions=_merge_related_accessions(state.series_related, state.sample_related),
         supplementary_files=state.supplementary,
         sample_metadata_by_accession=state.sample_metadata_by_accession,
         dataset_metadata=DatasetMetadata(
@@ -261,7 +261,9 @@ def _build_parse_result(state: _SoftParseState, source_accession: str) -> GeoSof
 
 def _merge_parse_results(primary: GeoSoftParseResult, samples: GeoSoftParseResult) -> GeoSoftParseResult:
     return GeoSoftParseResult(
-        related_accessions=primary.related_accessions or samples.related_accessions,
+        related_accessions=_merge_related_accessions(
+            primary.related_accessions, samples.related_accessions
+        ),
         supplementary_files=_deduplicate_supplementary(
             [*primary.supplementary_files, *samples.supplementary_files]
         ),
@@ -272,6 +274,18 @@ def _merge_parse_results(primary: GeoSoftParseResult, samples: GeoSoftParseResul
         dataset_metadata=_merge_dataset_metadata(primary.dataset_metadata, samples.dataset_metadata),
         warnings=[*primary.warnings, *samples.warnings],
     )
+
+
+def _merge_related_accessions(*accession_lists: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for accessions in accession_lists:
+        for accession in accessions:
+            if accession in seen:
+                continue
+            merged.append(accession)
+            seen.add(accession)
+    return merged
 
 
 def _merge_dataset_metadata(primary: DatasetMetadata, samples: DatasetMetadata) -> DatasetMetadata:

@@ -81,6 +81,54 @@ class EnaProviderTest(unittest.TestCase):
                 files = parse_file_report(rows, source_accession="GSE000005", query_accession="SRP000005")
                 self.assertEqual(files, [])
 
+    def test_none_metadata_values_are_normalized_to_empty_strings(self):
+        rows = [
+            {
+                "run_accession": "SRR000006",
+                "experiment_accession": None,
+                "sample_accession": None,
+                "secondary_sample_accession": None,
+                "study_accession": None,
+                "secondary_study_accession": None,
+                "scientific_name": None,
+                "instrument_platform": None,
+                "library_layout": None,
+                "library_strategy": None,
+                "fastq_ftp": "ftp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000006/SRR000006.fastq.gz",
+                "fastq_md5": None,
+                "fastq_bytes": None,
+            }
+        ]
+
+        files = parse_file_report(rows, source_accession="GSE000006", query_accession="SRP000006")
+
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].experiment_accession, "")
+        self.assertEqual(files[0].sample_accession, "")
+        self.assertEqual(files[0].secondary_sample_accession, "")
+        self.assertEqual(files[0].study_accession, "")
+        self.assertEqual(files[0].secondary_study_accession, "")
+        self.assertEqual(files[0].scientific_name, "")
+        self.assertEqual(files[0].instrument_platform, "")
+        self.assertEqual(files[0].library_layout, "")
+        self.assertEqual(files[0].library_strategy, "")
+        self.assertEqual(files[0].expected_md5, "")
+        self.assertEqual(files[0].size_bytes, 0)
+
+    def test_fasp_fastq_urls_are_not_download_candidates(self):
+        rows = [
+            {
+                "run_accession": "SRR000007",
+                "fastq_ftp": "fasp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000007/SRR000007.fastq.gz",
+                "fastq_md5": "1" * 32,
+                "fastq_bytes": "123",
+            }
+        ]
+
+        files = parse_file_report(rows, source_accession="GSE000007", query_accession="SRP000007")
+
+        self.assertEqual(files, [])
+
 
 if __name__ == "__main__":
     unittest.main()

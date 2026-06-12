@@ -67,7 +67,7 @@ plain preamble line
 
     def test_parse_related_and_supplementary(self):
         parsed = parse_soft(SOFT, "GSE30567")
-        self.assertEqual(parsed.related_accessions, ["SRP007461"])
+        self.assertEqual(parsed.related_accessions, ["SRP007461", "SRX082565", "SAMN01103824"])
         self.assertEqual(len(parsed.supplementary_files), 2)
         self.assertEqual(parsed.supplementary_files[0].name, "GSE30567_RAW.tar")
         self.assertEqual(parsed.supplementary_files[0].origin_level, "series")
@@ -107,6 +107,22 @@ plain preamble line
         metadata = parsed.sample_metadata_by_accession["SRX000001"]
         self.assertEqual(metadata.geo_sample_accession, "GSM000001")
         self.assertEqual(metadata.geo_sample_title, "sample title")
+
+    def test_parse_appends_sample_related_after_series_related_without_duplicates(self):
+        parsed = parse_soft(
+            """
+^SERIES = GSE000001
+!Series_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
+!Series_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000001
+^SAMPLE = GSM000001
+!Sample_title = sample title
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000001
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000002
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(parsed.related_accessions, ["SRP000001", "SRX000001", "SRX000002"])
 
     def test_parse_preserves_unknown_record_supplementary(self):
         parsed = parse_soft(
@@ -207,6 +223,27 @@ plain preamble line
         merged = _merge_parse_results(primary, samples)
 
         self.assertEqual(merged.warnings, ["primary warning", "sample warning"])
+
+    def test_merge_combines_primary_and_sample_related_accessions(self):
+        primary = parse_soft(
+            """
+^SERIES = GSE000001
+!Series_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
+""",
+            "GSE000001",
+        )
+        samples = parse_soft(
+            """
+^SAMPLE = GSM000001
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000001
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
+""",
+            "GSE000001",
+        )
+
+        merged = _merge_parse_results(primary, samples)
+
+        self.assertEqual(merged.related_accessions, ["SRP000001", "SRX000001"])
 
     def test_supplementary_display_metadata_handles_common_names(self):
         parsed = parse_soft(
