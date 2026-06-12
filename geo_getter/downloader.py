@@ -34,6 +34,9 @@ SleepCallback = Callable[[float], None]
 NowCallback = Callable[[], datetime]
 ResumeDigestLookup = dict[tuple[Path, str], ResumeArtifactDigest]
 DEFAULT_RETRY_DELAYS = (1.0, 3.0, 9.0)
+DEFAULT_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
+DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS = 0.250
+DEFAULT_PROGRESS_MIN_BYTES = 16 * 1024 * 1024
 
 
 class DownloadSizeMismatchError(Exception):
@@ -74,6 +77,39 @@ class DownloadOutcome:
     actual_md5: str = ""
     bytes_downloaded: int = 0
     result_message: str | None = None
+
+
+class _ProgressReporter:
+    def __init__(
+        self,
+        callback: ByteProgressCallback | None,
+        *,
+        initial_downloaded: int,
+        min_interval_seconds: float,
+        min_bytes: int,
+        now_func: NowCallback,
+    ):
+        self.callback = callback
+        self.min_interval_seconds = max(0.0, min_interval_seconds)
+        self.min_bytes = max(1, min_bytes)
+        self.now_func = now_func
+        self.last_emitted_downloaded = initial_downloaded
+        self.last_emitted_at = now_func() if callback else None
+        self.last_event: tuple[int, int] | None = None
+
+    def emit(self, downloaded: int, total: int, *, force: bool = False) -> None:
+        if not self.callback:
+            return
+        if force and self.last_event == (downloaded, total):
+            return
+        now = self.now_func()
+        byte_delta = downloaded - self.last_emitted_downloaded
+        elapsed = (now - self.last_emitted_at).total_seconds() if self.last_emitted_at else 0.0
+        if force or byte_delta >= self.min_bytes or elapsed >= self.min_interval_seconds:
+            self.callback(downloaded, total)
+            self.last_emitted_downloaded = downloaded
+            self.last_emitted_at = now
+            self.last_event = (downloaded, total)
 
 
 def download_plan(
@@ -234,7 +270,7 @@ def download_one(
     planned: PlannedFile,
     progress_callback: ProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
 ) -> DownloadedPart:
     def progress(downloaded: int, total: int) -> None:
         if progress_callback:
@@ -257,12 +293,14 @@ def download_url_to_part(
     expected_size: int = 0,
     progress_callback: ByteProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
     max_attempts: int = 4,
     stream_md5: bool = False,
     retry_delays: tuple[float, ...] = DEFAULT_RETRY_DELAYS,
     sleep_func: SleepCallback | None = None,
     now_func: NowCallback | None = None,
+    progress_min_interval_seconds: float = DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS,
+    progress_min_bytes: int = DEFAULT_PROGRESS_MIN_BYTES,
 ) -> DownloadedPart:
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive.")
@@ -280,6 +318,8 @@ def download_url_to_part(
                 chunk_size=chunk_size,
                 stream_md5=stream_md5,
                 now_func=now,
+                progress_min_interval_seconds=progress_min_interval_seconds,
+                progress_min_bytes=progress_min_bytes,
             )
         except DownloadSizeMismatchError:
             raise
@@ -307,10 +347,14 @@ def _download_url_to_part_once(
     part_path: Path,
     expected_size: int = 0,
     progress_callback: ByteProgressCallback | None = None,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
     stream_md5: bool = False,
     now_func: NowCallback | None = None,
+    progress_min_interval_seconds: float = DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS,
+    progress_min_bytes: int = DEFAULT_PROGRESS_MIN_BYTES,
 ) -> DownloadedPart:
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be positive: {chunk_size}")
     try:
         part_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -347,6 +391,13 @@ def _download_url_to_part_once(
                 total += resume_from
             if not total:
                 total = expected_size
+            progress_reporter = _ProgressReporter(
+                progress_callback,
+                initial_downloaded=resume_from,
+                min_interval_seconds=progress_min_interval_seconds,
+                min_bytes=progress_min_bytes,
+                now_func=now,
+            )
             mode = "ab" if appending else "wb"
             try:
                 handle = part_path.open(mode)
@@ -368,8 +419,8 @@ def _download_url_to_part_once(
                         if streamed_digest:
                             streamed_digest.update(chunk)
                         downloaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(resume_from + downloaded, total)
+                        progress_reporter.emit(resume_from + downloaded, total)
+                    progress_reporter.emit(resume_from + downloaded, total, force=True)
             except (DownloadNetworkError, DownloadLocalIoError):
                 raise
             except OSError as exc:
