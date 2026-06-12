@@ -26,9 +26,6 @@ ENA_FIELDS = [
     "fastq_ftp",
     "fastq_md5",
     "fastq_bytes",
-    "submitted_ftp",
-    "submitted_md5",
-    "submitted_bytes",
 ]
 
 

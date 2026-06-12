@@ -1,8 +1,10 @@
 import json
 import unittest
+import urllib.parse
+from unittest import mock
 from pathlib import Path
 
-from geo_getter.providers.ena import parse_file_report
+from geo_getter.providers.ena import EnaProvider, parse_file_report
 
 
 class EnaProviderTest(unittest.TestCase):
@@ -80,6 +82,17 @@ class EnaProviderTest(unittest.TestCase):
                 ]
                 files = parse_file_report(rows, source_accession="GSE000005", query_accession="SRP000005")
                 self.assertEqual(files, [])
+
+    def test_file_report_request_skips_submitted_metadata_fields(self):
+        with mock.patch("geo_getter.providers.ena.fetch_json", return_value=[]) as fetch_json:
+            EnaProvider().fetch_file_report("SRP000001")
+
+        requested_url = fetch_json.call_args.args[0]
+        fields = urllib.parse.parse_qs(urllib.parse.urlparse(requested_url).query)["fields"][0].split(",")
+        self.assertIn("fastq_ftp", fields)
+        self.assertNotIn("submitted_ftp", fields)
+        self.assertNotIn("submitted_md5", fields)
+        self.assertNotIn("submitted_bytes", fields)
 
     def test_none_metadata_values_are_normalized_to_empty_strings(self):
         rows = [

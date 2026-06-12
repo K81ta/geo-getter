@@ -1,5 +1,6 @@
 import unittest
 
+from geo_getter.accession import ENA_QUERY_PREFIXES
 from geo_getter.errors import GeoGetterError
 from geo_getter.providers.geo import (
     GeoProvider,
@@ -123,6 +124,26 @@ plain preamble line
         )
 
         self.assertEqual(parsed.related_accessions, ["SRP000001", "SRX000001", "SRX000002"])
+
+    def test_parse_related_accessions_follow_direct_ena_prefixes(self):
+        relation_lines = "\n".join(
+            f"!Series_relation = related accession: {prefix}000001"
+            for prefix in ENA_QUERY_PREFIXES
+        )
+        parsed = parse_soft(
+            f"""
+^SERIES = GSE000001
+{relation_lines}
+!Series_relation = GEO: GSE000002
+!Series_relation = GEO sample: GSM000002
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(
+            parsed.related_accessions,
+            [f"{prefix}000001" for prefix in ENA_QUERY_PREFIXES],
+        )
 
     def test_parse_preserves_unknown_record_supplementary(self):
         parsed = parse_soft(
