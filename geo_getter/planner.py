@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import shutil
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,7 @@ FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
 SUPPLEMENTARY_MANIFEST_SUFFIX = "supplementary_manifest.tsv"
 DOWNLOAD_LOG_SUFFIX = "download_log.tsv"
 VERIFICATION_REPORT_NAME = "verification_report.tsv"
-FASTQ_MANIFEST_REQUIRED_COLUMNS = (
+FASTQ_MANIFEST_COLUMNS = (
     "source_accession",
     "query_accession",
     "run_accession",
@@ -39,7 +40,15 @@ FASTQ_MANIFEST_REQUIRED_COLUMNS = (
     "local_path",
     "status",
 )
-DOWNLOAD_LOG_REQUIRED_COLUMNS = (
+SUPPLEMENTARY_MANIFEST_COLUMNS = (
+    "source_accession",
+    "scope",
+    "file_name",
+    "url",
+    "local_path",
+    "status",
+)
+DOWNLOAD_LOG_COLUMNS = (
     "timestamp",
     "run_accession",
     "file_name",
@@ -50,6 +59,22 @@ DOWNLOAD_LOG_REQUIRED_COLUMNS = (
     "bytes_downloaded",
     "message",
 )
+VERIFICATION_REPORT_COLUMNS = (
+    "source_accession",
+    "query_accession",
+    "run_accession",
+    "file_index",
+    "file_name",
+    "local_path",
+    "exists",
+    "expected_size_bytes",
+    "actual_size_bytes",
+    "expected_md5",
+    "actual_md5",
+    "status",
+)
+FASTQ_MANIFEST_REQUIRED_COLUMNS = FASTQ_MANIFEST_COLUMNS
+DOWNLOAD_LOG_REQUIRED_COLUMNS = DOWNLOAD_LOG_COLUMNS
 
 
 @dataclass(frozen=True)
@@ -114,59 +139,57 @@ def write_fastq_outputs(plan: DownloadPlan, resume_artifacts: ResumeArtifacts | 
 
 def write_fastq_manifest(plan: DownloadPlan) -> None:
     path = fastq_manifest_path(plan.output_dir)
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(
+    _write_tsv(
+        path,
+        FASTQ_MANIFEST_COLUMNS,
+        (
             [
-                "source_accession",
-                "query_accession",
-                "run_accession",
-                "file_index",
-                "file_name",
-                "url",
-                "expected_md5",
-                "size_bytes",
-                "local_path",
-                "status",
+                planned.fastq.source_accession,
+                planned.fastq.query_accession,
+                planned.fastq.run_accession,
+                planned.fastq.file_index,
+                planned.fastq.file_name,
+                planned.fastq.url,
+                planned.fastq.expected_md5,
+                planned.fastq.size_bytes,
+                str(planned.local_path),
+                "planned",
             ]
-        )
-        for planned in plan.files:
-            item = planned.fastq
-            writer.writerow(
-                [
-                    item.source_accession,
-                    item.query_accession,
-                    item.run_accession,
-                    item.file_index,
-                    item.file_name,
-                    item.url,
-                    item.expected_md5,
-                    item.size_bytes,
-                    str(planned.local_path),
-                    "planned",
-                ]
-            )
+            for planned in plan.files
+        ),
+    )
+
+
+def write_supplementary_manifest(
+    output_dir: Path,
+    planned_supplementary: list[tuple[dict, Path]],
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = supplementary_manifest_path(output_dir)
+    _write_tsv(
+        path,
+        SUPPLEMENTARY_MANIFEST_COLUMNS,
+        (
+            [
+                item.get("source_accession", ""),
+                item.get("scope", ""),
+                item.get("name", ""),
+                item.get("url", ""),
+                str(local_path),
+                "planned",
+            ]
+            for item, local_path in planned_supplementary
+        ),
+    )
+    initialize_log(output_dir)
+    return path
 
 
 def initialize_log(output_dir: str | Path) -> None:
     path = download_log_path(output_dir)
     if path.exists():
         return
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(
-            [
-                "timestamp",
-                "run_accession",
-                "file_name",
-                "status",
-                "expected_md5",
-                "actual_md5",
-                "bytes_expected",
-                "bytes_downloaded",
-                "message",
-            ]
-        )
+    _write_tsv(path, DOWNLOAD_LOG_COLUMNS)
 
 
 def append_download_log(
@@ -181,21 +204,40 @@ def append_download_log(
     message: str,
 ) -> None:
     initialize_log(output_dir)
-    with download_log_path(output_dir).open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(
-            [
-                datetime.now(timezone.utc).isoformat(),
-                run_accession,
-                file_name,
-                status,
-                expected_md5,
-                actual_md5,
-                bytes_expected,
-                bytes_downloaded,
-                message,
-            ]
-        )
+    _append_tsv_row(
+        download_log_path(output_dir),
+        [
+            datetime.now(timezone.utc).isoformat(),
+            run_accession,
+            file_name,
+            status,
+            expected_md5,
+            actual_md5,
+            bytes_expected,
+            bytes_downloaded,
+            message,
+        ],
+    )
+
+
+def _write_tsv(
+    path: Path,
+    columns: Sequence[str],
+    rows: Iterable[Sequence[object]] = (),
+) -> None:
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = _tsv_writer(handle)
+        writer.writerow(columns)
+        writer.writerows(rows)
+
+
+def _append_tsv_row(path: Path, row: Sequence[object]) -> None:
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        _tsv_writer(handle).writerow(row)
+
+
+def _tsv_writer(handle):
+    return csv.writer(handle, delimiter="\t")
 
 
 def format_bytes(value: int) -> str:
@@ -305,23 +347,8 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
 
     counts: dict[str, int] = {}
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(
-            [
-                "source_accession",
-                "query_accession",
-                "run_accession",
-                "file_index",
-                "file_name",
-                "local_path",
-                "exists",
-                "expected_size_bytes",
-                "actual_size_bytes",
-                "expected_md5",
-                "actual_md5",
-                "status",
-            ]
-        )
+        writer = _tsv_writer(handle)
+        writer.writerow(VERIFICATION_REPORT_COLUMNS)
         for row_number, row in enumerate(rows, start=2):
             local_path = _resolve_manifest_local_path(manifest, row)
             exists = local_path.is_file()

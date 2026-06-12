@@ -12,7 +12,13 @@ from unittest import mock
 from geo_getter.cli import _load_json, _preflight_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
 from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
-from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path, verify_fastq_manifest
+from geo_getter.planner import (
+    SUPPLEMENTARY_MANIFEST_COLUMNS,
+    download_log_path,
+    fastq_manifest_path,
+    supplementary_manifest_path,
+    verify_fastq_manifest,
+)
 
 
 def http_error(status: int, url: str = "https://example.invalid/supplementary.txt") -> urllib.error.HTTPError:
@@ -275,7 +281,7 @@ class CliTest(unittest.TestCase):
             self.assertTrue(supplementary_manifest_path(run_dir).exists())
             self.assertFalse((run_dir / "supplementary_manifest.tsv").exists())
             manifest = supplementary_manifest_path(run_dir).read_text(encoding="utf-8-sig")
-            self.assertIn("source_accession\tscope\tfile_name\turl\tlocal_path\tstatus", manifest)
+            self.assertEqual(manifest.splitlines()[0].split("\t"), list(SUPPLEMENTARY_MANIFEST_COLUMNS))
             self.assertNotIn("estimated_type", manifest)
             log = download_log_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertIn("download_complete", log)

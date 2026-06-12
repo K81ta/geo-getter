@@ -25,6 +25,9 @@ from geo_getter.downloader import (
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DownloadPlan, FastqFile
 from geo_getter.planner import (
+    DOWNLOAD_LOG_COLUMNS,
+    FASTQ_MANIFEST_COLUMNS,
+    VERIFICATION_REPORT_COLUMNS,
     append_download_log,
     build_download_plan,
     download_log_path,
@@ -117,10 +120,15 @@ class PlannerDownloaderTest(unittest.TestCase):
             manifest_path = fastq_manifest_path(temp)
             self.assertTrue(manifest_path.read_bytes().startswith(b"\xef\xbb\xbf"))
             manifest = manifest_path.read_text(encoding="utf-8-sig")
+            self.assertEqual(manifest.splitlines()[0].split("\t"), list(FASTQ_MANIFEST_COLUMNS))
             self.assertIn("SRR000001.fastq.gz", manifest)
             log_path = download_log_path(temp)
             self.assertTrue(log_path.exists())
             self.assertTrue(log_path.read_bytes().startswith(b"\xef\xbb\xbf"))
+            log = log_path.read_text(encoding="utf-8-sig")
+            self.assertEqual(log.splitlines()[0].split("\t"), list(DOWNLOAD_LOG_COLUMNS))
+            append_download_log(temp, "SRR000001", "SRR000001.fastq.gz", "md5_verified", "expected", "actual", 5, 5, "fixture")
+            self.assertEqual(log_path.read_bytes().count(b"\xef\xbb\xbf"), 1)
 
     def test_md5_fixture_success(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1710,6 +1718,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 },
             )
             report_text = result["report_path"].read_text(encoding="utf-8-sig")
+            self.assertEqual(report_text.splitlines()[0].split("\t"), list(VERIFICATION_REPORT_COLUMNS))
             self.assertIn("md5_verified", report_text)
             self.assertIn("md5_unavailable", report_text)
             self.assertIn("missing", report_text)
