@@ -111,14 +111,7 @@ def _deduplicate_fastq(files: list[FastqFile]) -> list[FastqFile]:
 
 
 def _deduplicate_values(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        unique.append(value)
-        seen.add(value)
-    return unique
+    return list(dict.fromkeys(values))
 
 
 def _with_geo_sample_metadata(item: FastqFile, sample_metadata_by_accession: dict) -> FastqFile:

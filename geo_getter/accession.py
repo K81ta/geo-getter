@@ -36,6 +36,10 @@ ENA_QUERY_PREFIXES = (
     "SAMEA",
     "SAMD",
 )
+SUPPORTED_ACCESSION_PREFIXES = GEO_PREFIXES + ENA_QUERY_PREFIXES
+_ACCESSION_PREFIX_MATCH_ORDER = tuple(
+    sorted(SUPPORTED_ACCESSION_PREFIXES, key=len, reverse=True)
+)
 
 
 @dataclass(frozen=True)
@@ -66,18 +70,13 @@ def extract_accession(text: str) -> AccessionInput:
 
 
 def find_supported_accessions(text: str) -> list[str]:
-    seen: set[str] = set()
-    values: list[str] = []
-    for match in ACCESSION_PATTERN.finditer(text or ""):
-        accession = match.group(1).upper()
-        if accession not in seen:
-            values.append(accession)
-            seen.add(accession)
-    return values
+    return list(
+        dict.fromkeys(match.group(1).upper() for match in ACCESSION_PATTERN.finditer(text or ""))
+    )
 
 
 def _prefix_for(accession: str) -> str:
-    for prefix in sorted(GEO_PREFIXES + ENA_QUERY_PREFIXES, key=len, reverse=True):
+    for prefix in _ACCESSION_PREFIX_MATCH_ORDER:
         if accession.startswith(prefix):
             return prefix
     return accession[:3]

@@ -6,33 +6,13 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
-from ..accession import find_supported_accessions
+from ..accession import ENA_QUERY_PREFIXES, find_supported_accessions
 from ..errors import GeoGetterError
 from ..http_client import fetch_text
 from ..models import DatasetMetadata, SupplementaryFile
 
 
 GEO_SOFT_ENDPOINT = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi"
-RELATED_PREFIXES = (
-    "SRP",
-    "SRX",
-    "SRR",
-    "SRS",
-    "ERP",
-    "ERX",
-    "ERR",
-    "ERS",
-    "DRP",
-    "DRX",
-    "DRR",
-    "DRS",
-    "PRJNA",
-    "PRJEB",
-    "PRJDB",
-    "SAMN",
-    "SAMEA",
-    "SAMD",
-)
 
 
 @dataclass(frozen=True)
@@ -198,7 +178,7 @@ def _parse_other_record(record: SoftRecord, source_accession: str, state: _SoftP
 def _append_related_accessions(key: str, value: str, state: _SoftParseState) -> list[str]:
     matched_sample_accessions: list[str] = []
     for accession in find_supported_accessions(value):
-        if not accession.startswith(RELATED_PREFIXES):
+        if not accession.startswith(ENA_QUERY_PREFIXES):
             continue
         if key.startswith("Series_") and accession not in state.seen_series_related:
             state.series_related.append(accession)
@@ -277,15 +257,9 @@ def _merge_parse_results(primary: GeoSoftParseResult, samples: GeoSoftParseResul
 
 
 def _merge_related_accessions(*accession_lists: list[str]) -> list[str]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for accessions in accession_lists:
-        for accession in accessions:
-            if accession in seen:
-                continue
-            merged.append(accession)
-            seen.add(accession)
-    return merged
+    return list(
+        dict.fromkeys(accession for accessions in accession_lists for accession in accessions)
+    )
 
 
 def _merge_dataset_metadata(primary: DatasetMetadata, samples: DatasetMetadata) -> DatasetMetadata:
