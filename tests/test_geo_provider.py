@@ -1,7 +1,12 @@
 import unittest
 
 from geo_getter.errors import GeoGetterError
-from geo_getter.providers.geo import GeoProvider, _merge_parse_results, parse_soft
+from geo_getter.providers.geo import (
+    GeoProvider,
+    _merge_parse_results,
+    iter_soft_records,
+    parse_soft,
+)
 
 
 SOFT = """
@@ -30,6 +35,36 @@ SOFT = """
 
 
 class GeoProviderTest(unittest.TestCase):
+    def test_iter_soft_records_splits_series_and_samples(self):
+        records = list(iter_soft_records(SOFT))
+
+        self.assertEqual(
+            [record.record_type for record in records],
+            ["SERIES", "SAMPLE", "SAMPLE"],
+        )
+        self.assertEqual(
+            [record.accession for record in records],
+            ["GSE30567", "GSM758559", "GSM758560"],
+        )
+        self.assertIn(("Series_title", "Test series title"), records[0].entries)
+        self.assertIn(("Sample_title", "adipose sample 1"), records[1].entries)
+
+    def test_iter_soft_records_ignores_preamble_and_flushes_final_record(self):
+        records = list(
+            iter_soft_records(
+                """
+plain preamble line
+!Orphan_key = ignored
+^SAMPLE = GSM000001
+!Sample_title = final sample"""
+            )
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].record_type, "SAMPLE")
+        self.assertEqual(records[0].accession, "GSM000001")
+        self.assertEqual(records[0].entries, (("Sample_title", "final sample"),))
+
     def test_parse_related_and_supplementary(self):
         parsed = parse_soft(SOFT, "GSE30567")
         self.assertEqual(parsed.related_accessions, ["SRP007461"])
@@ -56,6 +91,51 @@ class GeoProviderTest(unittest.TestCase):
         self.assertEqual(parsed.dataset_metadata.experiment_type, "Expression profiling by high throughput sequencing")
         self.assertEqual(parsed.dataset_metadata.summary, "first summary line second summary line")
         self.assertEqual(parsed.dataset_metadata.overall_design, "design line")
+
+    def test_parse_uses_sample_related_accessions_when_series_related_is_absent(self):
+        parsed = parse_soft(
+            """
+^SERIES = GSE000001
+^SAMPLE = GSM000001
+!Sample_title = sample title
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000001
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(parsed.related_accessions, ["SRX000001"])
+        metadata = parsed.sample_metadata_by_accession["SRX000001"]
+        self.assertEqual(metadata.geo_sample_accession, "GSM000001")
+        self.assertEqual(metadata.geo_sample_title, "sample title")
+
+    def test_parse_preserves_unknown_record_supplementary(self):
+        parsed = parse_soft(
+            """
+^PLATFORM = GPL000001
+!Platform_supplementary_file = ftp://example.invalid/platform.txt
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(len(parsed.supplementary_files), 1)
+        self.assertEqual(parsed.supplementary_files[0].origin_level, "unknown")
+        self.assertEqual(parsed.supplementary_files[0].origin_accession, "GSE000001")
+
+    def test_sample_description_summary_fallback_is_preserved(self):
+        parsed = parse_soft(
+            """
+^SAMPLE = GSM000001
+!Sample_description = first description
+^SAMPLE = GSM000002
+!Sample_description = second description
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(
+            parsed.dataset_metadata.summary,
+            "first description second description",
+        )
 
     def test_merge_uses_gsm_organism_for_gse_metadata(self):
         primary = parse_soft(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import posixpath
 import re
 import urllib.parse
@@ -49,6 +50,35 @@ class GeoSoftParseResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SoftRecord:
+    record_type: str
+    accession: str
+    entries: tuple[tuple[str, str], ...]
+
+
+@dataclass
+class _SoftParseState:
+    series_related: list[str] = field(default_factory=list)
+    sample_related: list[str] = field(default_factory=list)
+    supplementary: list[SupplementaryFile] = field(default_factory=list)
+    sample_metadata_by_accession: dict[str, GeoSampleMetadata] = field(
+        default_factory=dict
+    )
+    seen_series_related: set[str] = field(default_factory=set)
+    seen_sample_related: set[str] = field(default_factory=set)
+    seen_supplementary: set[str] = field(default_factory=set)
+    dataset_status: str = ""
+    dataset_title: str = ""
+    dataset_summary_parts: list[str] = field(default_factory=list)
+    dataset_design_parts: list[str] = field(default_factory=list)
+    dataset_experiment_types: list[str] = field(default_factory=list)
+    dataset_organisms: list[str] = field(default_factory=list)
+    first_sample_status: str = ""
+    first_sample_title: str = ""
+    first_sample_description_parts: list[str] = field(default_factory=list)
+
+
 class GeoProvider:
     def fetch_soft(self, accession: str) -> str:
         params = urllib.parse.urlencode(
@@ -75,124 +105,156 @@ class GeoProvider:
 
 
 def parse_soft(text: str, source_accession: str) -> GeoSoftParseResult:
-    series_related: list[str] = []
-    sample_related: list[str] = []
-    supplementary: list[SupplementaryFile] = []
-    sample_metadata_by_accession: dict[str, GeoSampleMetadata] = {}
-    seen_series_related: set[str] = set()
-    seen_sample_related: set[str] = set()
-    seen_supplementary: set[str] = set()
-    current_sample = ""
-    current_sample_title = ""
-    current_sample_relations: list[str] = []
-    dataset_status = ""
-    dataset_title = ""
-    dataset_summary_parts: list[str] = []
-    dataset_design_parts: list[str] = []
-    dataset_experiment_types: list[str] = []
-    dataset_organisms: list[str] = []
-    first_sample_status = ""
-    first_sample_title = ""
-    first_sample_description_parts: list[str] = []
+    state = _SoftParseState()
+    for record in iter_soft_records(text):
+        if record.record_type == "SERIES":
+            _parse_series_record(record, source_accession, state)
+        elif record.record_type == "SAMPLE":
+            _parse_sample_record(record, source_accession, state)
+        else:
+            _parse_other_record(record, source_accession, state)
+    return _build_parse_result(state, source_accession)
 
-    def flush_sample() -> None:
-        if not current_sample:
-            return
-        metadata = GeoSampleMetadata(
-            geo_sample_accession=current_sample,
-            geo_sample_title=current_sample_title,
-        )
-        for accession in current_sample_relations:
-            sample_metadata_by_accession.setdefault(accession, metadata)
+
+def iter_soft_records(text: str) -> Iterator[SoftRecord]:
+    current_type = ""
+    current_accession = ""
+    current_entries: list[tuple[str, str]] = []
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if line.startswith("^SAMPLE"):
-            flush_sample()
-            current_sample = _split_soft_line(line.replace("^", "!", 1))[1]
-            current_sample_title = ""
-            current_sample_relations = []
+        if line.startswith("^"):
+            if current_type:
+                yield SoftRecord(current_type, current_accession, tuple(current_entries))
+            current_type, current_accession = _split_soft_line(line.replace("^", "!", 1))
+            current_entries = []
             continue
-        if not line.startswith("!"):
+        if not current_type or not line.startswith("!"):
             continue
         key, value = _split_soft_line(line)
-        if not key:
-            continue
+        if key:
+            current_entries.append((key, value))
 
-        if key == "Sample_title" and current_sample:
-            current_sample_title = value
-            if not first_sample_title:
-                first_sample_title = value
+    if current_type:
+        yield SoftRecord(current_type, current_accession, tuple(current_entries))
 
-        if key == "Sample_status" and current_sample and value and not first_sample_status:
-            first_sample_status = value
 
-        if key.startswith("Sample_organism_ch") and current_sample and value:
-            _append_unique(dataset_organisms, value)
-
-        if key == "Sample_description" and current_sample and value:
-            first_sample_description_parts.append(value)
-
+def _parse_series_record(record: SoftRecord, source_accession: str, state: _SoftParseState) -> None:
+    for key, value in record.entries:
         if key == "Series_status" and value:
-            dataset_status = value
+            state.dataset_status = value
         elif key == "Series_title" and value:
-            dataset_title = value
+            state.dataset_title = value
         elif key == "Series_type" and value:
-            _append_unique(dataset_experiment_types, value)
+            _append_unique(state.dataset_experiment_types, value)
         elif key == "Series_summary" and value:
-            dataset_summary_parts.append(value)
+            state.dataset_summary_parts.append(value)
         elif key == "Series_overall_design" and value:
-            dataset_design_parts.append(value)
+            state.dataset_design_parts.append(value)
 
         if key.endswith("_relation"):
-            accessions = find_supported_accessions(value)
-            for accession in accessions:
-                if not accession.startswith(RELATED_PREFIXES):
-                    continue
-                if key.startswith("Series_") and accession not in seen_series_related:
-                    series_related.append(accession)
-                    seen_series_related.add(accession)
-                elif key.startswith("Sample_") and accession not in seen_sample_related:
-                    sample_related.append(accession)
-                    seen_sample_related.add(accession)
-            if key.startswith("Sample_") and current_sample:
-                for accession in accessions:
-                    if accession.startswith(RELATED_PREFIXES):
-                        current_sample_relations.append(accession)
+            _append_related_accessions(key, value, state)
 
-        if "_supplementary_file" in key and value and value.upper() != "NONE":
-            normalized_url = value.strip()
-            if normalized_url not in seen_supplementary:
-                name = _name_from_url(normalized_url)
-                origin_level = _origin_level_from_soft_key(key)
-                supplementary.append(
-                    SupplementaryFile(
-                        source_accession=source_accession,
-                        scope=_scope_from_soft_key(key),
-                        name=name,
-                        url=normalized_url,
-                        origin_level=origin_level,
-                        origin_accession=_origin_accession(origin_level, source_accession, current_sample),
-                        extension=_extension_from_name(name),
-                        estimated_type=_estimated_supplementary_type(name),
-                    )
-                )
-                seen_supplementary.add(normalized_url)
+        _append_supplementary_file(key, value, source_accession, "", state)
 
-    flush_sample()
 
+def _parse_sample_record(record: SoftRecord, source_accession: str, state: _SoftParseState) -> None:
+    sample_title = ""
+    sample_relations: list[str] = []
+
+    for key, value in record.entries:
+        if key == "Sample_title":
+            sample_title = value
+            if value and not state.first_sample_title:
+                state.first_sample_title = value
+
+        if key == "Sample_status" and value and not state.first_sample_status:
+            state.first_sample_status = value
+
+        if key.startswith("Sample_organism_ch") and value:
+            _append_unique(state.dataset_organisms, value)
+
+        if key == "Sample_description" and value:
+            state.first_sample_description_parts.append(value)
+
+        if key.endswith("_relation"):
+            sample_relations.extend(_append_related_accessions(key, value, state))
+
+        _append_supplementary_file(key, value, source_accession, record.accession, state)
+
+    metadata = GeoSampleMetadata(
+        geo_sample_accession=record.accession,
+        geo_sample_title=sample_title,
+    )
+    for accession in sample_relations:
+        state.sample_metadata_by_accession.setdefault(accession, metadata)
+
+
+def _parse_other_record(record: SoftRecord, source_accession: str, state: _SoftParseState) -> None:
+    for key, value in record.entries:
+        _append_supplementary_file(key, value, source_accession, "", state)
+
+
+def _append_related_accessions(key: str, value: str, state: _SoftParseState) -> list[str]:
+    matched_sample_accessions: list[str] = []
+    for accession in find_supported_accessions(value):
+        if not accession.startswith(RELATED_PREFIXES):
+            continue
+        if key.startswith("Series_") and accession not in state.seen_series_related:
+            state.series_related.append(accession)
+            state.seen_series_related.add(accession)
+        elif key.startswith("Sample_") and accession not in state.seen_sample_related:
+            state.sample_related.append(accession)
+            state.seen_sample_related.add(accession)
+        if key.startswith("Sample_"):
+            matched_sample_accessions.append(accession)
+    return matched_sample_accessions
+
+
+def _append_supplementary_file(
+    key: str,
+    value: str,
+    source_accession: str,
+    sample_accession: str,
+    state: _SoftParseState,
+) -> None:
+    if "_supplementary_file" not in key or not value or value.upper() == "NONE":
+        return
+    normalized_url = value.strip()
+    if normalized_url in state.seen_supplementary:
+        return
+    name = _name_from_url(normalized_url)
+    origin_level = _origin_level_from_soft_key(key)
+    state.supplementary.append(
+        SupplementaryFile(
+            source_accession=source_accession,
+            scope=_scope_from_soft_key(key),
+            name=name,
+            url=normalized_url,
+            origin_level=origin_level,
+            origin_accession=_origin_accession(origin_level, source_accession, sample_accession),
+            extension=_extension_from_name(name),
+            estimated_type=_estimated_supplementary_type(name),
+        )
+    )
+    state.seen_supplementary.add(normalized_url)
+
+
+def _build_parse_result(state: _SoftParseState, source_accession: str) -> GeoSoftParseResult:
     return GeoSoftParseResult(
-        related_accessions=series_related or sample_related,
-        supplementary_files=supplementary,
-        sample_metadata_by_accession=sample_metadata_by_accession,
+        related_accessions=state.series_related or state.sample_related,
+        supplementary_files=state.supplementary,
+        sample_metadata_by_accession=state.sample_metadata_by_accession,
         dataset_metadata=DatasetMetadata(
             accession=source_accession,
-            status=dataset_status or first_sample_status,
-            title=dataset_title or first_sample_title,
-            organism=_join_unique_values(dataset_organisms),
-            experiment_type=_join_unique_values(dataset_experiment_types),
-            summary=_join_soft_text(dataset_summary_parts or first_sample_description_parts),
-            overall_design=_join_soft_text(dataset_design_parts),
+            status=state.dataset_status or state.first_sample_status,
+            title=state.dataset_title or state.first_sample_title,
+            organism=_join_unique_values(state.dataset_organisms),
+            experiment_type=_join_unique_values(state.dataset_experiment_types),
+            summary=_join_soft_text(
+                state.dataset_summary_parts or state.first_sample_description_parts
+            ),
+            overall_design=_join_soft_text(state.dataset_design_parts),
         ),
     )
 
