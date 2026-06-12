@@ -4,112 +4,153 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GEO Getter</title>
-    <meta name="description" content="GEO Getter は Windows で public GEO / ENA data から raw FASTQ と GEO supplementary / processed files を保存するデスクトップアプリです。">
+    <meta name="description" content="GEO Getter は、public GEO / ENA data から raw FASTQ と GEO supplementary / processed file を保存します。">
     <link rel="stylesheet" href="../assets/styles.css">
   </head>
   <body>
     <header class="site-header">
       <a class="brand" href="./" aria-label="GEO Getter home">GEO Getter</a>
-      <nav class="nav-links" aria-label="メインナビゲーション">
-        <a href="#download">Download</a>
-        <a href="#usage">使い方</a>
-        <a href="#outputs">保存結果</a>
+      <nav class="nav-links" aria-label="サイトリンク">
         <a href="../" lang="en">English</a>
+        <a href="https://github.com/K81ta/geo-getter">GitHub</a>
       </nav>
     </header>
 
     <main>
       <section class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">Windows x64 desktop app</p>
           <h1>GEO Getter</h1>
           <p class="lead">
             public GEO / ENA data から raw FASTQ と GEO supplementary /
-            processed files を保存する Windows 向けデスクトップアプリです。
+            processed file を accession folder に保存します。
           </p>
-          <div class="actions" id="download">
-            <a class="button primary" href="https://github.com/K81ta/geo-getter/releases/latest">GitHub Releases からダウンロード</a>
-            <a class="button secondary" href="https://github.com/K81ta/geo-getter">Repository を開く</a>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/K81ta/geo-getter/releases/latest">最新版</a>
+            <a class="button secondary" href="https://github.com/K81ta/geo-getter">Repository</a>
           </div>
-          <p class="note">
-            配布物は GitHub Releases にあります。installer は
-            <code>GEOGetter-Setup-vX.Y.Z.exe</code>、portable zip は
-            <code>GEOGetter-vX.Y.Z-win-x64-portable.zip</code> という名前です。
-          </p>
         </div>
       </section>
 
-      <section class="band warning">
-        <div>
-          <h2>installer について</h2>
-          <p>
-            Windows installer は未署名のため、Windows SmartScreen の警告が出る
-            場合があります。この repository の latest GitHub Release から
-            download してください。
-          </p>
+      <section class="doc-section">
+        <div class="section-heading">
+          <h2>保存できるもの</h2>
         </div>
-      </section>
-
-      <section class="content-grid" aria-labelledby="inputs-heading">
-        <div>
-          <h2 id="inputs-heading">対応 input</h2>
-          <p>app の input 欄に accession または GEO page URL を 1 つ貼り付けます。</p>
-        </div>
-        <div class="list-panel">
+        <div class="section-body">
           <ul class="compact-list">
-            <li>GEO accession: <code>GSE52778</code>, <code>GSM...</code></li>
-            <li>GEO page: <code>https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE52778</code></li>
-            <li>SRA / ENA accession: <code>SRP...</code>, <code>SRX...</code>, <code>SRR...</code>, <code>ERP...</code>, <code>ERR...</code></li>
-            <li>BioProject accession: <code>PRJNA...</code>, <code>PRJEB...</code>, <code>PRJDB...</code></li>
-            <li>BioSample accession: <code>SAMN...</code>, <code>SAMEA...</code>, <code>SAMD...</code></li>
+            <li>public SRA / ENA record から解決した raw FASTQ files。</li>
+            <li>public GEO record に掲載された GEO supplementary / processed files。</li>
+            <li>URL、expected size、checksum がある場合の expected MD5、local path を記録する manifest / download log TSV。</li>
           </ul>
         </div>
       </section>
 
-      <section class="content-grid" id="usage" aria-labelledby="usage-heading">
-        <div>
-          <h2 id="usage-heading">基本的な使い方</h2>
-          <p>
-            install した app の名前は <code>GEOGetter</code> です。portable zip
-            では <code>start_geo_getter.vbs</code> を実行します。
-          </p>
+      <section class="doc-section alt">
+        <div class="section-heading">
+          <h2>インストール</h2>
         </div>
-        <ol class="steps">
-          <li><code>GEOGetter</code> を起動します。</li>
-          <li>accession または GEO page URL を貼り付けます。</li>
-          <li><code>Find files</code> を選択します。</li>
-          <li>保存する raw FASTQ または GEO supplementary / processed files を選びます。</li>
-          <li>保存先を確認します。既定の base folder は <code>Downloads\GEOGetter</code> です。</li>
-          <li><code>Download selected files</code> を選択します。</li>
-        </ol>
+        <div class="section-body">
+          <p>
+            GEOGetter は
+            <a href="https://github.com/K81ta/geo-getter/releases/latest">latest GitHub Release</a>
+            からダウンロードします。
+          </p>
+          <ul class="compact-list">
+            <li>通常は <code>.exe</code> installer を選び、インストール後に Start menu の <code>GEOGetter</code> から起動します。</li>
+            <li>インストールせずに使う場合は <code>win-x64-portable.zip</code> package を展開し、<code>start_geo_getter.vbs</code> を実行します。</li>
+            <li>必要な環境: Windows 10 / 11 64-bit、internet access、保存する files に足りる disk space。</li>
+            <li>installer は unsigned のため、Windows SmartScreen の警告が表示される場合があります。</li>
+          </ul>
+        </div>
       </section>
 
-      <section class="content-grid" id="outputs" aria-labelledby="outputs-heading">
-        <div>
-          <h2 id="outputs-heading">保存されるもの</h2>
-          <p>
-            GEO Getter は app に表示された accession folder の下に、選択した
-            files と TSV records を保存します。
-          </p>
+      <section class="doc-section">
+        <div class="section-heading">
+          <h2>Quick start</h2>
         </div>
-        <div class="list-panel">
+        <div class="section-body">
+          <ol class="steps">
+            <li><code>GEOGetter</code> を起動します。</li>
+            <li>accession または GEO page URL を貼り付けます。</li>
+            <li><code>ファイルを検索</code> を押します。</li>
+            <li>保存する raw FASTQ files と GEO supplementary / processed files を選びます。</li>
+            <li>保存先を確認します。既定の base folder は <code>Downloads\GEOGetter</code> です。</li>
+            <li><code>選択ファイルをダウンロード</code> を押します。</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="doc-section alt">
+        <div class="section-heading">
+          <h2>入力</h2>
+        </div>
+        <div class="section-body">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>種類</th>
+                <th>例</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>GEO accession</td>
+                <td><code>GSE52778</code>, <code>GSM...</code></td>
+              </tr>
+              <tr>
+                <td>GEO page URL</td>
+                <td><code>https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE52778</code></td>
+              </tr>
+              <tr>
+                <td>Sequence archive accession</td>
+                <td><code>SRP...</code>, <code>SRX...</code>, <code>SRR...</code>, <code>SRS...</code>, <code>ERP...</code>, <code>ERX...</code>, <code>ERR...</code>, <code>ERS...</code>, <code>DRP...</code>, <code>DRX...</code>, <code>DRR...</code>, <code>DRS...</code></td>
+              </tr>
+              <tr>
+                <td>BioProject accession</td>
+                <td><code>PRJNA...</code>, <code>PRJEB...</code>, <code>PRJDB...</code></td>
+              </tr>
+              <tr>
+                <td>BioSample accession</td>
+                <td><code>SAMN...</code>, <code>SAMEA...</code>, <code>SAMD...</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <div class="section-heading">
+          <h2>保存先</h2>
+        </div>
+        <div class="section-body">
+          <p>
+            GEO Getter は、app に表示された accession folder の下に selected files と
+            TSV records を保存します。
+          </p>
+          <pre class="code-block"><code>Downloads/GEOGetter/
+  GSE52778/
+    GSE52778_fastq_manifest.tsv
+    GSE52778_supplementary_manifest.tsv
+    GSE52778_download_log.tsv
+    SRR1039508_1.fastq.gz</code></pre>
           <ul class="compact-list">
             <li><code>*_fastq_manifest.tsv</code>: FASTQ URL、ENA expected MD5、expected size、local path。</li>
             <li><code>*_supplementary_manifest.tsv</code>: GEO supplementary / processed file URL と local path。</li>
-            <li><code>*_download_log.tsv</code>: 選択した file ごとの download status。</li>
-            <li><code>verification_report.tsv</code>: 保存済み FASTQ をあとで確認した場合の optional report。</li>
+            <li><code>*_download_log.tsv</code>: selected file ごとの download status。</li>
+            <li><code>verification_report.tsv</code>: 保存済み FASTQ を後で確認した場合の optional report。</li>
           </ul>
         </div>
       </section>
 
-      <section class="band">
-        <div>
-          <h2>完全性確認</h2>
-          <p>
-            FASTQ は、ENA が expected MD5 を返す場合に MD5 を照合します。GEO
-            supplementary / processed files は GEO URL から保存し、ENA FASTQ
-            MD5 では照合しません。
-          </p>
+      <section class="doc-section alt">
+        <div class="section-heading">
+          <h2>チェックと再開</h2>
+        </div>
+        <div class="section-body">
+          <ul class="compact-list">
+            <li>FASTQ downloads は、ENA が expected MD5 を返す場合に MD5 を照合します。</li>
+            <li>GEO supplementary / processed files は GEO URL から保存し、ENA FASTQ MD5 では照合しません。</li>
+            <li>中断した FASTQ download を再開するには、同じ保存先 folder を選びます。途中までの file は <code>.part</code> として残ります。</li>
+          </ul>
         </div>
       </section>
     </main>
