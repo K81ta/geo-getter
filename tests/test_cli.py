@@ -9,7 +9,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
+from geo_getter.cli import _load_json, _preflight_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
 from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
 from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path, verify_fastq_manifest
@@ -40,6 +40,12 @@ class CliTest(unittest.TestCase):
         self.assertIn("message", payload)
         return payload
 
+    def run_preflight_json(self, input_json, fastq_indices, supp_indices, output_dir, resume_existing=False):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(_preflight_json(input_json, fastq_indices, supp_indices, output_dir, resume_existing=resume_existing), 0)
+        return json.loads(stdout.getvalue())
+
     def test_help_only_exposes_gui_bridge_commands(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -52,6 +58,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("verify-manifest-json", output)
         self.assertNotIn("check-update-json", output)
         self.assertNotIn("download-update-json", output)
+        self.assertNotIn("preflight-json", output)
         self.assertNotIn("verify-fastq-manifest", output)
         self.assertNotIn("plan-json", output)
         self.assertNotIn("verify-fixture", output)
@@ -233,6 +240,280 @@ class CliTest(unittest.TestCase):
             log = download_log_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertIn("download_complete", log)
             self.assertNotIn("not_applicable", log)
+
+    def test_preflight_json_plans_fastq_and_supplementary_with_python_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            out_dir = root / "collision output"
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000001",
+                        "file_index": 1,
+                        "file_name": "Same.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000002",
+                        "file_index": 1,
+                        "file_name": "same.2.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000003",
+                        "file_index": 1,
+                        "file_name": "same.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "query_accession": "SRP000001",
+                        "run_accession": "SRR000004",
+                        "file_index": 1,
+                        "file_name": "collision output_fastq_manifest.tsv",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    },
+                ],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.fastq.gz",
+                        "url": source.as_uri(),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "same.fastq.gz.part",
+                        "url": source.as_uri(),
+                    },
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "collision output_download_log.tsv",
+                        "url": source.as_uri(),
+                    },
+                ],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+
+            preflight = self.run_preflight_json(input_json, "0,1,2,3", "0,1,2", out_dir)
+
+            self.assertEqual(preflight["event"], "done")
+            self.assertEqual(preflight["kind"], "download_preflight")
+            self.assertEqual(preflight["output_dir"], str(out_dir.resolve()))
+            self.assertEqual(preflight["existing_output_nonempty"], False)
+            self.assertEqual(preflight["required_bytes"], len(data) * 4)
+            self.assertGreater(preflight["free_bytes"], 0)
+            self.assertEqual(preflight["fastq_manifest"], str(fastq_manifest_path(out_dir.resolve())))
+            self.assertEqual(preflight["supplementary_manifest"], str(supplementary_manifest_path(out_dir.resolve())))
+            self.assertEqual(preflight["download_log"], str(download_log_path(out_dir.resolve())))
+            self.assertEqual(Path(preflight["fastq_files"][3]["local_path"]).name, "collision output_fastq_manifest.2.tsv")
+            self.assertEqual(Path(preflight["supplementary_files"][0]["local_path"]).name, "same.4.fastq.gz")
+
+            planned_names = {Path(path).name for path in preflight["planned_paths"]}
+            self.assertIn("Same.fastq.gz", planned_names)
+            self.assertIn("same.2.fastq.gz", planned_names)
+            self.assertIn("same.3.fastq.gz", planned_names)
+            self.assertIn("same.4.fastq.gz", planned_names)
+            self.assertIn("same.4.fastq.gz.part", planned_names)
+            self.assertIn("same.fastq.gz.2.part", planned_names)
+            self.assertIn("same.fastq.gz.2.part.part", planned_names)
+            self.assertIn("collision output_fastq_manifest.tsv", planned_names)
+            self.assertIn("collision output_fastq_manifest.2.tsv", planned_names)
+            self.assertIn("collision output_supplementary_manifest.tsv", planned_names)
+            self.assertIn("collision output_download_log.tsv", planned_names)
+            self.assertIn("collision output_download_log.2.tsv", planned_names)
+
+    def test_preflight_json_reports_existing_fastq_without_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "existing.txt").write_text("existing", encoding="utf-8")
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            preflight = self.run_preflight_json(input_json, "0", "", out_dir)
+
+            self.assertEqual(preflight["existing_output_nonempty"], True)
+            self.assertEqual(preflight["resume_existing"], False)
+            self.assertIsNone(preflight["resume_required_bytes"])
+            self.assertEqual(preflight["required_bytes"], len(data))
+
+    def test_preflight_json_validates_resume_when_requested(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out_dir = root / "out"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir), 0)
+
+            preflight = self.run_preflight_json(input_json, "0", "", out_dir, resume_existing=True)
+
+            self.assertEqual(preflight["existing_output_nonempty"], True)
+            self.assertEqual(preflight["resume_existing"], True)
+            self.assertEqual(preflight["resume_required_bytes"], 0)
+            self.assertEqual(preflight["required_bytes"], 0)
+
+    def test_preflight_json_rejects_supplementary_in_nonempty_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "supplementary.txt"
+            source.write_bytes(b"supplementary fixture\n")
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "existing.txt").write_text("existing", encoding="utf-8")
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [],
+                        "supplementary_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "scope": "GEO Series supplementary/processed",
+                                "name": "supplementary.txt",
+                                "url": source.as_uri(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--supp-indices",
+                    "0",
+                    "--out",
+                    str(out_dir),
+                    "--resume-existing",
+                ],
+                "resume_supplementary_unsupported",
+            )
+
+    def test_preflight_json_resume_rejects_missing_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / "existing.txt").write_text("existing", encoding="utf-8")
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(out_dir),
+                    "--resume-existing",
+                ],
+                "resume_artifact_mismatch",
+            )
+            self.assertIn("missing_fastq_manifest", payload["detail"])
 
     def test_selected_download_rejects_nonempty_output_without_resume(self):
         with tempfile.TemporaryDirectory() as temp:
