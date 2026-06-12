@@ -5,6 +5,7 @@ import contextlib
 import io
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +13,10 @@ from geo_getter.cli import _load_json, _selected_download_json, _selected_fastq_
 from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
 from geo_getter.planner import download_log_path, fastq_manifest_path, supplementary_manifest_path, verify_fastq_manifest
+
+
+def http_error(status: int, url: str = "https://example.invalid/supplementary.txt") -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(url, status, f"HTTP {status}", {}, None)
 
 
 class CliTest(unittest.TestCase):
@@ -819,6 +824,49 @@ class CliTest(unittest.TestCase):
             log_text = download_log_path(run_dir).read_text(encoding="utf-8")
             self.assertIn("network_failed", log_text)
             self.assertIn("unknown url type", log_text)
+
+    def test_selected_download_does_not_retry_permanent_supplementary_http_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = {
+                "input_text": "GSE000001",
+                "primary_accession": "GSE000001",
+                "fastq_files": [],
+                "supplementary_files": [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "name": "missing.txt",
+                        "url": "https://example.invalid/missing.txt",
+                    }
+                ],
+            }
+            input_json = root / "input.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+            out_dir = root / "out"
+            calls = 0
+
+            def fail_404(_request, timeout):
+                nonlocal calls
+                calls += 1
+                raise http_error(404, "https://example.invalid/missing.txt")
+
+            stdout = io.StringIO()
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=fail_404),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=AssertionError("unexpected sleep")),
+                contextlib.redirect_stdout(stdout),
+            ):
+                exit_code = _selected_download_json(input_json, "", "0", out_dir)
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(calls, 1)
+            self.assertIn('"event": "done"', output)
+            self.assertIn('"network_failed"', output)
+            log_text = download_log_path(out_dir).read_text(encoding="utf-8")
+            self.assertIn("network_failed", log_text)
+            self.assertIn("HTTP Error 404", log_text)
 
     def test_selected_download_reports_local_io_failure_in_done_event(self):
         with tempfile.TemporaryDirectory() as temp:

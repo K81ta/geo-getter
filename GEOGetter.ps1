@@ -263,6 +263,7 @@ $script:Translations = @{
         idle = "待機中"
         fetching = "metadata取得中"
         downloading = "ダウンロード中"
+        downloadRetryWaiting = "通信再試行待機中"
         verifyingManifest = "manifest確認中"
         checkingUpdates = "更新確認中"
         downloadingUpdate = "更新インストーラー取得中"
@@ -466,6 +467,7 @@ $script:Translations = @{
         idle = "Idle"
         fetching = "Fetching metadata"
         downloading = "Downloading"
+        downloadRetryWaiting = "Waiting to retry"
         verifyingManifest = "Checking manifest"
         checkingUpdates = "Checking for updates"
         downloadingUpdate = "Downloading update installer"
@@ -2177,7 +2179,11 @@ function Handle-DownloadLine {
             $statusLabel.Text = T "downloading"
         }
         elseif ($event.event -eq "message") {
-            Append-Log $event.message
+            $messageText = [string]$event.message
+            Append-Log $messageText
+            if ($messageText -like "network_retry:*") {
+                $statusLabel.Text = T "downloadRetryWaiting"
+            }
         }
         elseif ($event.event -eq "done") {
             $script:LastDownloadDoneEvent = $event
@@ -4520,6 +4526,12 @@ if ($SelfTest) {
     Update-Capacity
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress label remains process state"
+    Handle-DownloadLine '{"event":"message","message":"download_started: large1.fastq.gz"}'
+    Assert-Equal $statusLabel.Text (T "downloading") "normal download message does not change status"
+    Handle-DownloadLine '{"event":"message","message":"network_retry: waiting 5s before retry (2/4) after temporary failure"}'
+    Assert-Equal $statusLabel.Text (T "downloadRetryWaiting") "retry message updates status"
+    Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
+    Assert-Equal $statusLabel.Text (T "downloading") "progress restores status after retry wait"
     $script:DownloadExitObserved = $false
     $script:DownloadStdoutClosed = $false
     $script:DownloadFinalized = $false

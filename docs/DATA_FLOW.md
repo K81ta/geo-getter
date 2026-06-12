@@ -79,7 +79,7 @@ GEO supplementary / processed file を選んだ場合は `*_supplementary_manife
 
 ## 途中ファイルと既存ファイル
 
-ダウンロード中のファイルは `.part` として保存される。同じ保存パスに `.part` が残っている場合は、HTTP Range で再開を試みる。
+ダウンロード中のファイルは `.part` として保存される。同じ保存パスに `.part` が残っている場合は、HTTP Range で再開を試みる。通信失敗、HTTP 429、HTTP 5xx は指数バックオフ後に再試行し、再試行しても保存できなかった場合は `network_failed` として記録する。
 
 既存ファイルがある保存フォルダで FASTQ を再開する場合は、既存の `*_fastq_manifest.tsv` と `*_download_log.tsv` が今回の FASTQ 選択と一致する場合だけ続行する。過去の `*_download_log.tsv` に GEO supplementary / processed file の記録があっても、今回の FASTQ 選択とは別に扱う。一致しない場合や必要な記録がない場合は、推測で続行せず停止する。
 
