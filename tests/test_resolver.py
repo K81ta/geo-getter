@@ -1,6 +1,9 @@
+import threading
+import time
 import unittest
 
 from geo_getter.accession import ENA_QUERY_PREFIXES
+from geo_getter.errors import GeoGetterError, URL_UNAVAILABLE
 from geo_getter.models import DatasetMetadata, FastqFile, SupplementaryFile
 from geo_getter.providers.geo import GeoSampleMetadata, GeoSoftParseResult
 from geo_getter.providers.resolver import MetadataResolver
@@ -58,6 +61,25 @@ class EmptyGeoProvider:
         )
 
 
+class MultiGeoProvider:
+    def __init__(self, related_accessions):
+        self.related_accessions = related_accessions
+
+    def get_related(self, accession):
+        return GeoSoftParseResult(
+            related_accessions=self.related_accessions,
+            supplementary_files=[],
+            sample_metadata_by_accession={
+                related_accession: GeoSampleMetadata(
+                    geo_sample_accession=f"GSM{related_accession.removeprefix('SRP')}",
+                    geo_sample_title=f"sample {related_accession}",
+                )
+                for related_accession in self.related_accessions
+            },
+            dataset_metadata=DatasetMetadata(accession=accession),
+        )
+
+
 class FailingGeoProvider:
     def get_related(self, accession):
         raise AssertionError(f"GEO provider should not be called for direct ENA input: {accession}")
@@ -81,6 +103,64 @@ class RecordingEnaProvider:
                 size_bytes=10,
             )
         ]
+
+
+class ParallelRecordingEnaProvider:
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def get_fastq_files(self, accession, source_accession):
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            if accession.endswith("000001"):
+                time.sleep(0.05)
+            else:
+                time.sleep(0.01)
+            return [_fastq(accession, source_accession)]
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+class PartiallyFailingEnaProvider:
+    def get_fastq_files(self, accession, source_accession):
+        if accession == "SRP000002":
+            raise GeoGetterError(URL_UNAVAILABLE, accession)
+        return [_fastq(accession, source_accession)]
+
+
+class DuplicateFastqEnaProvider:
+    def get_fastq_files(self, accession, source_accession):
+        return [
+            FastqFile(
+                source_accession=source_accession,
+                query_accession=accession,
+                run_accession="SRR000001",
+                file_index=1,
+                file_name="shared.fastq.gz",
+                url="https://example.invalid/shared.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+        ]
+
+
+def _fastq(accession, source_accession):
+    suffix = accession.removeprefix("SRP")
+    return FastqFile(
+        source_accession=source_accession,
+        query_accession=accession,
+        run_accession=f"SRR{suffix}",
+        file_index=1,
+        file_name=f"{accession}.fastq.gz",
+        url=f"https://example.invalid/{accession}.fastq.gz",
+        expected_md5="1" * 32,
+        size_bytes=10,
+    )
 
 
 class ResolverTest(unittest.TestCase):
@@ -132,6 +212,40 @@ class ResolverTest(unittest.TestCase):
                 self.assertEqual(result.fastq_files[0].source_accession, accession)
                 self.assertEqual(result.fastq_files[0].query_accession, accession)
                 self.assertEqual(result.supplementary_files, [])
+
+    def test_geo_related_accessions_are_queried_in_small_parallel_batches(self):
+        accessions = [f"SRP{index:06d}" for index in range(1, 13)]
+        ena_provider = ParallelRecordingEnaProvider()
+
+        result = MetadataResolver(MultiGeoProvider(accessions), ena_provider).resolve("GSE000004")
+
+        self.assertGreater(ena_provider.max_active, 1)
+        self.assertLessEqual(ena_provider.max_active, 4)
+        self.assertEqual(result.query_accessions, accessions)
+        self.assertEqual(
+            [item.query_accession for item in result.fastq_files],
+            accessions,
+        )
+        self.assertEqual(result.fastq_files[0].geo_sample_accession, "GSM000001")
+
+    def test_geo_related_accession_failure_propagates_without_partial_result(self):
+        with self.assertRaises(GeoGetterError) as raised:
+            MetadataResolver(
+                MultiGeoProvider(["SRP000001", "SRP000002", "SRP000003"]),
+                PartiallyFailingEnaProvider(),
+            ).resolve("GSE000005")
+
+        self.assertEqual(raised.exception.code, URL_UNAVAILABLE)
+        self.assertEqual(raised.exception.detail, "SRP000002")
+
+    def test_parallel_fastq_dedup_keeps_first_query_order(self):
+        result = MetadataResolver(
+            MultiGeoProvider(["SRP000001", "SRP000002"]),
+            DuplicateFastqEnaProvider(),
+        ).resolve("GSE000006")
+
+        self.assertEqual(len(result.fastq_files), 1)
+        self.assertEqual(result.fastq_files[0].query_accession, "SRP000001")
 
 
 if __name__ == "__main__":
