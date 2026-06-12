@@ -257,6 +257,7 @@ $script:Translations = @{
         fastqFilterAll = "すべて"
         clearFastqFilterButton = "フィルタ解除"
         downloadButton = "選択ファイルをダウンロード"
+        downloadWorkersLabel = "同時FASTQ"
         cancelButton = "キャンセル"
         selectAllButton = "すべて選択"
         clearSelectionButton = "選択解除"
@@ -461,6 +462,7 @@ $script:Translations = @{
         fastqFilterAll = "All"
         clearFastqFilterButton = "Clear filter"
         downloadButton = "Download selected files"
+        downloadWorkersLabel = "FASTQ workers"
         cancelButton = "Cancel"
         selectAllButton = "Select all"
         clearSelectionButton = "Clear selection"
@@ -781,6 +783,7 @@ function Update-StaticTexts {
     if ($datasetTitleLabel) { $datasetTitleLabel.Text = T "datasetTitleLabel" }
     Update-ResultTitles
     if ($downloadButton) { $downloadButton.Text = T "downloadButton" }
+    if ($downloadWorkersLabel) { $downloadWorkersLabel.Text = T "downloadWorkersLabel" }
     if ($cancelButton) { $cancelButton.Text = T "cancelButton" }
     if ($fastqSelectAllButton) { $fastqSelectAllButton.Text = T "selectAllButton" }
     if ($fastqClearSelectionButton) { $fastqClearSelectionButton.Text = T "clearSelectionButton" }
@@ -2027,6 +2030,7 @@ function Set-Busy {
     if ($fastqLayoutFilterCombo) { $fastqLayoutFilterCombo.Enabled = -not $Busy }
     if ($fastqStrategyFilterCombo) { $fastqStrategyFilterCombo.Enabled = -not $Busy }
     if ($fastqClearFilterButton) { $fastqClearFilterButton.Enabled = -not $Busy }
+    if ($downloadWorkersUpDown) { $downloadWorkersUpDown.Enabled = -not $Busy }
     if ($suppSelectAllButton) { $suppSelectAllButton.Enabled = -not $Busy }
     if ($suppClearSelectionButton) { $suppClearSelectionButton.Enabled = -not $Busy }
     Update-CancelButton
@@ -2121,6 +2125,12 @@ function Handle-DownloadLine {
         if ($event.event -eq "progress") {
             $total = [Int64]$event.total
             $downloaded = [Int64]$event.downloaded
+            $aggregateTotalProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "aggregate_total" } | Select-Object -First 1)
+            $aggregateDownloadedProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "aggregate_downloaded" } | Select-Object -First 1)
+            if ($aggregateTotalProperty.Count -gt 0 -and $null -ne $aggregateTotalProperty[0].Value -and $aggregateDownloadedProperty.Count -gt 0 -and $null -ne $aggregateDownloadedProperty[0].Value) {
+                $total = [Int64]$aggregateTotalProperty[0].Value
+                $downloaded = [Int64]$aggregateDownloadedProperty[0].Value
+            }
             $progressBar.Value = if ($total -gt 0) { [Math]::Min(100, [int](($downloaded / $total) * 100)) } else { 0 }
             $statusLabel.Text = T "downloading"
         }
@@ -2873,11 +2883,18 @@ function Get-DownloadPythonArguments {
         [string]$SuppIndices,
         [bool]$ResumeExisting = $false
     )
-    $args = @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text)
+    $args = @("-m", "geo_getter.cli", "selected-download-json", "--input-json", $script:ResolvedJsonPath, "--fastq-indices", $FastqIndices, "--supp-indices", $SuppIndices, "--out", $outputBox.Text, "--download-workers", ([string](Get-DownloadWorkerCount)))
     if ($ResumeExisting) {
         $args += "--resume-existing"
     }
     return $args
+}
+
+function Get-DownloadWorkerCount {
+    if ($downloadWorkersUpDown) {
+        return [int]$downloadWorkersUpDown.Value
+    }
+    return 2
 }
 
 function Get-PreflightPythonArguments {
@@ -3559,10 +3576,25 @@ function New-MainForm {
     $cancelButton.Enabled = $false
     $bottom.Controls.Add($cancelButton)
 
+    $script:downloadWorkersLabel = New-Object System.Windows.Forms.Label
+    $downloadWorkersLabel.Text = "FASTQ workers"
+    $downloadWorkersLabel.Location = New-Object System.Drawing.Point(315, 14)
+    $downloadWorkersLabel.Size = New-Object System.Drawing.Size(95, 22)
+    $downloadWorkersLabel.TextAlign = "MiddleLeft"
+    $bottom.Controls.Add($downloadWorkersLabel)
+
+    $script:downloadWorkersUpDown = New-Object System.Windows.Forms.NumericUpDown
+    $downloadWorkersUpDown.Location = New-Object System.Drawing.Point(410, 10)
+    $downloadWorkersUpDown.Size = New-Object System.Drawing.Size(45, 24)
+    $downloadWorkersUpDown.Minimum = 1
+    $downloadWorkersUpDown.Maximum = 4
+    $downloadWorkersUpDown.Value = 2
+    $bottom.Controls.Add($downloadWorkersUpDown)
+
     $script:statusLabel = New-Object System.Windows.Forms.Label
     $statusLabel.Text = "Idle"
-    $statusLabel.Location = New-Object System.Drawing.Point(315, 14)
-    $statusLabel.Size = New-Object System.Drawing.Size(470, 22)
+    $statusLabel.Location = New-Object System.Drawing.Point(465, 14)
+    $statusLabel.Size = New-Object System.Drawing.Size(320, 22)
     $statusLabel.Anchor = $anchorTopLeftRight
     $bottom.Controls.Add($statusLabel)
 
@@ -3738,6 +3770,7 @@ if ($SelfTest) {
     Assert-Equal $helpMenuItem.DropDownItems[1] $checkUpdatesMenuItem "Help menu checks updates second"
     Assert-Equal $fetchButton.Text "Find files" "English find files button"
     Assert-Equal $browseButton.Text "Browse" "English browse button"
+    Assert-Equal $downloadWorkersLabel.Text "FASTQ workers" "English download workers label"
     Assert-Equal ((Get-Variable -Name ("diag" + "nosticsButton") -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "save button removed from main UI"
     Assert-Equal $fastqGrid.Columns["geo_title"].HeaderText "Sample title" "English FASTQ header"
     Assert-Equal $fastqGrid.Columns["strategy"].HeaderText "Strategy" "English FASTQ strategy header"
@@ -3751,6 +3784,7 @@ if ($SelfTest) {
     Assert-Equal $checkUpdatesMenuItem.Text "更新を確認" "Japanese check updates menu"
     Assert-Equal $toolsMenuItem.Text "ツール" "Japanese tools menu"
     Assert-Equal $verifyManifestMenuItem.Text "保存済みFASTQを確認" "Japanese verify manifest menu"
+    Assert-Equal $downloadWorkersLabel.Text "同時FASTQ" "Japanese download workers label"
     Assert-Equal ((Get-Variable -Name inputHelpMenuItem -Scope Script -ErrorAction SilentlyContinue) -eq $null) $true "individual input help menu removed"
     Assert-Equal $fetchButton.Text "ファイルを検索" "Japanese find files button"
     Assert-Equal $browseButton.Text "参照..." "Japanese browse button"
@@ -3765,10 +3799,15 @@ if ($SelfTest) {
     Assert-Equal $suppGrid.Columns["supp_url"].HeaderText "GEO URL" "Japanese supplementary URL header"
     Set-Busy $true
     Assert-Equal $checkUpdatesMenuItem.Enabled $false "busy disables check updates menu"
+    Assert-Equal $downloadWorkersUpDown.Enabled $false "busy disables download worker setting"
     Set-Busy $false
     Assert-Equal $checkUpdatesMenuItem.Enabled $true "idle enables check updates menu"
+    Assert-Equal $downloadWorkersUpDown.Enabled $true "idle enables download worker setting"
     Assert-Equal $outputBox.ReadOnly $true "output folder is browse-only"
     Assert-Equal $outputBox.Text (Get-DefaultOutputFolder) "default output folder"
+    Assert-Equal ([int]$downloadWorkersUpDown.Minimum) 1 "download worker minimum"
+    Assert-Equal ([int]$downloadWorkersUpDown.Maximum) 4 "download worker maximum"
+    Assert-Equal ([int]$downloadWorkersUpDown.Value) 2 "download worker default"
     Assert-Equal $fastqGrid.Columns["run"].ReadOnly $true "FASTQ run column readonly"
     Assert-Equal $fastqGrid.Columns["url"].ReadOnly $true "FASTQ URL column readonly"
     Assert-Equal $fastqGrid.Columns["selected"].ReadOnly $false "FASTQ select column editable"
@@ -3786,6 +3825,10 @@ if ($SelfTest) {
     Assert-Equal ($updateCheckArgs -join "|") "-m|geo_getter.cli|check-update-json" "update check bridge arguments"
     $updateDownloadArgs = Get-UpdateDownloadPythonArguments "0.1.4"
     Assert-Equal ($updateDownloadArgs -join "|") "-m|geo_getter.cli|download-update-json|--version|0.1.4" "update download bridge arguments"
+    $downloadWorkersUpDown.Value = 4
+    $workerDownloadArgs = Get-DownloadPythonArguments "0" "" $false
+    Assert-Equal ($workerDownloadArgs -join "|") "-m|geo_getter.cli|selected-download-json|--input-json|$script:ResolvedJsonPath|--fastq-indices|0|--supp-indices||--out|$($outputBox.Text)|--download-workers|4" "download worker bridge arguments"
+    $downloadWorkersUpDown.Value = 2
     $selfTestResolvedJsonPath = $script:ResolvedJsonPath
     $script:ResolvedJsonPath = "C:\tmp\geo getter\resolved.json"
     $preflightArgs = Get-PreflightPythonArguments "0,1" "2" "C:\tmp\geo getter\out" $true
@@ -4437,6 +4480,8 @@ if ($SelfTest) {
     Update-Capacity
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress label remains process state"
+    Handle-DownloadLine '{"event":"progress","file_name":"large2.fastq.gz","downloaded":1,"total":10,"aggregate_downloaded":5,"aggregate_total":20}'
+    Assert-Equal $progressBar.Value 25 "progress bar uses aggregate FASTQ progress when present"
     Handle-DownloadLine '{"event":"message","message":"download_started: large1.fastq.gz"}'
     Assert-Equal $statusLabel.Text (T "downloading") "normal download message does not change status"
     Handle-DownloadLine '{"event":"message","message":"network_retry: waiting 5s before retry (2/4) after temporary failure"}'

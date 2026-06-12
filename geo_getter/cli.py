@@ -5,16 +5,19 @@ import csv
 import json
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 from . import __version__
 from .downloader import (
+    DEFAULT_DOWNLOAD_WORKERS,
     DownloadLocalIoError,
     DownloadNetworkError,
     DownloadSizeMismatchError,
     download_plan,
     download_url_to_part,
     finalize_downloaded_part,
+    normalize_download_workers,
 )
 from .errors import (
     DOWNLOAD_COMPLETE,
@@ -65,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     selected_download_parser.add_argument("--supp-indices", default="")
     selected_download_parser.add_argument("--out", required=True)
     selected_download_parser.add_argument("--resume-existing", action="store_true")
+    selected_download_parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
 
     if argv_list and argv_list[0] == "preflight-json":
         preflight_parser = subparsers.add_parser("preflight-json", help=argparse.SUPPRESS)
@@ -93,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             args.supp_indices,
             Path(args.out),
             resume_existing=args.resume_existing,
+            download_workers=args.download_workers,
         )
     if args.command == "preflight-json":
         return _preflight_json(
@@ -175,6 +180,7 @@ def _selected_download_json(
     supp_indices: str,
     output_dir: Path,
     resume_existing: bool = False,
+    download_workers: int = DEFAULT_DOWNLOAD_WORKERS,
 ) -> int:
     payload = _load_json(input_json)
     selected_fastq = _selected_fastq_from_payload(payload, fastq_indices) if fastq_indices.strip() else []
@@ -194,6 +200,7 @@ def _selected_download_json(
     resume_required_bytes: int | None = None
     resume_active = existing_output_nonempty and resume_existing
     resume_artifacts = None
+    worker_count = normalize_download_workers(download_workers)
     if selected_fastq:
         plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
         if resume_active:
@@ -203,30 +210,37 @@ def _selected_download_json(
             *reserved_output_names,
             *(name for planned in plan.files for name in reserved_download_names(planned.local_path.name)),
         ]
+        progress_lock = threading.Lock()
+        progress_by_path: dict[str, tuple[int, int]] = {}
 
         def progress(planned, downloaded: int, total: int) -> None:
-            print(
-                json.dumps(
+            with progress_lock:
+                progress_by_path[str(planned.local_path)] = (downloaded, total)
+                aggregate_downloaded = sum(current for current, _total in progress_by_path.values())
+                aggregate_total = plan.total_bytes or sum(item_total for _current, item_total in progress_by_path.values())
+                _print_json_event(
                     {
                         "event": "progress",
                         "kind": "fastq",
                         "file_name": planned.fastq.file_name,
                         "downloaded": downloaded,
                         "total": total,
-                    },
-                    ensure_ascii=False,
-                ),
-                flush=True,
-            )
+                        "aggregate_downloaded": aggregate_downloaded,
+                        "aggregate_total": aggregate_total,
+                        "download_workers": worker_count,
+                    }
+                )
 
         def message(text: str) -> None:
-            print(json.dumps({"event": "message", "message": text}, ensure_ascii=False), flush=True)
+            with progress_lock:
+                _print_json_event({"event": "message", "message": text})
 
         results = download_plan(
             plan,
             progress_callback=progress,
             message_callback=message,
             resume_artifacts=resume_artifacts,
+            download_workers=worker_count,
         )
         statuses.extend(status for _planned, status, _message in results)
     else:
@@ -247,6 +261,7 @@ def _selected_download_json(
                 "download_log": str(download_log_path(run_output_dir)),
                 "resume_existing": resume_active,
                 "resume_required_bytes": resume_required_bytes,
+                "download_workers": worker_count,
             },
             ensure_ascii=False,
         ),
@@ -385,6 +400,10 @@ def _write_or_print_json(payload: object, out_json: str | None) -> None:
         Path(out_json).write_text(text, encoding="utf-8")
     else:
         print(text)
+
+
+def _print_json_event(payload: object) -> None:
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 def _load_json(path: Path) -> dict:
