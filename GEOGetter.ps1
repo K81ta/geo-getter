@@ -1130,6 +1130,59 @@ function Dispose-ProcessQuietly {
     try { $Process.Dispose() } catch { }
 }
 
+function Start-GeoGetterPythonProcess {
+    param(
+        [string]$OperationName,
+        [scriptblock]$CreateStartInfo,
+        [System.Action[string]]$OutputHandler,
+        [System.Action[string]]$ErrorHandler,
+        [System.Action[int]]$ExitHandler,
+        [System.Action]$OutputClosedHandler,
+        [System.Action]$ErrorClosedHandler,
+        [scriptblock]$SetProcess,
+        [scriptblock]$SetBridge,
+        [scriptblock]$OnStartFailure
+    )
+    if ([string]::IsNullOrWhiteSpace($OperationName)) {
+        throw "OperationName is required."
+    }
+
+    $process = New-Object System.Diagnostics.Process
+    try {
+        $process.StartInfo = & $CreateStartInfo
+        $process.EnableRaisingEvents = $true
+        $bridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
+            $form,
+            $OutputHandler,
+            $ErrorHandler,
+            $ExitHandler,
+            $OutputClosedHandler,
+            $ErrorClosedHandler
+        )
+        $bridge.Attach($process)
+        & $SetBridge $bridge
+        & $SetProcess $process
+        [void]$process.Start()
+        Update-CancelButton
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
+    }
+    catch {
+        $startError = $_
+        if (Test-ProcessRunning $process) {
+            try { $process.Kill() } catch { }
+        }
+        & $SetProcess $null
+        & $SetBridge $null
+        if ($null -ne $OnStartFailure) {
+            & $OnStartFailure $startError.Exception.Message
+        }
+        Dispose-ProcessQuietly $process
+        Update-CancelButton
+        throw
+    }
+}
+
 function Clear-ResolveRunState {
     $script:ResolveCanceled = $false
     $script:ResolveStdoutText = ""
@@ -2557,86 +2610,71 @@ function Start-UpdateProcess {
     if ($Arguments.Count -ge 3) {
         $script:LastUpdateCommand = [string]$Arguments[2]
     }
-    $process = New-Object System.Diagnostics.Process
-    try {
-        $process.StartInfo = New-UpdateProcessStartInfo $Arguments
-        $process.EnableRaisingEvents = $true
-        Set-Busy $true
-        $progressBar.Style = "Marquee"
-        $progressBar.MarqueeAnimationSpeed = 30
-        $progressBar.Value = 0
-        $statusLabel.Text = T $StatusKey
-        $script:UpdateBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
-            $form,
-            ([System.Action[string]]{
-                param($line)
-                Append-UpdateProcessOutput "stdout" $line
-                try {
-                    Handle-UpdateLine $line
-                }
-                catch {
-                    try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
-                }
-            }),
-            ([System.Action[string]]{
-                param($line)
-                Append-UpdateProcessOutput "stderr" $line
-                try {
-                    Handle-UpdateErrorLine $line
-                }
-                catch { }
-            }),
-            ([System.Action[int]]{
-                param($code)
-                try {
-                    $script:LastUpdateExitCode = $code
-                    $script:UpdateExitObserved = $true
-                    Complete-UpdateIfReady
-                }
-                catch {
-                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-                }
-            }),
-            ([System.Action]{
-                try {
-                    $script:UpdateStdoutClosed = $true
-                    Complete-UpdateIfReady
-                }
-                catch {
-                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-                }
-            }),
-            ([System.Action]{
-                try {
-                    $script:UpdateStderrClosed = $true
-                    Complete-UpdateIfReady
-                }
-                catch {
-                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-                }
-            })
-        )
-        $script:UpdateBridge.Attach($process)
-        $script:UpdateProcess = $process
-        [void]$process.Start()
-        Update-CancelButton
-        $process.BeginOutputReadLine()
-        $process.BeginErrorReadLine()
-    }
-    catch {
-        if (Test-ProcessRunning $process) {
-            try { $process.Kill() } catch { }
+    Set-Busy $true
+    $progressBar.Style = "Marquee"
+    $progressBar.MarqueeAnimationSpeed = 30
+    $progressBar.Value = 0
+    $statusLabel.Text = T $StatusKey
+    Start-GeoGetterPythonProcess `
+        -OperationName "update" `
+        -CreateStartInfo { New-UpdateProcessStartInfo $Arguments } `
+        -OutputHandler ([System.Action[string]]{
+            param($line)
+            Append-UpdateProcessOutput "stdout" $line
+            try {
+                Handle-UpdateLine $line
+            }
+            catch {
+                try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
+            }
+        }) `
+        -ErrorHandler ([System.Action[string]]{
+            param($line)
+            Append-UpdateProcessOutput "stderr" $line
+            try {
+                Handle-UpdateErrorLine $line
+            }
+            catch { }
+        }) `
+        -ExitHandler ([System.Action[int]]{
+            param($code)
+            try {
+                $script:LastUpdateExitCode = $code
+                $script:UpdateExitObserved = $true
+                Complete-UpdateIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }) `
+        -OutputClosedHandler ([System.Action]{
+            try {
+                $script:UpdateStdoutClosed = $true
+                Complete-UpdateIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }) `
+        -ErrorClosedHandler ([System.Action]{
+            try {
+                $script:UpdateStderrClosed = $true
+                Complete-UpdateIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }) `
+        -SetProcess { param($value) $script:UpdateProcess = $value } `
+        -SetBridge { param($value) $script:UpdateBridge = $value } `
+        -OnStartFailure {
+            param($message)
+            $script:LastUpdateStartError = $message
+            $script:LastOperationError = New-OperationError "update_process_start" $script:LastUpdateCommand "process_start_failed" $script:LastUpdateStartError $script:LastUpdateStartError "process_start" $null
+            $progressBar.Style = "Continuous"
+            $progressBar.Value = 0
+            Set-Busy $false
         }
-        $script:UpdateProcess = $null
-        $script:LastUpdateStartError = $_.Exception.Message
-        $script:LastOperationError = New-OperationError "update_process_start" $script:LastUpdateCommand "process_start_failed" $script:LastUpdateStartError $script:LastUpdateStartError "process_start" $null
-        Dispose-ProcessQuietly $process
-        $progressBar.Style = "Continuous"
-        $progressBar.Value = 0
-        Set-Busy $false
-        Update-CancelButton
-        throw
-    }
 }
 
 function Start-VerifiedUpdateInstallerAndExit {
@@ -2687,76 +2725,61 @@ function Start-ResolveProcess {
     Clear-ResolveRunState
     $script:LastOperationError = $null
     $script:ResolveInputPath = New-ResolveInputFile $InputText
-    $process = New-Object System.Diagnostics.Process
-    try {
-        $script:LastResolveArguments = Get-ResolvePythonArguments $script:ResolveInputPath
-        $process.StartInfo = New-ResolveProcessStartInfo $script:ResolveInputPath
-        $process.EnableRaisingEvents = $true
-        $script:ResolveBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
-            $form,
-            ([System.Action[string]]{
-                param($line)
-                Append-ResolveProcessOutput "stdout" $line
-            }),
-            ([System.Action[string]]{
-                param($line)
-                Append-ResolveProcessOutput "stderr" $line
-            }),
-            ([System.Action[int]]{
-                param($code)
+    $script:LastResolveArguments = Get-ResolvePythonArguments $script:ResolveInputPath
+    Start-GeoGetterPythonProcess `
+        -OperationName "resolve" `
+        -CreateStartInfo { New-ResolveProcessStartInfo $script:ResolveInputPath } `
+        -OutputHandler ([System.Action[string]]{
+            param($line)
+            Append-ResolveProcessOutput "stdout" $line
+        }) `
+        -ErrorHandler ([System.Action[string]]{
+            param($line)
+            Append-ResolveProcessOutput "stderr" $line
+        }) `
+        -ExitHandler ([System.Action[int]]{
+            param($code)
+            try {
+                $script:LastResolveExitCode = $code
+                $script:ResolveExitObserved = $true
+                Complete-ResolveIfReady
+            }
+            catch {
                 try {
-                    $script:LastResolveExitCode = $code
-                    $script:ResolveExitObserved = $true
-                    Complete-ResolveIfReady
+                    $progressBar.Style = "Continuous"
+                    $progressBar.Value = 0
+                    Set-Busy $false
+                    Show-AppError $_.Exception.Message
                 }
-                catch {
-                    try {
-                        $progressBar.Style = "Continuous"
-                        $progressBar.Value = 0
-                        Set-Busy $false
-                        Show-AppError $_.Exception.Message
-                    }
-                    catch { }
-                }
-            }),
-            ([System.Action]{
-                try {
-                    $script:ResolveStdoutClosed = $true
-                    Complete-ResolveIfReady
-                }
-                catch {
-                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-                }
-            }),
-            ([System.Action]{
-                try {
-                    $script:ResolveStderrClosed = $true
-                    Complete-ResolveIfReady
-                }
-                catch {
-                    try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-                }
-            })
-        )
-        $script:ResolveBridge.Attach($process)
-        $script:ResolveProcess = $process
-        [void]$process.Start()
-        Update-CancelButton
-        $process.BeginOutputReadLine()
-        $process.BeginErrorReadLine()
-    }
-    catch {
-        if (Test-ProcessRunning $process) {
-            try { $process.Kill() } catch { }
+                catch { }
+            }
+        }) `
+        -OutputClosedHandler ([System.Action]{
+            try {
+                $script:ResolveStdoutClosed = $true
+                Complete-ResolveIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }) `
+        -ErrorClosedHandler ([System.Action]{
+            try {
+                $script:ResolveStderrClosed = $true
+                Complete-ResolveIfReady
+            }
+            catch {
+                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
+            }
+        }) `
+        -SetProcess { param($value) $script:ResolveProcess = $value } `
+        -SetBridge { param($value) $script:ResolveBridge = $value } `
+        -OnStartFailure {
+            param($message)
+            Remove-ResolveInputFile
+            $script:LastResolveStartError = $message
+            $script:LastOperationError = New-OperationError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
         }
-        Remove-ResolveInputFile
-        $script:ResolveProcess = $null
-        $script:LastResolveStartError = $_.Exception.Message
-        $script:LastOperationError = New-OperationError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
-        Dispose-ProcessQuietly $process
-        Update-CancelButton
-        throw
-    }
 }
 
 function Start-ManifestVerificationProcess {
@@ -2770,12 +2793,10 @@ function Start-ManifestVerificationProcess {
     $script:LastVerificationArguments = Get-VerifyManifestPythonArguments $ManifestPath
     Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
 
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = New-VerifyManifestProcessStartInfo $ManifestPath
-    $process.EnableRaisingEvents = $true
-    $script:VerifyBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
-        $form,
-        ([System.Action[string]]{
+    Start-GeoGetterPythonProcess `
+        -OperationName "verification" `
+        -CreateStartInfo { New-VerifyManifestProcessStartInfo $ManifestPath } `
+        -OutputHandler ([System.Action[string]]{
             param($line)
             Append-VerificationProcessOutput "stdout" $line
             try {
@@ -2784,16 +2805,16 @@ function Start-ManifestVerificationProcess {
             catch {
                 try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
             }
-        }),
-        ([System.Action[string]]{
+        }) `
+        -ErrorHandler ([System.Action[string]]{
             param($line)
             Append-VerificationProcessOutput "stderr" $line
             try {
                 Append-Log $line
             }
             catch { }
-        }),
-        ([System.Action[int]]{
+        }) `
+        -ExitHandler ([System.Action[int]]{
             param($code)
             try {
                 $script:LastVerificationExitCode = $code
@@ -2803,8 +2824,8 @@ function Start-ManifestVerificationProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
-        }),
-        ([System.Action]{
+        }) `
+        -OutputClosedHandler ([System.Action]{
             try {
                 $script:VerifyStdoutClosed = $true
                 Complete-ManifestVerificationIfReady
@@ -2812,8 +2833,8 @@ function Start-ManifestVerificationProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
-        }),
-        ([System.Action]{
+        }) `
+        -ErrorClosedHandler ([System.Action]{
             try {
                 $script:VerifyStderrClosed = $true
                 Complete-ManifestVerificationIfReady
@@ -2821,27 +2842,14 @@ function Start-ManifestVerificationProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
-        })
-    )
-    $script:VerifyBridge.Attach($process)
-    $script:VerifyProcess = $process
-    try {
-        [void]$process.Start()
-        Update-CancelButton
-        $process.BeginOutputReadLine()
-        $process.BeginErrorReadLine()
-    }
-    catch {
-        if (Test-ProcessRunning $process) {
-            try { $process.Kill() } catch { }
+        }) `
+        -SetProcess { param($value) $script:VerifyProcess = $value } `
+        -SetBridge { param($value) $script:VerifyBridge = $value } `
+        -OnStartFailure {
+            param($message)
+            $script:LastVerificationStartError = $message
+            $script:LastOperationError = New-OperationError "verification_process_start" "verify-manifest-json" "process_start_failed" $script:LastVerificationStartError $script:LastVerificationStartError "process_start" $null
         }
-        $script:VerifyProcess = $null
-        $script:LastVerificationStartError = $_.Exception.Message
-        $script:LastOperationError = New-OperationError "verification_process_start" "verify-manifest-json" "process_start_failed" $script:LastVerificationStartError $script:LastVerificationStartError "process_start" $null
-        Dispose-ProcessQuietly $process
-        Update-CancelButton
-        throw
-    }
 }
 
 function Start-DownloadProcess {
@@ -2873,17 +2881,14 @@ function Start-DownloadProcess {
     $fastqIndices = Get-SelectedFastqIndicesOrEmpty
     $suppIndices = Get-SelectedSuppIndicesOrEmpty
     $script:LastDownloadArguments = Get-DownloadPythonArguments $fastqIndices $suppIndices $resumeExisting
-    $psi = New-DownloadProcessStartInfo $fastqIndices $suppIndices $resumeExisting
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $psi
-    $process.EnableRaisingEvents = $true
     Set-Busy $true
     $progressBar.Style = "Continuous"
     $progressBar.Value = 0
     $statusLabel.Text = T "downloading"
-    $script:DownloadBridge = New-Object GeoGetterProcessUiBridge -ArgumentList @(
-        $form,
-        ([System.Action[string]]{
+    Start-GeoGetterPythonProcess `
+        -OperationName "download" `
+        -CreateStartInfo { New-DownloadProcessStartInfo $fastqIndices $suppIndices $resumeExisting } `
+        -OutputHandler ([System.Action[string]]{
             param($line)
             Append-DownloadProcessOutput "stdout" $line
             try {
@@ -2892,16 +2897,16 @@ function Start-DownloadProcess {
             catch {
                 try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
             }
-        }),
-        ([System.Action[string]]{
+        }) `
+        -ErrorHandler ([System.Action[string]]{
             param($line)
             Append-DownloadProcessOutput "stderr" $line
             try {
                 Handle-DownloadErrorLine $line
             }
             catch { }
-        }),
-        ([System.Action[int]]{
+        }) `
+        -ExitHandler ([System.Action[int]]{
             param($code)
             try {
                 $script:LastDownloadExitCode = $code
@@ -2911,8 +2916,8 @@ function Start-DownloadProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
-        }),
-        ([System.Action]{
+        }) `
+        -OutputClosedHandler ([System.Action]{
             try {
                 $script:DownloadStdoutClosed = $true
                 Complete-DownloadIfReady
@@ -2920,8 +2925,8 @@ function Start-DownloadProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
-        }),
-        ([System.Action]{
+        }) `
+        -ErrorClosedHandler ([System.Action]{
             try {
                 $script:DownloadStderrClosed = $true
                 Complete-DownloadIfReady
@@ -2929,27 +2934,14 @@ function Start-DownloadProcess {
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
-        })
-    )
-    $script:DownloadBridge.Attach($process)
-    $script:DownloadProcess = $process
-    try {
-        [void]$process.Start()
-        Update-CancelButton
-        $process.BeginOutputReadLine()
-        $process.BeginErrorReadLine()
-    }
-    catch {
-        if (Test-ProcessRunning $process) {
-            try { $process.Kill() } catch { }
+        }) `
+        -SetProcess { param($value) $script:DownloadProcess = $value } `
+        -SetBridge { param($value) $script:DownloadBridge = $value } `
+        -OnStartFailure {
+            param($message)
+            $script:LastDownloadStartError = $message
+            $script:LastOperationError = New-OperationError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
         }
-        $script:DownloadProcess = $null
-        $script:LastDownloadStartError = $_.Exception.Message
-        $script:LastOperationError = New-OperationError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
-        Dispose-ProcessQuietly $process
-        Update-CancelButton
-        throw
-    }
 }
 
 function New-ResolveProcessStartInfo {
@@ -4012,6 +4004,46 @@ if ($SelfTest) {
     Assert-Contains $script:DownloadStdoutText "earlier process output was truncated" "process output cap marker"
     Assert-Equal ($script:DownloadStdoutText.Length -le 80) $true "process output cap"
     $script:ProcessOutputLimitChars = $originalProcessOutputLimit
+    [void]$form.Handle
+    $script:HelperProcess = $null
+    $script:HelperBridge = $null
+    $script:HelperStdoutLines = @()
+    $script:HelperStderrLines = @()
+    $script:HelperExitCode = $null
+    $script:HelperExitObserved = $false
+    $script:HelperStdoutClosed = $false
+    $script:HelperStderrClosed = $false
+    Start-GeoGetterPythonProcess `
+        -OperationName "selftest" `
+        -CreateStartInfo { New-PythonProcessStartInfo -Arguments @("-c", "import sys; print('helper stdout'); print('helper stderr', file=sys.stderr)") } `
+        -OutputHandler ([System.Action[string]]{ param($line) $script:HelperStdoutLines += $line }) `
+        -ErrorHandler ([System.Action[string]]{ param($line) $script:HelperStderrLines += $line }) `
+        -ExitHandler ([System.Action[int]]{
+            param($code)
+            $script:HelperExitCode = $code
+            $script:HelperExitObserved = $true
+        }) `
+        -OutputClosedHandler ([System.Action]{ $script:HelperStdoutClosed = $true }) `
+        -ErrorClosedHandler ([System.Action]{ $script:HelperStderrClosed = $true }) `
+        -SetProcess { param($value) $script:HelperProcess = $value } `
+        -SetBridge { param($value) $script:HelperBridge = $value } `
+        -OnStartFailure { param($message) throw $message }
+    $helperDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ((-not $script:HelperExitObserved -or -not $script:HelperStdoutClosed -or -not $script:HelperStderrClosed) -and [DateTime]::UtcNow -lt $helperDeadline) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 50
+    }
+    Assert-Equal $script:HelperExitObserved $true "shared Python process helper observes exit"
+    Assert-Equal $script:HelperExitCode 0 "shared Python process helper exit code"
+    Assert-Equal $script:HelperStdoutClosed $true "shared Python process helper stdout close"
+    Assert-Equal $script:HelperStderrClosed $true "shared Python process helper stderr close"
+    Assert-Contains ($script:HelperStdoutLines -join "`n") "helper stdout" "shared Python process helper stdout"
+    Assert-Contains ($script:HelperStderrLines -join "`n") "helper stderr" "shared Python process helper stderr"
+    $helperProcess = $script:HelperProcess
+    $script:HelperProcess = $null
+    $script:HelperBridge = $null
+    Dispose-ProcessQuietly $helperProcess
+    Update-CancelButton
     $encodingResult = Invoke-PythonCli -Arguments @("-m", "geo_getter.cli", "resolve-json", "")
     Assert-Equal $encodingResult.ExitCode 1 "empty input error exit code"
     Assert-Contains $encodingResult.Stderr "input_text or --input-file" "CLI stderr stays English"
@@ -4877,6 +4909,22 @@ if ($SelfTest) {
     Assert-Equal $script:DownloadProcess $null "download start failure clears process"
     Assert-Equal $script:LastOperationError.phase "download_process_start" "download start failure records phase"
     Assert-Equal $script:LastOperationError.code "process_start_failed" "download start failure records code"
+
+    $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
+    $threwUpdateStart = $false
+    try {
+        Start-UpdateCheckProcess
+    }
+    catch {
+        $threwUpdateStart = $true
+    }
+    finally {
+        $PythonExe = $originalPythonExe
+    }
+    Assert-Equal $threwUpdateStart $true "update start failure throws"
+    Assert-Equal $script:UpdateProcess $null "update start failure clears process"
+    Assert-Equal $script:LastOperationError.phase "update_process_start" "update start failure records phase"
+    Assert-Equal $script:LastOperationError.code "process_start_failed" "update start failure records code"
 
     $outputBox.Text = Join-Path $selfTestRoot "async out folder"
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
