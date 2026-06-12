@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -65,6 +66,13 @@ def main(argv: list[str] | None = None) -> int:
     selected_download_parser.add_argument("--out", required=True)
     selected_download_parser.add_argument("--resume-existing", action="store_true")
 
+    if argv_list and argv_list[0] == "preflight-json":
+        preflight_parser = subparsers.add_parser("preflight-json", help=argparse.SUPPRESS)
+        preflight_parser.add_argument("--input-json", required=True)
+        preflight_parser.add_argument("--fastq-indices", default="")
+        preflight_parser.add_argument("--supp-indices", default="")
+        preflight_parser.add_argument("--out", required=True)
+        preflight_parser.add_argument("--resume-existing", action="store_true")
     if argv_list and argv_list[0] == "verify-manifest-json":
         verify_manifest_parser = subparsers.add_parser("verify-manifest-json", help=argparse.SUPPRESS)
         verify_manifest_parser.add_argument("--manifest", required=True)
@@ -80,6 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         return _resolve_json(args.input_text, args.input_file, args.out_json)
     if args.command == "selected-download-json":
         return _selected_download_json(
+            Path(args.input_json),
+            args.fastq_indices,
+            args.supp_indices,
+            Path(args.out),
+            resume_existing=args.resume_existing,
+        )
+    if args.command == "preflight-json":
+        return _preflight_json(
             Path(args.input_json),
             args.fastq_indices,
             args.supp_indices,
@@ -238,6 +254,97 @@ def _selected_download_json(
     )
     ok_statuses = {MD5_VERIFIED, MD5_UNAVAILABLE, DOWNLOAD_COMPLETE}
     return 0 if statuses and all(status in ok_statuses for status in statuses) else 1
+
+
+def _preflight_json(
+    input_json: Path,
+    fastq_indices: str,
+    supp_indices: str,
+    output_dir: Path,
+    resume_existing: bool = False,
+) -> int:
+    payload = _load_json(input_json)
+    selected_fastq = _selected_fastq_from_payload(payload, fastq_indices) if fastq_indices.strip() else []
+    selected_supp = _selected_supplementary_from_payload(payload, supp_indices) if supp_indices.strip() else []
+    _ensure_any_selected(selected_fastq, selected_supp)
+
+    run_output_dir = output_dir.expanduser().resolve()
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+    existing_output_nonempty = _directory_has_entries(run_output_dir)
+    if existing_output_nonempty and selected_supp:
+        raise GeoGetterError(RESUME_SUPPLEMENTARY_UNSUPPORTED, f"output_dir={run_output_dir}")
+
+    free_bytes = shutil.disk_usage(run_output_dir).free
+    required_bytes = 0
+    resume_required_bytes: int | None = None
+    reserved_output_names = reserved_download_artifact_names(run_output_dir)
+    planned_paths: list[Path] = [run_output_dir]
+    planned_fastq: list[dict[str, object]] = []
+    planned_supp: list[dict[str, object]] = []
+
+    if selected_fastq:
+        plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
+        required_bytes = plan.total_bytes
+        free_bytes = plan.available_bytes
+        if existing_output_nonempty and resume_existing:
+            resume_artifacts = validate_resume_artifacts(plan)
+            required_bytes = resume_artifacts.required_bytes
+            resume_required_bytes = resume_artifacts.required_bytes
+        reserved_output_names = [
+            *reserved_output_names,
+            *(name for planned in plan.files for name in reserved_download_names(planned.local_path.name)),
+        ]
+        planned_paths.append(fastq_manifest_path(run_output_dir))
+        planned_fastq = [
+            {
+                "file_name": planned.fastq.file_name,
+                "run_accession": planned.fastq.run_accession,
+                "size_bytes": planned.fastq.size_bytes,
+                "local_path": str(planned.local_path),
+            }
+            for planned in plan.files
+        ]
+        planned_paths.extend(path for planned in plan.files for path in _download_runtime_paths(planned.local_path, "fastq"))
+
+    if selected_supp:
+        planned_supplementary = _planned_supplementary_files(run_output_dir, selected_supp, reserved_output_names)
+        planned_paths.append(supplementary_manifest_path(run_output_dir))
+        planned_supp = [
+            {
+                "name": item.get("name", ""),
+                "source_accession": item.get("source_accession", ""),
+                "scope": item.get("scope", ""),
+                "url": item.get("url", ""),
+                "local_path": str(local_path),
+            }
+            for item, local_path in planned_supplementary
+        ]
+        planned_paths.extend(path for _item, local_path in planned_supplementary for path in _download_runtime_paths(local_path, "supplementary"))
+
+    planned_paths.append(download_log_path(run_output_dir))
+    print(
+        json.dumps(
+            {
+                "event": "done",
+                "kind": "download_preflight",
+                "output_dir": str(run_output_dir),
+                "existing_output_nonempty": existing_output_nonempty,
+                "required_bytes": required_bytes,
+                "free_bytes": free_bytes,
+                "resume_existing": bool(existing_output_nonempty and resume_existing),
+                "resume_required_bytes": resume_required_bytes,
+                "fastq_manifest": str(fastq_manifest_path(run_output_dir)) if selected_fastq else "",
+                "supplementary_manifest": str(supplementary_manifest_path(run_output_dir)) if selected_supp else "",
+                "download_log": str(download_log_path(run_output_dir)),
+                "planned_paths": [str(path) for path in planned_paths],
+                "fastq_files": planned_fastq,
+                "supplementary_files": planned_supp,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+    return 0
 
 
 def _verify_manifest_json(manifest_path: Path) -> int:
@@ -427,6 +534,30 @@ def _planned_supplementary_files(
         file_name = reserve_unique_download_name(file_name, used_keys)
         planned.append((item, child_path(output_dir, file_name)))
     return planned
+
+
+def _download_runtime_paths(local_path: Path, kind: str) -> list[Path]:
+    names = [local_path.name, f"{local_path.name}.part"]
+    if kind == "fastq":
+        timestamp = "20000101T000000Z"
+        part_name = f"{local_path.name}.part"
+        names.extend(
+            [
+                f"{local_path.name}.bad-md5-existing-{timestamp}",
+                f"{local_path.name}.bad-md5-existing-{timestamp}.2",
+                f"{local_path.name}.size-mismatch-existing-{timestamp}",
+                f"{local_path.name}.size-mismatch-existing-{timestamp}.2",
+                f"{local_path.name}.unverified-existing-{timestamp}",
+                f"{local_path.name}.unverified-existing-{timestamp}.2",
+                f"{part_name}.bad-md5-{timestamp}",
+                f"{part_name}.bad-md5-{timestamp}.2",
+                f"{part_name}.size-mismatch-{timestamp}",
+                f"{part_name}.size-mismatch-{timestamp}.2",
+            ]
+        )
+    else:
+        names.extend([f"{local_path.name}.existing", f"{local_path.name}.existing.2"])
+    return [local_path.with_name(name) for name in names]
 
 
 def _existing_size(path: Path) -> int:
