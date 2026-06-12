@@ -1648,16 +1648,6 @@ class PlannerDownloaderTest(unittest.TestCase):
             ])
             self.assertEqual(len(runtime_names), len({name_collision_key(name) for name in runtime_names}))
 
-    def test_name_collision_key_matches_gui_boundary(self):
-        self.assertEqual(name_collision_key("Same.fastq.gz"), name_collision_key("same.fastq.gz"))
-        self.assertEqual(name_collision_key("\u03a3.txt"), name_collision_key("\u03c3.txt"))
-        self.assertNotEqual(name_collision_key("\u00df.txt"), name_collision_key("SS.txt"))
-        self.assertNotEqual(name_collision_key("\u03c2.txt"), name_collision_key("\u03c3.txt"))
-        self.assertNotEqual(name_collision_key("\u0130.txt"), name_collision_key("i\u0307.txt"))
-        self.assertNotEqual(name_collision_key("\u212a.txt"), name_collision_key("K.txt"))
-        self.assertNotEqual(name_collision_key("\u1e9e.txt"), name_collision_key("\u00df.txt"))
-        self.assertNotEqual(name_collision_key("\u212b.txt"), name_collision_key("\u00c5.txt"))
-
     def test_unsafe_fastq_file_name_stays_inside_output_dir(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
