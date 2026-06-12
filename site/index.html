@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GEO Getter</title>
+    <meta name="description" content="GEO Getter saves raw FASTQ files and GEO supplementary or processed files from public GEO and ENA data on Windows.">
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="GEO Getter home">GEO Getter</a>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a href="#download">Download</a>
+        <a href="#usage">Use</a>
+        <a href="#outputs">Outputs</a>
+        <a href="ja/" lang="ja">日本語</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Windows x64 desktop app</p>
+          <h1>GEO Getter</h1>
+          <p class="lead">
+            Save raw FASTQ files and GEO supplementary or processed files from
+            public GEO and ENA data without building command-line download plans
+            by hand.
+          </p>
+          <div class="actions" id="download">
+            <a class="button primary" href="https://github.com/K81ta/geo-getter/releases/latest">Download from GitHub Releases</a>
+            <a class="button secondary" href="https://github.com/K81ta/geo-getter">View repository</a>
+          </div>
+          <p class="note">
+            Release assets stay on GitHub Releases. Choose the installer
+            pattern <code>GEOGetter-Setup-vX.Y.Z.exe</code> or the portable zip
+            pattern <code>GEOGetter-vX.Y.Z-win-x64-portable.zip</code>.
+          </p>
+        </div>
+        <figure class="workflow-figure">
+          <img src="assets/workflow.svg" alt="GEO Getter workflow from accession input to saved files and manifests">
+        </figure>
+      </section>
+
+      <section class="band warning">
+        <div>
+          <h2>Installer notice</h2>
+          <p>
+            The Windows installer is unsigned, so Windows SmartScreen may show a
+            warning. Download only from the latest GitHub Release for this
+            repository.
+          </p>
+        </div>
+      </section>
+
+      <section class="content-grid" aria-labelledby="inputs-heading">
+        <div>
+          <h2 id="inputs-heading">Supported input</h2>
+          <p>Paste one accession or GEO page URL into the app.</p>
+        </div>
+        <div class="list-panel">
+          <ul class="compact-list">
+            <li>GEO accessions: <code>GSE52778</code>, <code>GSM...</code></li>
+            <li>GEO pages: <code>https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE52778</code></li>
+            <li>SRA or ENA accessions: <code>SRP...</code>, <code>SRX...</code>, <code>SRR...</code>, <code>ERP...</code>, <code>ERR...</code></li>
+            <li>BioProject accessions: <code>PRJNA...</code>, <code>PRJEB...</code>, <code>PRJDB...</code></li>
+            <li>BioSample accessions: <code>SAMN...</code>, <code>SAMEA...</code>, <code>SAMD...</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="content-grid" id="usage" aria-labelledby="usage-heading">
+        <div>
+          <h2 id="usage-heading">Basic use</h2>
+          <p>
+            The installed app is named <code>GEOGetter</code>. The portable zip
+            starts with <code>start_geo_getter.vbs</code>.
+          </p>
+        </div>
+        <ol class="steps">
+          <li>Start <code>GEOGetter</code>.</li>
+          <li>Paste an accession or GEO page URL.</li>
+          <li>Select <code>Find files</code>.</li>
+          <li>Choose raw FASTQ files and/or GEO supplementary or processed files.</li>
+          <li>Confirm the save folder. The default base folder is <code>Downloads\GEOGetter</code>.</li>
+          <li>Select <code>Download selected files</code>.</li>
+        </ol>
+      </section>
+
+      <section class="content-grid" id="outputs" aria-labelledby="outputs-heading">
+        <div>
+          <h2 id="outputs-heading">Saved outputs</h2>
+          <p>
+            GEO Getter writes selected files and TSV records under the accession
+            folder shown by the app.
+          </p>
+        </div>
+        <div class="list-panel">
+          <ul class="compact-list">
+            <li><code>*_fastq_manifest.tsv</code>: FASTQ URL, ENA expected MD5, expected size, and local path.</li>
+            <li><code>*_supplementary_manifest.tsv</code>: GEO supplementary or processed file URL and local path.</li>
+            <li><code>*_download_log.tsv</code>: download status for each selected file.</li>
+            <li><code>verification_report.tsv</code>: optional report when saved FASTQ files are checked later.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="band">
+        <div>
+          <h2>Integrity checks</h2>
+          <p>
+            FASTQ downloads are checked against MD5 values when ENA provides
+            expected MD5 values. GEO supplementary and processed files are saved
+            from GEO URLs and are not verified with ENA FASTQ MD5 values.
+          </p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

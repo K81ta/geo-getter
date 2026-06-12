@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="680" viewBox="0 0 920 680" role="img" aria-labelledby="title desc">
+  <title id="title">GEO Getter workflow</title>
+  <desc id="desc">An overview of the app workflow from accession input to saved files, manifests, logs, and MD5 checks.</desc>
+  <rect width="920" height="680" rx="18" fill="#fbfdfb"/>
+  <rect x="42" y="44" width="836" height="592" rx="14" fill="#ffffff" stroke="#cddbd3" stroke-width="2"/>
+  <text x="86" y="105" fill="#16201c" font-family="Segoe UI, Arial, sans-serif" font-size="36" font-weight="700">GEO Getter</text>
+  <text x="86" y="139" fill="#52615a" font-family="Segoe UI, Arial, sans-serif" font-size="18">From public accession input to files saved on your Windows PC</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="86" y="194" width="240" height="96" rx="8" fill="#e7f5ed" stroke="#9dccb3"/>
+    <text x="116" y="232" fill="#18794e" font-size="18" font-weight="700">1. Paste input</text>
+    <text x="116" y="262" fill="#263a31" font-size="15">GSE, GSM, SRR, PRJNA, SAMN</text>
+
+    <rect x="86" y="354" width="240" height="96" rx="8" fill="#eaf0fb" stroke="#b7c7ea"/>
+    <text x="116" y="392" fill="#2458b3" font-size="18" font-weight="700">2. Find files</text>
+    <text x="116" y="422" fill="#263a31" font-size="15">GEO metadata and ENA FASTQ</text>
+
+    <rect x="370" y="274" width="240" height="96" rx="8" fill="#fff5d7" stroke="#e0c16c"/>
+    <text x="400" y="312" fill="#8a5a00" font-size="18" font-weight="700">3. Select files</text>
+    <text x="400" y="342" fill="#263a31" font-size="15">FASTQ and supplementary files</text>
+
+    <rect x="654" y="194" width="180" height="96" rx="8" fill="#e7f5ed" stroke="#9dccb3"/>
+    <text x="684" y="232" fill="#18794e" font-size="18" font-weight="700">FASTQ</text>
+    <text x="684" y="262" fill="#263a31" font-size="15">MD5 checked when ENA provides it</text>
+
+    <rect x="654" y="354" width="180" height="96" rx="8" fill="#f3f6f4" stroke="#cddbd3"/>
+    <text x="684" y="392" fill="#16201c" font-size="18" font-weight="700">GEO files</text>
+    <text x="684" y="422" fill="#263a31" font-size="15">Saved without ENA FASTQ MD5</text>
+  </g>
+
+  <g stroke="#6b7c73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M206 290 L206 354"/>
+    <path d="M326 402 C366 402 350 322 370 322"/>
+    <path d="M610 322 C638 322 626 242 654 242"/>
+    <path d="M610 322 C638 322 626 402 654 402"/>
+  </g>
+  <g fill="#6b7c73">
+    <path d="M206 354 l-8 -12 h16 z"/>
+    <path d="M370 322 l-13 -7 v14 z"/>
+    <path d="M654 242 l-13 -7 v14 z"/>
+    <path d="M654 402 l-13 -7 v14 z"/>
+  </g>
+
+  <rect x="86" y="512" width="748" height="76" rx="8" fill="#f7faf8" stroke="#cddbd3"/>
+  <text x="116" y="548" fill="#16201c" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">Saved outputs</text>
+  <text x="274" y="548" fill="#263a31" font-family="Segoe UI, Arial, sans-serif" font-size="15">*_fastq_manifest.tsv</text>
+  <text x="464" y="548" fill="#263a31" font-family="Segoe UI, Arial, sans-serif" font-size="15">*_supplementary_manifest.tsv</text>
+  <text x="702" y="548" fill="#263a31" font-family="Segoe UI, Arial, sans-serif" font-size="15">*_download_log.tsv</text>
+  <text x="116" y="574" fill="#52615a" font-family="Segoe UI, Arial, sans-serif" font-size="14">Default base folder: Downloads\GEOGetter</text>
+</svg>
