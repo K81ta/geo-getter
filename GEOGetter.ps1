@@ -139,65 +139,46 @@ public sealed class GeoGetterProcessUiBridge
 }
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+function New-OperationState {
+    return [pscustomobject]@{
+        Process = $null
+        Bridge = $null
+        Canceled = $false
+        StdoutText = ""
+        StderrText = ""
+        LastExitCode = $null
+        LastArguments = @()
+        LastStartError = ""
+        LastDoneEvent = $null
+        LastCommand = ""
+        ExitObserved = $false
+        StdoutClosed = $false
+        StderrClosed = $false
+        Finalized = $false
+    }
+}
+
+function Get-OperationState {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName
+    )
+    return $script:OperationStates[$OperationName]
+}
+
+$script:OperationStates = @{
+    resolve = New-OperationState
+    download = New-OperationState
+    verification = New-OperationState
+    update = New-OperationState
+}
 $script:Resolved = $null
 $script:ResolvedJsonPath = Join-Path ([System.IO.Path]::GetTempPath()) ("geo_getter_" + [System.Guid]::NewGuid().ToString("N") + ".json")
 $script:FastqDefaultSorted = $false
 $script:SuppDefaultSorted = $false
-$script:ResolveProcess = $null
-$script:ResolveBridge = $null
 $script:ResolveInputPath = $null
-$script:ResolveCanceled = $false
-$script:ResolveStdoutText = ""
-$script:ResolveStderrText = ""
-$script:DownloadProcess = $null
-$script:DownloadBridge = $null
-$script:DownloadCanceled = $false
-$script:DownloadStdoutText = ""
-$script:DownloadStderrText = ""
-$script:VerifyProcess = $null
-$script:VerifyBridge = $null
-$script:VerifyCanceled = $false
-$script:VerifyStdoutText = ""
-$script:VerifyStderrText = ""
-$script:UpdateProcess = $null
-$script:UpdateBridge = $null
-$script:UpdateCanceled = $false
-$script:UpdateStdoutText = ""
-$script:UpdateStderrText = ""
 $script:ProcessOutputLimitChars = 1048576
 $script:LastOperationError = $null
-$script:LastResolveExitCode = $null
-$script:LastResolveArguments = @()
-$script:LastResolveStartError = ""
-$script:LastDownloadArguments = @()
-$script:LastVerificationArguments = @()
-$script:LastUpdateArguments = @()
-$script:LastDownloadStartError = ""
-$script:LastVerificationStartError = ""
-$script:LastUpdateStartError = ""
-$script:LastDownloadDoneEvent = $null
-$script:LastDownloadExitCode = $null
-$script:LastVerificationDoneEvent = $null
-$script:LastVerificationExitCode = $null
-$script:LastUpdateDoneEvent = $null
-$script:LastUpdateExitCode = $null
-$script:LastUpdateCommand = ""
-$script:ResolveExitObserved = $false
-$script:ResolveStdoutClosed = $false
-$script:ResolveStderrClosed = $false
-$script:ResolveFinalized = $false
-$script:DownloadExitObserved = $false
-$script:DownloadStdoutClosed = $false
-$script:DownloadStderrClosed = $false
-$script:DownloadFinalized = $false
-$script:VerifyExitObserved = $false
-$script:VerifyStdoutClosed = $false
-$script:VerifyStderrClosed = $false
-$script:VerifyFinalized = $false
-$script:UpdateExitObserved = $false
-$script:UpdateStdoutClosed = $false
-$script:UpdateStderrClosed = $false
-$script:UpdateFinalized = $false
 $script:LastPreflightStatus = ""
 $script:LastPreflightError = ""
 $script:LastPreflightOutputDir = ""
@@ -671,60 +652,21 @@ function Get-FreeSpaceForPathOrNull {
     }
 }
 
-function Append-DownloadProcessOutput {
+function Append-OperationProcessOutput {
     param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
         [ValidateSet("stdout", "stderr")]
         [string]$Stream,
         [string]$Line
     )
+    $state = Get-OperationState $OperationName
     $value = $Line + [Environment]::NewLine
     if ($Stream -eq "stdout") {
-        $script:DownloadStdoutText = Limit-ProcessOutputText ($script:DownloadStdoutText + $value)
+        $state.StdoutText = Limit-ProcessOutputText ($state.StdoutText + $value)
         return
     }
-    $script:DownloadStderrText = Limit-ProcessOutputText ($script:DownloadStderrText + $value)
-}
-
-function Append-ResolveProcessOutput {
-    param(
-        [ValidateSet("stdout", "stderr")]
-        [string]$Stream,
-        [string]$Line
-    )
-    $value = $Line + [Environment]::NewLine
-    if ($Stream -eq "stdout") {
-        $script:ResolveStdoutText = Limit-ProcessOutputText ($script:ResolveStdoutText + $value)
-        return
-    }
-    $script:ResolveStderrText = Limit-ProcessOutputText ($script:ResolveStderrText + $value)
-}
-
-function Append-VerificationProcessOutput {
-    param(
-        [ValidateSet("stdout", "stderr")]
-        [string]$Stream,
-        [string]$Line
-    )
-    $value = $Line + [Environment]::NewLine
-    if ($Stream -eq "stdout") {
-        $script:VerifyStdoutText = Limit-ProcessOutputText ($script:VerifyStdoutText + $value)
-        return
-    }
-    $script:VerifyStderrText = Limit-ProcessOutputText ($script:VerifyStderrText + $value)
-}
-
-function Append-UpdateProcessOutput {
-    param(
-        [ValidateSet("stdout", "stderr")]
-        [string]$Stream,
-        [string]$Line
-    )
-    $value = $Line + [Environment]::NewLine
-    if ($Stream -eq "stdout") {
-        $script:UpdateStdoutText = Limit-ProcessOutputText ($script:UpdateStdoutText + $value)
-        return
-    }
-    $script:UpdateStderrText = Limit-ProcessOutputText ($script:UpdateStderrText + $value)
+    $state.StderrText = Limit-ProcessOutputText ($state.StderrText + $value)
 }
 
 function Limit-ProcessOutputText {
@@ -786,6 +728,70 @@ function Test-ProcessRunning {
     }
 }
 
+function Test-OperationRunning {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName
+    )
+    return (Test-ProcessRunning (Get-OperationState $OperationName).Process)
+}
+
+function Set-OperationProcess {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
+        [System.Diagnostics.Process]$Process
+    )
+    (Get-OperationState $OperationName).Process = $Process
+}
+
+function Set-OperationBridge {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
+        [object]$Bridge
+    )
+    (Get-OperationState $OperationName).Bridge = $Bridge
+}
+
+function Set-OperationExitObserved {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
+        [int]$ExitCode
+    )
+    $state = Get-OperationState $OperationName
+    $state.LastExitCode = $ExitCode
+    $state.ExitObserved = $true
+}
+
+function Set-OperationStreamClosed {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
+        [ValidateSet("stdout", "stderr")]
+        [string]$Stream
+    )
+    $state = Get-OperationState $OperationName
+    if ($Stream -eq "stdout") {
+        $state.StdoutClosed = $true
+        return
+    }
+    $state.StderrClosed = $true
+}
+
+function Start-OperationFinalizationIfReady {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName
+    )
+    $state = Get-OperationState $OperationName
+    if ($state.Finalized) { return $null }
+    if (-not $state.ExitObserved -or -not $state.StdoutClosed -or -not $state.StderrClosed) { return $null }
+    $state.Finalized = $true
+    return $state
+}
+
 function Dispose-ProcessQuietly {
     param([System.Diagnostics.Process]$Process)
     if ($null -eq $Process) { return }
@@ -845,63 +851,43 @@ function Start-GeoGetterPythonProcess {
     }
 }
 
+function Clear-OperationRunState {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName
+    )
+    $state = Get-OperationState $OperationName
+    $state.Canceled = $false
+    $state.StdoutText = ""
+    $state.StderrText = ""
+    $state.LastDoneEvent = $null
+    $state.LastExitCode = $null
+    $state.LastArguments = @()
+    $state.LastStartError = ""
+    $state.LastCommand = ""
+    $state.ExitObserved = $false
+    $state.StdoutClosed = $false
+    $state.StderrClosed = $false
+    $state.Finalized = $false
+}
+
 function Clear-ResolveRunState {
-    $script:ResolveCanceled = $false
-    $script:ResolveStdoutText = ""
-    $script:ResolveStderrText = ""
-    $script:LastResolveExitCode = $null
-    $script:LastResolveArguments = @()
-    $script:LastResolveStartError = ""
-    $script:ResolveExitObserved = $false
-    $script:ResolveStdoutClosed = $false
-    $script:ResolveStderrClosed = $false
-    $script:ResolveFinalized = $false
+    Clear-OperationRunState "resolve"
 }
 
 function Clear-DownloadRunState {
-    $script:DownloadCanceled = $false
-    $script:DownloadStdoutText = ""
-    $script:DownloadStderrText = ""
-    $script:LastDownloadDoneEvent = $null
-    $script:LastDownloadExitCode = $null
-    $script:LastDownloadArguments = @()
-    $script:LastDownloadStartError = ""
-    $script:DownloadExitObserved = $false
-    $script:DownloadStdoutClosed = $false
-    $script:DownloadStderrClosed = $false
-    $script:DownloadFinalized = $false
+    Clear-OperationRunState "download"
     $script:LastResumeExistingRequested = $false
     $script:LastResumeRequiredBytes = $null
     $script:LastResumeErrorCode = ""
 }
 
 function Clear-VerificationRunState {
-    $script:VerifyCanceled = $false
-    $script:VerifyStdoutText = ""
-    $script:VerifyStderrText = ""
-    $script:LastVerificationDoneEvent = $null
-    $script:LastVerificationExitCode = $null
-    $script:LastVerificationArguments = @()
-    $script:LastVerificationStartError = ""
-    $script:VerifyExitObserved = $false
-    $script:VerifyStdoutClosed = $false
-    $script:VerifyStderrClosed = $false
-    $script:VerifyFinalized = $false
+    Clear-OperationRunState "verification"
 }
 
 function Clear-UpdateRunState {
-    $script:UpdateCanceled = $false
-    $script:UpdateStdoutText = ""
-    $script:UpdateStderrText = ""
-    $script:LastUpdateDoneEvent = $null
-    $script:LastUpdateExitCode = $null
-    $script:LastUpdateArguments = @()
-    $script:LastUpdateStartError = ""
-    $script:LastUpdateCommand = ""
-    $script:UpdateExitObserved = $false
-    $script:UpdateStdoutClosed = $false
-    $script:UpdateStderrClosed = $false
-    $script:UpdateFinalized = $false
+    Clear-OperationRunState "update"
 }
 
 function Clear-ResolvedState {
@@ -981,23 +967,22 @@ function Apply-ResolvedResult {
 }
 
 function Complete-ResolveIfReady {
-    if ($script:ResolveFinalized) { return }
-    if (-not $script:ResolveExitObserved -or -not $script:ResolveStdoutClosed -or -not $script:ResolveStderrClosed) { return }
+    $state = Start-OperationFinalizationIfReady "resolve"
+    if ($null -eq $state) { return }
 
-    $script:ResolveFinalized = $true
-    $process = $script:ResolveProcess
+    $process = $state.Process
     try {
-        $script:ResolveProcess = $null
+        $state.Process = $null
         Update-CancelButton
         Remove-ResolveInputFile
         $progressBar.Style = "Continuous"
         $progressBar.Value = 0
-        if ($script:ResolveCanceled) {
+        if ($state.Canceled) {
             Clear-ResolvedState -DeleteResolvedJson -PreserveResolveRunState
             $statusLabel.Text = T "canceled"
             return
         }
-        if ($script:LastResolveExitCode -eq 0) {
+        if ($state.LastExitCode -eq 0) {
             try {
                 if (-not (Test-Path -LiteralPath $script:ResolvedJsonPath)) {
                     throw "resolve-json completed without writing resolved JSON."
@@ -1007,15 +992,15 @@ function Complete-ResolveIfReady {
             catch {
                 $detail = $_.Exception.Message
                 Clear-ResolvedState -DeleteResolvedJson -PreserveResolveRunState
-                $script:LastOperationError = New-OperationError "resolve" "resolve-json" "resolve_output_invalid" $detail (T "metadataFailed") "gui_resolve_output" $script:LastResolveExitCode
+                $script:LastOperationError = New-OperationError "resolve" "resolve-json" "resolve_output_invalid" $detail (T "metadataFailed") "gui_resolve_output" $state.LastExitCode
                 $statusLabel.Text = T "error"
                 Show-AppError (T "metadataFailed")
             }
         }
         else {
             Clear-ResolvedState -DeleteResolvedJson -PreserveResolveRunState
-            Set-OperationErrorFromProcessOutput "resolve" "resolve-json" $script:LastResolveExitCode $script:ResolveStdoutText $script:ResolveStderrText "resolve_failed" (T "metadataFailed")
-            $message = (($script:ResolveStdoutText + $script:ResolveStderrText).Trim())
+            Set-OperationErrorFromProcessOutput "resolve" "resolve-json" $state.LastExitCode $state.StdoutText $state.StderrText "resolve_failed" (T "metadataFailed")
+            $message = (($state.StdoutText + $state.StderrText).Trim())
             if ([string]::IsNullOrWhiteSpace($message)) {
                 $message = T "metadataFailed"
             }
@@ -1702,81 +1687,53 @@ function Set-Busy {
 function Update-CancelButton {
     if ($null -eq $cancelButton) { return }
     $cancelButton.Enabled = (
-        (Test-ProcessRunning $script:ResolveProcess) -or
-        (Test-ProcessRunning $script:DownloadProcess) -or
-        (Test-ProcessRunning $script:VerifyProcess) -or
-        (Test-ProcessRunning $script:UpdateProcess)
+        (Test-OperationRunning "resolve") -or
+        (Test-OperationRunning "download") -or
+        (Test-OperationRunning "verification") -or
+        (Test-OperationRunning "update")
     )
+}
+
+function Stop-GuiOperation {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
+        [string]$CancelLogKey,
+        [switch]$Quiet
+    )
+    $state = Get-OperationState $OperationName
+    if (-not (Test-ProcessRunning $state.Process)) { return $false }
+    $state.Canceled = $true
+    if (-not $Quiet) {
+        Append-Log (T $CancelLogKey)
+    }
+    try {
+        $state.Process.Kill()
+    }
+    catch {
+        if (-not $Quiet) {
+            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
+        }
+    }
+    return $true
 }
 
 function Stop-RunningGuiProcesses {
     $canceledAny = $false
-    if (Test-ProcessRunning $script:ResolveProcess) {
-        $canceledAny = $true
-        $script:ResolveCanceled = $true
-        Append-Log (T "resolveCancelRequestLog")
-        try {
-            $script:ResolveProcess.Kill()
-        }
-        catch {
-            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
-        }
-    }
-    if (Test-ProcessRunning $script:DownloadProcess) {
-        $canceledAny = $true
-        $script:DownloadCanceled = $true
-        Append-Log (T "cancelRequestLog")
-        try {
-            $script:DownloadProcess.Kill()
-        }
-        catch {
-            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
-        }
-    }
-    if (Test-ProcessRunning $script:VerifyProcess) {
-        $canceledAny = $true
-        $script:VerifyCanceled = $true
-        Append-Log (T "verifyCancelRequestLog")
-        try {
-            $script:VerifyProcess.Kill()
-        }
-        catch {
-            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
-        }
-    }
-    if (Test-ProcessRunning $script:UpdateProcess) {
-        $canceledAny = $true
-        $script:UpdateCanceled = $true
-        Append-Log (T "updateCancelRequestLog")
-        try {
-            $script:UpdateProcess.Kill()
-        }
-        catch {
-            Append-Log ((T "cancelFailedLog") -f $_.Exception.Message)
-        }
-    }
+    if (Stop-GuiOperation "resolve" "resolveCancelRequestLog") { $canceledAny = $true }
+    if (Stop-GuiOperation "download" "cancelRequestLog") { $canceledAny = $true }
+    if (Stop-GuiOperation "verification" "verifyCancelRequestLog") { $canceledAny = $true }
+    if (Stop-GuiOperation "update" "updateCancelRequestLog") { $canceledAny = $true }
     if ($canceledAny) { Update-CancelButton }
     return $canceledAny
 }
 
 function Stop-RunningGuiProcessesForShutdown {
-    if (Test-ProcessRunning $script:ResolveProcess) {
-        $script:ResolveCanceled = $true
-        try { $script:ResolveProcess.Kill() } catch { }
-    }
+    Stop-GuiOperation "resolve" "resolveCancelRequestLog" -Quiet | Out-Null
     Remove-ResolveInputFile
-    if (Test-ProcessRunning $script:DownloadProcess) {
-        $script:DownloadCanceled = $true
-        try { $script:DownloadProcess.Kill() } catch { }
-    }
-    if (Test-ProcessRunning $script:VerifyProcess) {
-        $script:VerifyCanceled = $true
-        try { $script:VerifyProcess.Kill() } catch { }
-    }
-    if (Test-ProcessRunning $script:UpdateProcess) {
-        $script:UpdateCanceled = $true
-        try { $script:UpdateProcess.Kill() } catch { }
-    }
+    Stop-GuiOperation "download" "cancelRequestLog" -Quiet | Out-Null
+    Stop-GuiOperation "verification" "verifyCancelRequestLog" -Quiet | Out-Null
+    Stop-GuiOperation "update" "updateCancelRequestLog" -Quiet | Out-Null
     Update-CancelButton
 }
 
@@ -1805,7 +1762,7 @@ function Handle-DownloadLine {
             }
         }
         elseif ($event.event -eq "done") {
-            $script:LastDownloadDoneEvent = $event
+            (Get-OperationState "download").LastDoneEvent = $event
             $resumeBytesProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "resume_required_bytes" } | Select-Object -First 1)
             if ($resumeBytesProperty.Count -gt 0 -and $null -ne $resumeBytesProperty[0].Value) {
                 $script:LastResumeRequiredBytes = [Int64]$resumeBytesProperty[0].Value
@@ -1831,7 +1788,7 @@ function Handle-DownloadErrorLine {
     try {
         $event = $Line | ConvertFrom-Json
         if ($event.event -eq "error") {
-            $script:LastOperationError = New-OperationError "download" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastDownloadExitCode
+            $script:LastOperationError = New-OperationError "download" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" (Get-OperationState "download").LastExitCode
             if ([string]$event.code -like "resume_*") {
                 $script:LastResumeErrorCode = [string]$event.code
             }
@@ -1869,7 +1826,7 @@ function Handle-ManifestVerificationLine {
     try {
         $event = $Line | ConvertFrom-Json
         if ($event.event -eq "done" -and $event.kind -eq "manifest_verification") {
-            $script:LastVerificationDoneEvent = $event
+            (Get-OperationState "verification").LastDoneEvent = $event
             $progressBar.Style = "Continuous"
             $progressBar.Value = 100
             if ($event.report) { Append-Log ((T "verifyManifestReportLog") -f $event.report) }
@@ -1945,59 +1902,57 @@ function Get-DownloadFinalStatusKey {
 }
 
 function Complete-DownloadIfReady {
-    if ($script:DownloadFinalized) { return }
-    if (-not $script:DownloadExitObserved -or -not $script:DownloadStdoutClosed -or -not $script:DownloadStderrClosed) { return }
+    $state = Start-OperationFinalizationIfReady "download"
+    if ($null -eq $state) { return }
 
-    $script:DownloadFinalized = $true
-    $process = $script:DownloadProcess
+    $process = $state.Process
     Set-Busy $false
-    $script:DownloadProcess = $null
+    $state.Process = $null
     Update-CancelButton
     Dispose-ProcessQuietly $process
-    $statusKey = Get-DownloadFinalStatusKey $script:LastDownloadDoneEvent $script:LastDownloadExitCode $script:DownloadCanceled
+    $statusKey = Get-DownloadFinalStatusKey $state.LastDoneEvent $state.LastExitCode $state.Canceled
     $statusLabel.Text = T $statusKey
     if ($statusKey -eq "error") {
         $progressBar.Value = 0
         if ($null -eq $script:LastOperationError) {
-            Set-OperationErrorFromProcessOutput "download" "selected-download-json" $script:LastDownloadExitCode $script:DownloadStdoutText $script:DownloadStderrText "download_failed_before_done" "Download process ended before the done event."
+            Set-OperationErrorFromProcessOutput "download" "selected-download-json" $state.LastExitCode $state.StdoutText $state.StderrText "download_failed_before_done" "Download process ended before the done event."
         }
     }
 }
 
 function Complete-ManifestVerificationIfReady {
-    if ($script:VerifyFinalized) { return }
-    if (-not $script:VerifyExitObserved -or -not $script:VerifyStdoutClosed -or -not $script:VerifyStderrClosed) { return }
+    $state = Start-OperationFinalizationIfReady "verification"
+    if ($null -eq $state) { return }
 
-    $script:VerifyFinalized = $true
-    $process = $script:VerifyProcess
+    $process = $state.Process
     $progressBar.Style = "Continuous"
     Set-Busy $false
-    $script:VerifyProcess = $null
+    $state.Process = $null
     Update-CancelButton
     Dispose-ProcessQuietly $process
-    if ($script:VerifyCanceled) {
+    if ($state.Canceled) {
         $statusLabel.Text = T "canceled"
         return
     }
-    if ($null -eq $script:LastVerificationDoneEvent) {
+    if ($null -eq $state.LastDoneEvent) {
         $progressBar.Value = 0
         $statusLabel.Text = T "error"
         if ($null -eq $script:LastOperationError) {
-            Set-OperationErrorFromProcessOutput "verification" "verify-manifest-json" $script:LastVerificationExitCode $script:VerifyStdoutText $script:VerifyStderrText "verification_failed_before_report" (T "verifyManifestNoReport")
+            Set-OperationErrorFromProcessOutput "verification" "verify-manifest-json" $state.LastExitCode $state.StdoutText $state.StderrText "verification_failed_before_report" (T "verifyManifestNoReport")
         }
         Append-Log (T "verifyManifestNoReport")
         return
     }
-    $message = if ($script:LastVerificationExitCode -eq 0) {
+    $message = if ($state.LastExitCode -eq 0) {
         $statusLabel.Text = T "complete"
-        (T "verifyManifestCompleteMessage") -f $script:LastVerificationDoneEvent.report
+        (T "verifyManifestCompleteMessage") -f $state.LastDoneEvent.report
     }
     else {
         $statusLabel.Text = T "completePartial"
-        (T "verifyManifestPartialMessage") -f $script:LastVerificationDoneEvent.report
+        (T "verifyManifestPartialMessage") -f $state.LastDoneEvent.report
     }
     if (-not $SelfTest) {
-        $icon = if ($script:LastVerificationExitCode -eq 0) { "Information" } else { "Warning" }
+        $icon = if ($state.LastExitCode -eq 0) { "Information" } else { "Warning" }
         [System.Windows.Forms.MessageBox]::Show($message, (T "verifyManifestDialogTitle"), "OK", $icon) | Out-Null
     }
 }
@@ -2008,7 +1963,7 @@ function Handle-UpdateLine {
     try {
         $event = $Line | ConvertFrom-Json
         if ($event.event -eq "done" -and ($event.kind -eq "update_check" -or $event.kind -eq "update_installer")) {
-            $script:LastUpdateDoneEvent = $event
+            (Get-OperationState "update").LastDoneEvent = $event
             if ($event.kind -eq "update_installer") {
                 $progressBar.Style = "Continuous"
                 $progressBar.Value = 100
@@ -2033,7 +1988,7 @@ function Handle-UpdateErrorLine {
     try {
         $event = $Line | ConvertFrom-Json
         if ($event.event -eq "error") {
-            $script:LastOperationError = New-OperationError "update" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" $script:LastUpdateExitCode
+            $script:LastOperationError = New-OperationError "update" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" (Get-OperationState "update").LastExitCode
             Append-Log (Get-UpdateFailureReason)
             return
         }
@@ -2082,14 +2037,13 @@ function Confirm-UpdateDownload {
 }
 
 function Complete-UpdateIfReady {
-    if ($script:UpdateFinalized) { return }
-    if (-not $script:UpdateExitObserved -or -not $script:UpdateStdoutClosed -or -not $script:UpdateStderrClosed) { return }
+    $state = Start-OperationFinalizationIfReady "update"
+    if ($null -eq $state) { return }
 
-    $script:UpdateFinalized = $true
-    $process = $script:UpdateProcess
-    $script:UpdateProcess = $null
+    $process = $state.Process
+    $state.Process = $null
     $progressBar.Style = "Continuous"
-    if ($null -ne $script:LastUpdateDoneEvent -and $script:LastUpdateDoneEvent.kind -eq "update_installer") {
+    if ($null -ne $state.LastDoneEvent -and $state.LastDoneEvent.kind -eq "update_installer") {
         $progressBar.Value = 100
     }
     else {
@@ -2099,20 +2053,20 @@ function Complete-UpdateIfReady {
     Update-CancelButton
     Dispose-ProcessQuietly $process
 
-    if ($script:UpdateCanceled) {
+    if ($state.Canceled) {
         $statusLabel.Text = T "canceled"
         return
     }
-    if ($script:LastUpdateExitCode -ne 0 -or $null -eq $script:LastUpdateDoneEvent) {
+    if ($state.LastExitCode -ne 0 -or $null -eq $state.LastDoneEvent) {
         $statusLabel.Text = T "error"
         if ($null -eq $script:LastOperationError -or $script:LastOperationError.phase -ne "update") {
-            Set-OperationErrorFromProcessOutput "update" $script:LastUpdateCommand $script:LastUpdateExitCode $script:UpdateStdoutText $script:UpdateStderrText "update_failed" (T "updateNoResult")
+            Set-OperationErrorFromProcessOutput "update" $state.LastCommand $state.LastExitCode $state.StdoutText $state.StderrText "update_failed" (T "updateNoResult")
         }
         Show-AppError ((T "updateFailedMessage") -f (Get-UpdateFailureReason))
         return
     }
 
-    $event = $script:LastUpdateDoneEvent
+    $event = $state.LastDoneEvent
     if ($event.kind -eq "update_check") {
         if (-not [bool]$event.update_available) {
             $statusLabel.Text = T "complete"
@@ -2167,14 +2121,14 @@ function Start-UpdateProcess {
         [string[]]$Arguments,
         [string]$StatusKey
     )
-    if (Test-ProcessRunning $script:UpdateProcess) {
+    if (Test-OperationRunning "update") {
         throw (T "updateAlreadyRunning")
     }
     Clear-UpdateRunState
     $script:LastOperationError = $null
-    $script:LastUpdateArguments = @($Arguments)
+    (Get-OperationState "update").LastArguments = @($Arguments)
     if ($Arguments.Count -ge 3) {
-        $script:LastUpdateCommand = [string]$Arguments[2]
+        (Get-OperationState "update").LastCommand = [string]$Arguments[2]
     }
     Set-Busy $true
     $progressBar.Style = "Marquee"
@@ -2186,7 +2140,7 @@ function Start-UpdateProcess {
         -CreateStartInfo { New-UpdateProcessStartInfo $Arguments } `
         -OutputHandler ([System.Action[string]]{
             param($line)
-            Append-UpdateProcessOutput "stdout" $line
+            Append-OperationProcessOutput "update" "stdout" $line
             try {
                 Handle-UpdateLine $line
             }
@@ -2196,7 +2150,7 @@ function Start-UpdateProcess {
         }) `
         -ErrorHandler ([System.Action[string]]{
             param($line)
-            Append-UpdateProcessOutput "stderr" $line
+            Append-OperationProcessOutput "update" "stderr" $line
             try {
                 Handle-UpdateErrorLine $line
             }
@@ -2205,8 +2159,7 @@ function Start-UpdateProcess {
         -ExitHandler ([System.Action[int]]{
             param($code)
             try {
-                $script:LastUpdateExitCode = $code
-                $script:UpdateExitObserved = $true
+                Set-OperationExitObserved "update" $code
                 Complete-UpdateIfReady
             }
             catch {
@@ -2215,7 +2168,7 @@ function Start-UpdateProcess {
         }) `
         -OutputClosedHandler ([System.Action]{
             try {
-                $script:UpdateStdoutClosed = $true
+                Set-OperationStreamClosed "update" "stdout"
                 Complete-UpdateIfReady
             }
             catch {
@@ -2224,19 +2177,19 @@ function Start-UpdateProcess {
         }) `
         -ErrorClosedHandler ([System.Action]{
             try {
-                $script:UpdateStderrClosed = $true
+                Set-OperationStreamClosed "update" "stderr"
                 Complete-UpdateIfReady
             }
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
         }) `
-        -SetProcess { param($value) $script:UpdateProcess = $value } `
-        -SetBridge { param($value) $script:UpdateBridge = $value } `
+        -SetProcess { param($value) Set-OperationProcess "update" $value } `
+        -SetBridge { param($value) Set-OperationBridge "update" $value } `
         -OnStartFailure {
             param($message)
-            $script:LastUpdateStartError = $message
-            $script:LastOperationError = New-OperationError "update_process_start" $script:LastUpdateCommand "process_start_failed" $script:LastUpdateStartError $script:LastUpdateStartError "process_start" $null
+            (Get-OperationState "update").LastStartError = $message
+            $script:LastOperationError = New-OperationError "update_process_start" (Get-OperationState "update").LastCommand "process_start_failed" (Get-OperationState "update").LastStartError (Get-OperationState "update").LastStartError "process_start" $null
             $progressBar.Style = "Continuous"
             $progressBar.Value = 0
             Set-Busy $false
@@ -2284,30 +2237,29 @@ function Exit-ApplicationAfterUpdate {
 
 function Start-ResolveProcess {
     param([string]$InputText)
-    if (Test-ProcessRunning $script:ResolveProcess) {
+    if (Test-OperationRunning "resolve") {
         throw (T "resolveAlreadyRunning")
     }
     $script:LastInputText = $InputText
     Clear-ResolveRunState
     $script:LastOperationError = $null
     $script:ResolveInputPath = New-ResolveInputFile $InputText
-    $script:LastResolveArguments = Get-ResolvePythonArguments $script:ResolveInputPath
+    (Get-OperationState "resolve").LastArguments = Get-ResolvePythonArguments $script:ResolveInputPath
     Start-GeoGetterPythonProcess `
         -OperationName "resolve" `
         -CreateStartInfo { New-ResolveProcessStartInfo $script:ResolveInputPath } `
         -OutputHandler ([System.Action[string]]{
             param($line)
-            Append-ResolveProcessOutput "stdout" $line
+            Append-OperationProcessOutput "resolve" "stdout" $line
         }) `
         -ErrorHandler ([System.Action[string]]{
             param($line)
-            Append-ResolveProcessOutput "stderr" $line
+            Append-OperationProcessOutput "resolve" "stderr" $line
         }) `
         -ExitHandler ([System.Action[int]]{
             param($code)
             try {
-                $script:LastResolveExitCode = $code
-                $script:ResolveExitObserved = $true
+                Set-OperationExitObserved "resolve" $code
                 Complete-ResolveIfReady
             }
             catch {
@@ -2322,7 +2274,7 @@ function Start-ResolveProcess {
         }) `
         -OutputClosedHandler ([System.Action]{
             try {
-                $script:ResolveStdoutClosed = $true
+                Set-OperationStreamClosed "resolve" "stdout"
                 Complete-ResolveIfReady
             }
             catch {
@@ -2331,32 +2283,31 @@ function Start-ResolveProcess {
         }) `
         -ErrorClosedHandler ([System.Action]{
             try {
-                $script:ResolveStderrClosed = $true
+                Set-OperationStreamClosed "resolve" "stderr"
                 Complete-ResolveIfReady
             }
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
         }) `
-        -SetProcess { param($value) $script:ResolveProcess = $value } `
-        -SetBridge { param($value) $script:ResolveBridge = $value } `
+        -SetProcess { param($value) Set-OperationProcess "resolve" $value } `
+        -SetBridge { param($value) Set-OperationBridge "resolve" $value } `
         -OnStartFailure {
             param($message)
             Remove-ResolveInputFile
-            $script:LastResolveStartError = $message
-            $script:LastOperationError = New-OperationError "resolve_process_start" "resolve-json" "process_start_failed" $script:LastResolveStartError $script:LastResolveStartError "process_start" $null
+            (Get-OperationState "resolve").LastStartError = $message
+            $script:LastOperationError = New-OperationError "resolve_process_start" "resolve-json" "process_start_failed" (Get-OperationState "resolve").LastStartError (Get-OperationState "resolve").LastStartError "process_start" $null
         }
 }
 
 function Start-ManifestVerificationProcess {
     param([string]$ManifestPath)
-    if (Test-ProcessRunning $script:VerifyProcess) {
+    if (Test-OperationRunning "verification") {
         throw (T "verifyManifestAlreadyRunning")
     }
-    $script:VerifyCanceled = $false
     Clear-VerificationRunState
     $script:LastOperationError = $null
-    $script:LastVerificationArguments = Get-VerifyManifestPythonArguments $ManifestPath
+    (Get-OperationState "verification").LastArguments = Get-VerifyManifestPythonArguments $ManifestPath
     Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
 
     Start-GeoGetterPythonProcess `
@@ -2364,7 +2315,7 @@ function Start-ManifestVerificationProcess {
         -CreateStartInfo { New-VerifyManifestProcessStartInfo $ManifestPath } `
         -OutputHandler ([System.Action[string]]{
             param($line)
-            Append-VerificationProcessOutput "stdout" $line
+            Append-OperationProcessOutput "verification" "stdout" $line
             try {
                 Handle-ManifestVerificationLine $line
             }
@@ -2374,7 +2325,7 @@ function Start-ManifestVerificationProcess {
         }) `
         -ErrorHandler ([System.Action[string]]{
             param($line)
-            Append-VerificationProcessOutput "stderr" $line
+            Append-OperationProcessOutput "verification" "stderr" $line
             try {
                 Append-Log $line
             }
@@ -2383,8 +2334,7 @@ function Start-ManifestVerificationProcess {
         -ExitHandler ([System.Action[int]]{
             param($code)
             try {
-                $script:LastVerificationExitCode = $code
-                $script:VerifyExitObserved = $true
+                Set-OperationExitObserved "verification" $code
                 Complete-ManifestVerificationIfReady
             }
             catch {
@@ -2393,7 +2343,7 @@ function Start-ManifestVerificationProcess {
         }) `
         -OutputClosedHandler ([System.Action]{
             try {
-                $script:VerifyStdoutClosed = $true
+                Set-OperationStreamClosed "verification" "stdout"
                 Complete-ManifestVerificationIfReady
             }
             catch {
@@ -2402,24 +2352,23 @@ function Start-ManifestVerificationProcess {
         }) `
         -ErrorClosedHandler ([System.Action]{
             try {
-                $script:VerifyStderrClosed = $true
+                Set-OperationStreamClosed "verification" "stderr"
                 Complete-ManifestVerificationIfReady
             }
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
         }) `
-        -SetProcess { param($value) $script:VerifyProcess = $value } `
-        -SetBridge { param($value) $script:VerifyBridge = $value } `
+        -SetProcess { param($value) Set-OperationProcess "verification" $value } `
+        -SetBridge { param($value) Set-OperationBridge "verification" $value } `
         -OnStartFailure {
             param($message)
-            $script:LastVerificationStartError = $message
-            $script:LastOperationError = New-OperationError "verification_process_start" "verify-manifest-json" "process_start_failed" $script:LastVerificationStartError $script:LastVerificationStartError "process_start" $null
+            (Get-OperationState "verification").LastStartError = $message
+            $script:LastOperationError = New-OperationError "verification_process_start" "verify-manifest-json" "process_start_failed" (Get-OperationState "verification").LastStartError (Get-OperationState "verification").LastStartError "process_start" $null
         }
 }
 
 function Start-DownloadProcess {
-    $script:DownloadCanceled = $false
     Clear-DownloadRunState
     Clear-VerificationRunState
     $script:LastOperationError = $null
@@ -2447,7 +2396,7 @@ function Start-DownloadProcess {
 
     $fastqIndices = Get-SelectedFastqIndicesOrEmpty
     $suppIndices = Get-SelectedSuppIndicesOrEmpty
-    $script:LastDownloadArguments = Get-DownloadPythonArguments $fastqIndices $suppIndices $resumeExisting
+    (Get-OperationState "download").LastArguments = Get-DownloadPythonArguments $fastqIndices $suppIndices $resumeExisting
     Set-Busy $true
     $progressBar.Style = "Continuous"
     $progressBar.Value = 0
@@ -2457,7 +2406,7 @@ function Start-DownloadProcess {
         -CreateStartInfo { New-DownloadProcessStartInfo $fastqIndices $suppIndices $resumeExisting } `
         -OutputHandler ([System.Action[string]]{
             param($line)
-            Append-DownloadProcessOutput "stdout" $line
+            Append-OperationProcessOutput "download" "stdout" $line
             try {
                 Handle-DownloadLine $line
             }
@@ -2467,7 +2416,7 @@ function Start-DownloadProcess {
         }) `
         -ErrorHandler ([System.Action[string]]{
             param($line)
-            Append-DownloadProcessOutput "stderr" $line
+            Append-OperationProcessOutput "download" "stderr" $line
             try {
                 Handle-DownloadErrorLine $line
             }
@@ -2476,8 +2425,7 @@ function Start-DownloadProcess {
         -ExitHandler ([System.Action[int]]{
             param($code)
             try {
-                $script:LastDownloadExitCode = $code
-                $script:DownloadExitObserved = $true
+                Set-OperationExitObserved "download" $code
                 Complete-DownloadIfReady
             }
             catch {
@@ -2486,7 +2434,7 @@ function Start-DownloadProcess {
         }) `
         -OutputClosedHandler ([System.Action]{
             try {
-                $script:DownloadStdoutClosed = $true
+                Set-OperationStreamClosed "download" "stdout"
                 Complete-DownloadIfReady
             }
             catch {
@@ -2495,19 +2443,19 @@ function Start-DownloadProcess {
         }) `
         -ErrorClosedHandler ([System.Action]{
             try {
-                $script:DownloadStderrClosed = $true
+                Set-OperationStreamClosed "download" "stderr"
                 Complete-DownloadIfReady
             }
             catch {
                 try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
             }
         }) `
-        -SetProcess { param($value) $script:DownloadProcess = $value } `
-        -SetBridge { param($value) $script:DownloadBridge = $value } `
+        -SetProcess { param($value) Set-OperationProcess "download" $value } `
+        -SetBridge { param($value) Set-OperationBridge "download" $value } `
         -OnStartFailure {
             param($message)
-            $script:LastDownloadStartError = $message
-            $script:LastOperationError = New-OperationError "download_process_start" "selected-download-json" "process_start_failed" $script:LastDownloadStartError $script:LastDownloadStartError "process_start" $null
+            (Get-OperationState "download").LastStartError = $message
+            $script:LastOperationError = New-OperationError "download_process_start" "selected-download-json" "process_start_failed" (Get-OperationState "download").LastStartError (Get-OperationState "download").LastStartError "process_start" $null
         }
 }
 
@@ -3519,7 +3467,7 @@ if ($SelfTest) {
     Assert-Equal ($preflightArgs -join "|") "-m|geo_getter.cli|preflight-json|--input-json|C:\tmp\geo getter\resolved.json|--fastq-indices|0,1|--supp-indices|2|--out|C:\tmp\geo getter\out|--resume-existing" "preflight bridge arguments"
     $script:ResolvedJsonPath = $selfTestResolvedJsonPath
     Clear-UpdateRunState
-    $script:LastUpdateDoneEvent = [pscustomobject]@{
+    (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
         event = "done"
         kind = "update_check"
         current_version = "0.1.3"
@@ -3528,17 +3476,39 @@ if ($SelfTest) {
         release_url = "https://example.invalid/release"
         asset = $null
     }
-    $script:LastUpdateExitCode = 0
-    $script:UpdateExitObserved = $true
-    $script:UpdateStdoutClosed = $true
-    $script:UpdateStderrClosed = $true
+    (Get-OperationState "update").LastExitCode = 0
+    (Get-OperationState "update").ExitObserved = $true
+    (Get-OperationState "update").StdoutClosed = $true
+    (Get-OperationState "update").StderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
     Assert-Equal $statusLabel.Text (T "complete") "update check latest status"
 
     Clear-UpdateRunState
+    (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
+        event = "done"
+        kind = "update_check"
+        current_version = "0.1.3"
+        latest_version = "0.1.3"
+        update_available = $false
+        release_url = "https://example.invalid/release"
+        asset = $null
+    }
+    Set-OperationExitObserved "update" 0
+    $statusLabel.Text = T "checkingUpdates"
+    Set-Busy $true
+    Complete-UpdateIfReady
+    Assert-Equal $statusLabel.Text (T "checkingUpdates") "update finalizer waits for stdout close after exit"
+    Set-OperationStreamClosed "update" "stdout"
+    Complete-UpdateIfReady
+    Assert-Equal $statusLabel.Text (T "checkingUpdates") "update finalizer waits for stderr close after stdout close"
+    Set-OperationStreamClosed "update" "stderr"
+    Complete-UpdateIfReady
+    Assert-Equal $statusLabel.Text (T "complete") "update finalizer applies result after stream close"
+
+    Clear-UpdateRunState
     $script:UpdateDownloadConfirmationForSelfTest = $false
-    $script:LastUpdateDoneEvent = [pscustomobject]@{
+    (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
         event = "done"
         kind = "update_check"
         current_version = "0.1.3"
@@ -3547,22 +3517,22 @@ if ($SelfTest) {
         release_url = "https://example.invalid/release"
         asset = [pscustomobject]@{ name = "GEOGetter-Setup-v0.1.4.exe"; size = 12; sha256 = ("1" * 64) }
     }
-    $script:LastUpdateExitCode = 0
-    $script:UpdateExitObserved = $true
-    $script:UpdateStdoutClosed = $true
-    $script:UpdateStderrClosed = $true
+    (Get-OperationState "update").LastExitCode = 0
+    (Get-OperationState "update").ExitObserved = $true
+    (Get-OperationState "update").StdoutClosed = $true
+    (Get-OperationState "update").StderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
     Assert-Equal $statusLabel.Text (T "canceled") "declined update leaves GUI open"
     $script:UpdateDownloadConfirmationForSelfTest = $null
 
     Clear-UpdateRunState
-    $script:LastUpdateCommand = "check-update-json"
-    $script:UpdateStderrText = '{"event":"error","command":"check-update-json","code":"update_digest_missing","detail":"fixture","message":"fixture"}'
-    $script:LastUpdateExitCode = 1
-    $script:UpdateExitObserved = $true
-    $script:UpdateStdoutClosed = $true
-    $script:UpdateStderrClosed = $true
+    (Get-OperationState "update").LastCommand = "check-update-json"
+    (Get-OperationState "update").StderrText = '{"event":"error","command":"check-update-json","code":"update_digest_missing","detail":"fixture","message":"fixture"}'
+    (Get-OperationState "update").LastExitCode = 1
+    (Get-OperationState "update").ExitObserved = $true
+    (Get-OperationState "update").StdoutClosed = $true
+    (Get-OperationState "update").StderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
     Assert-Equal $script:LastOperationError.code "update_digest_missing" "update finalizer parses stderr error"
@@ -3577,7 +3547,7 @@ if ($SelfTest) {
     $script:InstallerLaunchPathForSelfTest = ""
     $script:ApplicationExitRequestedForSelfTest = $false
     $script:InstallerLauncherForSelfTest = { param([string]$Path) $script:InstallerLaunchPathForSelfTest = $Path }
-    $script:LastUpdateDoneEvent = [pscustomobject]@{
+    (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
         event = "done"
         kind = "update_installer"
         version = "0.1.4"
@@ -3585,10 +3555,10 @@ if ($SelfTest) {
         sha256 = ("1" * 64)
         bytes = 12
     }
-    $script:LastUpdateExitCode = 0
-    $script:UpdateExitObserved = $true
-    $script:UpdateStdoutClosed = $true
-    $script:UpdateStderrClosed = $true
+    (Get-OperationState "update").LastExitCode = 0
+    (Get-OperationState "update").ExitObserved = $true
+    (Get-OperationState "update").StdoutClosed = $true
+    (Get-OperationState "update").StderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
     Assert-Equal $script:InstallerLaunchPathForSelfTest "C:\tmp\GEOGetter-Setup-v0.1.4.exe" "verified installer is launched"
@@ -3598,7 +3568,7 @@ if ($SelfTest) {
     Clear-UpdateRunState
     $script:ApplicationExitRequestedForSelfTest = $false
     $script:InstallerLauncherForSelfTest = { param([string]$Path) throw "launch failed" }
-    $script:LastUpdateDoneEvent = [pscustomobject]@{
+    (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
         event = "done"
         kind = "update_installer"
         version = "0.1.4"
@@ -3606,10 +3576,10 @@ if ($SelfTest) {
         sha256 = ("1" * 64)
         bytes = 12
     }
-    $script:LastUpdateExitCode = 0
-    $script:UpdateExitObserved = $true
-    $script:UpdateStdoutClosed = $true
-    $script:UpdateStderrClosed = $true
+    (Get-OperationState "update").LastExitCode = 0
+    (Get-OperationState "update").ExitObserved = $true
+    (Get-OperationState "update").StdoutClosed = $true
+    (Get-OperationState "update").StderrClosed = $true
     Set-Busy $true
     Complete-UpdateIfReady
     Assert-Equal $script:LastOperationError.phase "update_installer_launch" "installer launch failure records operation error phase"
@@ -3618,10 +3588,10 @@ if ($SelfTest) {
     $script:InstallerLauncherForSelfTest = $null
     $originalProcessOutputLimit = $script:ProcessOutputLimitChars
     $script:ProcessOutputLimitChars = 80
-    $script:DownloadStdoutText = ""
-    Append-DownloadProcessOutput "stdout" ("a" * 100)
-    Assert-Contains $script:DownloadStdoutText "earlier process output was truncated" "process output cap marker"
-    Assert-Equal ($script:DownloadStdoutText.Length -le 80) $true "process output cap"
+    (Get-OperationState "download").StdoutText = ""
+    Append-OperationProcessOutput "download" "stdout" ("a" * 100)
+    Assert-Contains (Get-OperationState "download").StdoutText "earlier process output was truncated" "process output cap marker"
+    Assert-Equal ((Get-OperationState "download").StdoutText.Length -le 80) $true "process output cap"
     $script:ProcessOutputLimitChars = $originalProcessOutputLimit
     [void]$form.Handle
     $script:HelperProcess = $null
@@ -3673,10 +3643,10 @@ if ($SelfTest) {
 
     $selfTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("geo getter selftest " + [System.Guid]::NewGuid().ToString("N"))
     [System.IO.Directory]::CreateDirectory($selfTestRoot) | Out-Null
-    $script:ResolveStdoutText = $encodingResult.Stdout
-    $script:ResolveStderrText = $encodingResult.Stderr
-    $script:LastResolveExitCode = $encodingResult.ExitCode
-    $script:LastResolveArguments = @("-m", "geo_getter.cli", "resolve-json", "")
+    (Get-OperationState "resolve").StdoutText = $encodingResult.Stdout
+    (Get-OperationState "resolve").StderrText = $encodingResult.Stderr
+    (Get-OperationState "resolve").LastExitCode = $encodingResult.ExitCode
+    (Get-OperationState "resolve").LastArguments = @("-m", "geo_getter.cli", "resolve-json", "")
     Set-OperationErrorFromProcessOutput "resolve" "resolve-json" $encodingResult.ExitCode $encodingResult.Stdout $encodingResult.Stderr "resolve_failed" (T "metadataFailed")
     Assert-Equal $script:LastOperationError.code "invalid_input" "GUI parses CLI error code"
     Clear-ResolvedState -DeleteResolvedJson
@@ -3999,50 +3969,50 @@ if ($SelfTest) {
     [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
     $resolveSuccessInput = New-ResolveInputFile "SELFTEST"
     $script:ResolveInputPath = $resolveSuccessInput
-    $script:LastResolveExitCode = 0
-    $script:ResolveCanceled = $false
-    $script:ResolveExitObserved = $true
-    $script:ResolveStdoutClosed = $false
-    $script:ResolveStderrClosed = $false
-    $script:ResolveFinalized = $false
+    (Get-OperationState "resolve").LastExitCode = 0
+    (Get-OperationState "resolve").Canceled = $false
+    (Get-OperationState "resolve").ExitObserved = $true
+    (Get-OperationState "resolve").StdoutClosed = $false
+    (Get-OperationState "resolve").StderrClosed = $false
+    (Get-OperationState "resolve").Finalized = $false
     $statusLabel.Text = T "fetching"
     Set-Busy $true
     Complete-ResolveIfReady
     Assert-Equal $statusLabel.Text (T "fetching") "resolve finalizer waits for stdout close after exit"
-    $script:ResolveStdoutClosed = $true
+    (Get-OperationState "resolve").StdoutClosed = $true
     Complete-ResolveIfReady
     Assert-Equal $statusLabel.Text (T "fetching") "resolve finalizer waits for stderr close after stdout close"
-    $script:ResolveStderrClosed = $true
+    (Get-OperationState "resolve").StderrClosed = $true
     Complete-ResolveIfReady
     Assert-Equal $statusLabel.Text (T "complete") "resolve finalizer applies result after stream close"
     Assert-Equal (Test-Path -LiteralPath $resolveSuccessInput) $false "resolve finalizer removes temp input"
 
     Clear-ResolvedState -DeleteResolvedJson
-    $script:ResolveStderrText = '{"event":"error","command":"resolve-json","code":"invalid_input","detail":"late stderr","message":"late stderr"}'
-    $script:LastResolveExitCode = 1
-    $script:ResolveCanceled = $false
-    $script:ResolveExitObserved = $true
-    $script:ResolveStdoutClosed = $true
-    $script:ResolveStderrClosed = $false
-    $script:ResolveFinalized = $false
+    (Get-OperationState "resolve").StderrText = '{"event":"error","command":"resolve-json","code":"invalid_input","detail":"late stderr","message":"late stderr"}'
+    (Get-OperationState "resolve").LastExitCode = 1
+    (Get-OperationState "resolve").Canceled = $false
+    (Get-OperationState "resolve").ExitObserved = $true
+    (Get-OperationState "resolve").StdoutClosed = $true
+    (Get-OperationState "resolve").StderrClosed = $false
+    (Get-OperationState "resolve").Finalized = $false
     $script:LastOperationError = $null
     $statusLabel.Text = T "fetching"
     Set-Busy $true
     Complete-ResolveIfReady
     Assert-Equal $script:LastOperationError $null "resolve finalizer waits for stderr close before setting operation error"
-    $script:ResolveStderrClosed = $true
+    (Get-OperationState "resolve").StderrClosed = $true
     Complete-ResolveIfReady
     Assert-Equal $script:LastOperationError.code "invalid_input" "resolve finalizer parses stderr error after close"
     Assert-Equal $statusLabel.Text (T "error") "resolve finalizer marks failed resolve"
 
     $resolveCancelInput = New-ResolveInputFile "SELFTEST"
     $script:ResolveInputPath = $resolveCancelInput
-    $script:LastResolveExitCode = 1
-    $script:ResolveCanceled = $true
-    $script:ResolveExitObserved = $true
-    $script:ResolveStdoutClosed = $true
-    $script:ResolveStderrClosed = $true
-    $script:ResolveFinalized = $false
+    (Get-OperationState "resolve").LastExitCode = 1
+    (Get-OperationState "resolve").Canceled = $true
+    (Get-OperationState "resolve").ExitObserved = $true
+    (Get-OperationState "resolve").StdoutClosed = $true
+    (Get-OperationState "resolve").StderrClosed = $true
+    (Get-OperationState "resolve").Finalized = $false
     $statusLabel.Text = T "fetching"
     Set-Busy $true
     Complete-ResolveIfReady
@@ -4059,7 +4029,7 @@ if ($SelfTest) {
         Start-ResolveProcess ""
         $resolveAsyncInputPath = $script:ResolveInputPath
         $deadline = [DateTime]::UtcNow.AddSeconds(10)
-        while ($null -ne $script:ResolveProcess -and [DateTime]::UtcNow -lt $deadline) {
+        while ($null -ne (Get-OperationState "resolve").Process -and [DateTime]::UtcNow -lt $deadline) {
             [System.Windows.Forms.Application]::DoEvents()
             Start-Sleep -Milliseconds 50
         }
@@ -4069,15 +4039,15 @@ if ($SelfTest) {
         }
     }
     finally {
-        if (Test-ProcessRunning $script:ResolveProcess) {
-            try { $script:ResolveProcess.Kill() } catch { }
-            try { [void]$script:ResolveProcess.WaitForExit(5000) } catch { }
+        if (Test-OperationRunning "resolve") {
+            try { (Get-OperationState "resolve").Process.Kill() } catch { }
+            try { [void](Get-OperationState "resolve").Process.WaitForExit(5000) } catch { }
         }
     }
-    Assert-Equal $script:ResolveProcess $null "async resolve process finished after invalid input"
-    Assert-Equal $script:ResolveFinalized $true "async resolve finalizer ran"
-    Assert-Equal $script:ResolveStdoutClosed $true "async resolve stdout closed"
-    Assert-Equal $script:ResolveStderrClosed $true "async resolve stderr closed"
+    Assert-Equal (Get-OperationState "resolve").Process $null "async resolve process finished after invalid input"
+    Assert-Equal (Get-OperationState "resolve").Finalized $true "async resolve finalizer ran"
+    Assert-Equal (Get-OperationState "resolve").StdoutClosed $true "async resolve stdout closed"
+    Assert-Equal (Get-OperationState "resolve").StderrClosed $true "async resolve stderr closed"
     Assert-Equal $statusLabel.Text (T "error") "async resolve invalid input status"
     Assert-Equal $script:LastOperationError.phase "resolve" "async resolve error records phase"
     Assert-Equal $script:LastOperationError.code "invalid_input" "async resolve error records code"
@@ -4089,14 +4059,14 @@ if ($SelfTest) {
     $cancelProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
     try {
         [void]$cancelProbe.Start()
-        $script:ResolveProcess = $cancelProbe
-        $script:ResolveCanceled = $false
+        (Get-OperationState "resolve").Process = $cancelProbe
+        (Get-OperationState "resolve").Canceled = $false
         Update-CancelButton
         Assert-Equal $cancelButton.Enabled $true "cancel button enabled for resolve process"
         Stop-RunningGuiProcesses | Out-Null
         [void]$cancelProbe.WaitForExit(5000)
         Assert-Equal $cancelProbe.HasExited $true "cancel button kills resolve process"
-        Assert-Equal $script:ResolveCanceled $true "cancel button marks resolve canceled"
+        Assert-Equal (Get-OperationState "resolve").Canceled $true "cancel button marks resolve canceled"
     }
     finally {
         if (Test-ProcessRunning $cancelProbe) {
@@ -4104,7 +4074,7 @@ if ($SelfTest) {
             try { [void]$cancelProbe.WaitForExit(5000) } catch { }
         }
         Dispose-ProcessQuietly $cancelProbe
-        $script:ResolveProcess = $null
+        (Get-OperationState "resolve").Process = $null
         Update-CancelButton
     }
 
@@ -4112,14 +4082,14 @@ if ($SelfTest) {
     $updateCancelProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
     try {
         [void]$updateCancelProbe.Start()
-        $script:UpdateProcess = $updateCancelProbe
-        $script:UpdateCanceled = $false
+        (Get-OperationState "update").Process = $updateCancelProbe
+        (Get-OperationState "update").Canceled = $false
         Update-CancelButton
         Assert-Equal $cancelButton.Enabled $true "cancel button enabled for update process"
         Stop-RunningGuiProcesses | Out-Null
         [void]$updateCancelProbe.WaitForExit(5000)
         Assert-Equal $updateCancelProbe.HasExited $true "cancel button kills update process"
-        Assert-Equal $script:UpdateCanceled $true "cancel button marks update canceled"
+        Assert-Equal (Get-OperationState "update").Canceled $true "cancel button marks update canceled"
     }
     finally {
         if (Test-ProcessRunning $updateCancelProbe) {
@@ -4127,7 +4097,7 @@ if ($SelfTest) {
             try { [void]$updateCancelProbe.WaitForExit(5000) } catch { }
         }
         Dispose-ProcessQuietly $updateCancelProbe
-        $script:UpdateProcess = $null
+        (Get-OperationState "update").Process = $null
         Update-CancelButton
     }
 
@@ -4136,13 +4106,13 @@ if ($SelfTest) {
     $shutdownInput = New-ResolveInputFile "SELFTEST"
     try {
         [void]$shutdownProbe.Start()
-        $script:ResolveProcess = $shutdownProbe
+        (Get-OperationState "resolve").Process = $shutdownProbe
         $script:ResolveInputPath = $shutdownInput
-        $script:ResolveCanceled = $false
+        (Get-OperationState "resolve").Canceled = $false
         Stop-RunningGuiProcessesForShutdown
         [void]$shutdownProbe.WaitForExit(5000)
         Assert-Equal $shutdownProbe.HasExited $true "shutdown kills resolve process"
-        Assert-Equal $script:ResolveCanceled $true "shutdown marks resolve canceled"
+        Assert-Equal (Get-OperationState "resolve").Canceled $true "shutdown marks resolve canceled"
         Assert-Equal $script:ResolveInputPath $null "shutdown clears resolve temp input path"
         Assert-Equal (Test-Path -LiteralPath $shutdownInput) $false "shutdown removes resolve temp input"
     }
@@ -4152,7 +4122,7 @@ if ($SelfTest) {
             try { [void]$shutdownProbe.WaitForExit(5000) } catch { }
         }
         Dispose-ProcessQuietly $shutdownProbe
-        $script:ResolveProcess = $null
+        (Get-OperationState "resolve").Process = $null
         Remove-ResolveInputFile
         Update-CancelButton
     }
@@ -4176,9 +4146,9 @@ if ($SelfTest) {
     Assert-Equal $statusLabel.Text (T "downloadRetryWaiting") "retry message updates status"
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress restores status after retry wait"
-    $script:DownloadExitObserved = $false
-    $script:DownloadStdoutClosed = $false
-    $script:DownloadFinalized = $false
+    (Get-OperationState "download").ExitObserved = $false
+    (Get-OperationState "download").StdoutClosed = $false
+    (Get-OperationState "download").Finalized = $false
     $statusLabel.Text = T "downloading"
     Handle-DownloadLine '{"event":"done","statuses":["md5_unavailable"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv"}'
     Assert-Equal $statusLabel.Text (T "downloading") "done event does not finalize status before exit and stdout close"
@@ -4191,50 +4161,50 @@ if ($SelfTest) {
     Assert-Equal (Get-DownloadFinalStatusKey $null 0 $false) "error" "final state missing done event with zero exit"
     Assert-Equal (Get-DownloadFinalStatusKey $null 1 $false) "error" "final state missing done event with nonzero exit"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified") }) 1 $true) "canceled" "final state canceled wins"
-    $script:DownloadCanceled = $true
+    (Get-OperationState "download").Canceled = $true
     Clear-DownloadRunState
-    Assert-Equal $script:DownloadCanceled $false "download run state clear resets canceled flag"
-    $script:VerifyCanceled = $true
+    Assert-Equal (Get-OperationState "download").Canceled $false "download run state clear resets canceled flag"
+    (Get-OperationState "verification").Canceled = $true
     Clear-VerificationRunState
-    Assert-Equal $script:VerifyCanceled $false "verification run state clear resets canceled flag"
+    Assert-Equal (Get-OperationState "verification").Canceled $false "verification run state clear resets canceled flag"
 
-    $script:LastDownloadDoneEvent = $null
-    $script:LastDownloadExitCode = 1
-    $script:DownloadCanceled = $false
-    $script:DownloadExitObserved = $true
-    $script:DownloadStdoutClosed = $false
-    $script:DownloadStderrClosed = $false
-    $script:DownloadFinalized = $false
+    (Get-OperationState "download").LastDoneEvent = $null
+    (Get-OperationState "download").LastExitCode = 1
+    (Get-OperationState "download").Canceled = $false
+    (Get-OperationState "download").ExitObserved = $true
+    (Get-OperationState "download").StdoutClosed = $false
+    (Get-OperationState "download").StderrClosed = $false
+    (Get-OperationState "download").Finalized = $false
     $statusLabel.Text = T "downloading"
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "downloading") "download finalizer waits for stdout close after exit"
-    $script:LastDownloadDoneEvent = [pscustomobject]@{ statuses = @("md5_unavailable") }
+    (Get-OperationState "download").LastDoneEvent = [pscustomobject]@{ statuses = @("md5_unavailable") }
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "downloading") "download finalizer still waits for stdout close after done"
-    $script:DownloadStdoutClosed = $true
+    (Get-OperationState "download").StdoutClosed = $true
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "downloading") "download finalizer waits for stderr close after stdout close"
-    $script:DownloadStderrClosed = $true
+    (Get-OperationState "download").StderrClosed = $true
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "completeUnverified") "download finalizer handles exit before done processing"
 
-    $script:LastVerificationDoneEvent = $null
-    $script:LastVerificationExitCode = 0
-    $script:VerifyCanceled = $false
-    $script:VerifyExitObserved = $true
-    $script:VerifyStdoutClosed = $false
-    $script:VerifyStderrClosed = $false
-    $script:VerifyFinalized = $false
+    (Get-OperationState "verification").LastDoneEvent = $null
+    (Get-OperationState "verification").LastExitCode = 0
+    (Get-OperationState "verification").Canceled = $false
+    (Get-OperationState "verification").ExitObserved = $true
+    (Get-OperationState "verification").StdoutClosed = $false
+    (Get-OperationState "verification").StderrClosed = $false
+    (Get-OperationState "verification").Finalized = $false
     $statusLabel.Text = T "verifyingManifest"
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer waits for stdout close after exit"
-    $script:LastVerificationDoneEvent = [pscustomobject]@{ report = "C:\tmp\verification_report.tsv" }
+    (Get-OperationState "verification").LastDoneEvent = [pscustomobject]@{ report = "C:\tmp\verification_report.tsv" }
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer still waits for stdout close after done"
-    $script:VerifyStdoutClosed = $true
+    (Get-OperationState "verification").StdoutClosed = $true
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer waits for stderr close after stdout close"
-    $script:VerifyStderrClosed = $true
+    (Get-OperationState "verification").StderrClosed = $true
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "complete") "verification finalizer handles exit before done processing"
 
@@ -4257,7 +4227,7 @@ if ($SelfTest) {
     Assert-Contains $fileOutputPreflightMessage "ファイル" "preflight rejects output path that is a file"
     Assert-Equal $script:LastPreflightStatus "failed" "preflight records file output failure"
     $startPreflightMessage = ""
-    $script:DownloadProcess = $null
+    (Get-OperationState "download").Process = $null
     try {
         Start-DownloadProcess
     }
@@ -4265,7 +4235,7 @@ if ($SelfTest) {
         $startPreflightMessage = $_.Exception.Message
     }
     Assert-Contains $startPreflightMessage "ファイル" "download start stops before subprocess on preflight failure"
-    Assert-Equal $script:DownloadProcess $null "download process is not created when preflight fails"
+    Assert-Equal (Get-OperationState "download").Process $null "download process is not created when preflight fails"
     Assert-Equal $script:LastOperationError.phase "download_preflight" "preflight records operation error phase"
     Assert-Equal $script:LastOperationError.code "output_path_invalid" "preflight records operation error code"
 
@@ -4333,18 +4303,18 @@ if ($SelfTest) {
     Assert-Equal $downloadPreflight.OutputDir $selfTestRunOutput "preflight result output dir matches output field"
 
     $downloadResult = Invoke-SelectedDownloadJsonForSelfTest (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty)
-    $script:DownloadStdoutText = Limit-ProcessOutputText $downloadResult.Stdout
-    $script:DownloadStderrText = Limit-ProcessOutputText $downloadResult.Stderr
-    $script:LastDownloadExitCode = $downloadResult.ExitCode
+    (Get-OperationState "download").StdoutText = Limit-ProcessOutputText $downloadResult.Stdout
+    (Get-OperationState "download").StderrText = Limit-ProcessOutputText $downloadResult.Stderr
+    (Get-OperationState "download").LastExitCode = $downloadResult.ExitCode
     $doneLine = @($downloadResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"event"\s*:\s*"done"' } | Select-Object -Last 1)
     if ($doneLine.Count -gt 0) {
-        $script:LastDownloadDoneEvent = $doneLine[0] | ConvertFrom-Json
+        (Get-OperationState "download").LastDoneEvent = $doneLine[0] | ConvertFrom-Json
     }
     Assert-Equal $downloadResult.ExitCode 0 "selected-download-json exit code"
     Assert-Contains $downloadResult.Stdout '"event": "done"' "selected-download-json done event"
     Assert-Contains $downloadResult.Stdout '"md5_verified"' "selected-download-json md5 success"
     Assert-Contains $downloadResult.Stdout '"download_complete"' "selected-download-json supplementary success"
-    Assert-Equal ([System.IO.Path]::GetFullPath([string]$script:LastDownloadDoneEvent.output_dir)) $selfTestRunOutput "download done output dir matches output field"
+    Assert-Equal ([System.IO.Path]::GetFullPath([string](Get-OperationState "download").LastDoneEvent.output_dir)) $selfTestRunOutput "download done output dir matches output field"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST")) $false "download does not create nested accession folder"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")) $true "fastq manifest exists"
     Assert-Equal (Test-Path -LiteralPath (Join-Path $selfTestRunOutput "SELFTEST_supplementary_manifest.tsv")) $true "supplementary manifest exists"
@@ -4354,12 +4324,12 @@ if ($SelfTest) {
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "md5_verified" "download log md5 success"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $selfTestRunOutput "SELFTEST_download_log.tsv")) "download_complete" "download log supplementary success"
     $verifyResult = Invoke-VerifyManifestJsonForSelfTest (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")
-    $script:VerifyStdoutText = Limit-ProcessOutputText $verifyResult.Stdout
-    $script:VerifyStderrText = Limit-ProcessOutputText $verifyResult.Stderr
-    $script:LastVerificationExitCode = $verifyResult.ExitCode
+    (Get-OperationState "verification").StdoutText = Limit-ProcessOutputText $verifyResult.Stdout
+    (Get-OperationState "verification").StderrText = Limit-ProcessOutputText $verifyResult.Stderr
+    (Get-OperationState "verification").LastExitCode = $verifyResult.ExitCode
     $verifyDoneLine = @($verifyResult.Stdout -split "`r?`n" | Where-Object { $_ -match '"kind"\s*:\s*"manifest_verification"' } | Select-Object -Last 1)
     if ($verifyDoneLine.Count -gt 0) {
-        $script:LastVerificationDoneEvent = $verifyDoneLine[0] | ConvertFrom-Json
+        (Get-OperationState "verification").LastDoneEvent = $verifyDoneLine[0] | ConvertFrom-Json
     }
     Assert-Equal $verifyResult.ExitCode 0 "verify-manifest-json exit code"
     Assert-Contains $verifyResult.Stdout '"kind": "manifest_verification"' "verify-manifest-json done event"
@@ -4382,19 +4352,19 @@ if ($SelfTest) {
     Assert-Contains $resumeSecond.Stdout '"resume_existing": true' "resume done event records resume mode"
     Assert-Contains $resumeSecond.Stdout '"resume_required_bytes": 0' "resume done event records remaining bytes"
     $script:ResumeExistingConfirmationForSelfTest = $false
-    $script:DownloadProcess = $null
+    (Get-OperationState "download").Process = $null
     Start-DownloadProcess
-    Assert-Equal $script:DownloadProcess $null "resume cancellation does not start subprocess"
+    Assert-Equal (Get-OperationState "download").Process $null "resume cancellation does not start subprocess"
     Assert-Equal $script:LastResumeExistingRequested $false "resume cancellation records no resume request"
     Assert-Equal $statusLabel.Text (T "canceled") "resume cancellation updates status"
     $script:ResumeExistingConfirmationForSelfTest = $true
     $progressBar.Value = 0
     $statusLabel.Text = T "downloading"
     Start-DownloadProcess
-    Assert-Equal ($script:LastDownloadArguments -contains "--resume-existing") $true "download start passes resume argument after confirmation"
+    Assert-Equal ((Get-OperationState "download").LastArguments -contains "--resume-existing") $true "download start passes resume argument after confirmation"
     Assert-Equal $script:LastResumeExistingRequested $true "download start records confirmed resume request"
     $resumeStartDeadline = [DateTime]::UtcNow.AddSeconds(10)
-    while ($null -ne $script:DownloadProcess -and [DateTime]::UtcNow -lt $resumeStartDeadline) {
+    while ($null -ne (Get-OperationState "download").Process -and [DateTime]::UtcNow -lt $resumeStartDeadline) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 50
     }
@@ -4402,29 +4372,29 @@ if ($SelfTest) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 50
     }
-    Assert-Equal $script:DownloadProcess $null "confirmed resume subprocess finished"
+    Assert-Equal (Get-OperationState "download").Process $null "confirmed resume subprocess finished"
     Assert-Equal $statusLabel.Text (T "complete") "confirmed resume completes"
-    Assert-Equal ([bool]$script:LastDownloadDoneEvent.resume_existing) $true "confirmed resume done event records resume mode"
+    Assert-Equal ([bool](Get-OperationState "download").LastDoneEvent.resume_existing) $true "confirmed resume done event records resume mode"
     $script:ResumeExistingConfirmationForSelfTest = $null
 
-    $downloadDoneEventForErrorCheck = $script:LastDownloadDoneEvent
-    $script:LastDownloadDoneEvent = $null
-    $script:LastDownloadExitCode = 1
-    $script:DownloadCanceled = $false
-    $script:DownloadExitObserved = $true
-    $script:DownloadStdoutClosed = $true
-    $script:DownloadStderrClosed = $true
-    $script:DownloadFinalized = $false
-    $script:DownloadStdoutText = ""
-    $script:DownloadStderrText = '{"event":"error","command":"selected-download-json","code":"invalid_json","detail":"fixture","message":"fixture"}'
+    $downloadDoneEventForErrorCheck = (Get-OperationState "download").LastDoneEvent
+    (Get-OperationState "download").LastDoneEvent = $null
+    (Get-OperationState "download").LastExitCode = 1
+    (Get-OperationState "download").Canceled = $false
+    (Get-OperationState "download").ExitObserved = $true
+    (Get-OperationState "download").StdoutClosed = $true
+    (Get-OperationState "download").StderrClosed = $true
+    (Get-OperationState "download").Finalized = $false
+    (Get-OperationState "download").StdoutText = ""
+    (Get-OperationState "download").StderrText = '{"event":"error","command":"selected-download-json","code":"invalid_json","detail":"fixture","message":"fixture"}'
     $script:LastPreflightOutputDir = $selfTestRunOutput
     $script:LastOperationError = $null
     Complete-DownloadIfReady
     Assert-Equal $script:LastOperationError.phase "download" "download without done records phase"
     Assert-Equal $script:LastOperationError.code "invalid_json" "download without done parses CLI error"
-    $script:LastDownloadDoneEvent = $downloadDoneEventForErrorCheck
-    $script:LastDownloadExitCode = $downloadResult.ExitCode
-    $script:DownloadFinalized = $true
+    (Get-OperationState "download").LastDoneEvent = $downloadDoneEventForErrorCheck
+    (Get-OperationState "download").LastExitCode = $downloadResult.ExitCode
+    (Get-OperationState "download").Finalized = $true
     $script:LastOperationError = $null
 
     $progressBar.Value = 0
@@ -4433,7 +4403,7 @@ if ($SelfTest) {
     Set-Busy $true
     Start-ManifestVerificationProcess (Join-Path $selfTestRunOutput "SELFTEST_fastq_manifest.tsv")
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while ($null -ne $script:VerifyProcess -and [DateTime]::UtcNow -lt $deadline) {
+    while ($null -ne (Get-OperationState "verification").Process -and [DateTime]::UtcNow -lt $deadline) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 50
     }
@@ -4441,7 +4411,7 @@ if ($SelfTest) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 50
     }
-    Assert-Equal $script:VerifyProcess $null "async manifest verification process finished"
+    Assert-Equal (Get-OperationState "verification").Process $null "async manifest verification process finished"
     Assert-Equal $statusLabel.Text (T "complete") "async manifest verification status"
 
     $inputBox.Text = "DIFFERENT_INPUT"
@@ -4453,7 +4423,7 @@ if ($SelfTest) {
         $staleDownloadStartMessage = $_.Exception.Message
     }
     Assert-Equal $staleDownloadStartMessage (T "inputChangedAfterResolve") "download start validation reports changed input"
-    Assert-Equal $script:DownloadProcess $null "download start validation does not create process"
+    Assert-Equal (Get-OperationState "download").Process $null "download start validation does not create process"
     Assert-Equal $script:LastOperationError.phase "download_preflight" "download start validation records phase"
     Assert-Equal $script:LastOperationError.code "resolved_state_invalid" "download start validation records code"
     $inputBox.Text = "SELFTEST"
@@ -4476,7 +4446,7 @@ if ($SelfTest) {
         $PythonExe = $originalPythonExe
     }
     Assert-Equal $threwResolveStart $true "resolve start failure throws"
-    Assert-Equal $script:ResolveProcess $null "resolve start failure clears process"
+    Assert-Equal (Get-OperationState "resolve").Process $null "resolve start failure clears process"
     Assert-Equal $script:ResolveInputPath $null "resolve start failure clears temp input path"
     Assert-Equal $resolveStartInputPath $null "resolve start failure removes temp input path before returning"
     $leakedResolveInputs = @(
@@ -4503,7 +4473,7 @@ if ($SelfTest) {
         $PythonExe = $originalPythonExe
     }
     Assert-Equal $threwVerifyStart $true "manifest verification start failure throws"
-    Assert-Equal $script:VerifyProcess $null "manifest verification start failure clears process"
+    Assert-Equal (Get-OperationState "verification").Process $null "manifest verification start failure clears process"
 
     $outputBox.Text = Join-Path $selfTestRoot "download start failure output"
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
@@ -4520,7 +4490,7 @@ if ($SelfTest) {
         $PythonExe = $originalPythonExe
     }
     Assert-Equal $threwDownloadStart $true "download start failure throws"
-    Assert-Equal $script:DownloadProcess $null "download start failure clears process"
+    Assert-Equal (Get-OperationState "download").Process $null "download start failure clears process"
     Assert-Equal $script:LastOperationError.phase "download_preflight" "download start failure is blocked by preflight phase"
     Assert-Equal $script:LastOperationError.code "process_start_failed" "download start failure records code"
 
@@ -4536,7 +4506,7 @@ if ($SelfTest) {
         $PythonExe = $originalPythonExe
     }
     Assert-Equal $threwUpdateStart $true "update start failure throws"
-    Assert-Equal $script:UpdateProcess $null "update start failure clears process"
+    Assert-Equal (Get-OperationState "update").Process $null "update start failure clears process"
     Assert-Equal $script:LastOperationError.phase "update_process_start" "update start failure records phase"
     Assert-Equal $script:LastOperationError.code "process_start_failed" "update start failure records code"
 
@@ -4548,7 +4518,7 @@ if ($SelfTest) {
     Set-Busy $true
     Start-DownloadProcess
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while ($null -ne $script:DownloadProcess -and [DateTime]::UtcNow -lt $deadline) {
+    while ($null -ne (Get-OperationState "download").Process -and [DateTime]::UtcNow -lt $deadline) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 50
     }
@@ -4556,7 +4526,7 @@ if ($SelfTest) {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 50
     }
-    Assert-Equal $script:DownloadProcess $null "async download process finished"
+    Assert-Equal (Get-OperationState "download").Process $null "async download process finished"
     Assert-Equal $statusLabel.Text (T "complete") "async download status"
     $asyncOutputDir = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
     $asyncPrefix = ConvertTo-GeoGetterSafeName ([System.IO.Path]::GetFileName($asyncOutputDir)) -ArtifactPrefix
