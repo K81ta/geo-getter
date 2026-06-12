@@ -109,7 +109,24 @@ class GeoProviderTest(unittest.TestCase):
 
         parsed = FailingSampleGeoProvider().get_related("GSE000001")
         self.assertEqual(parsed.related_accessions, ["SRP000001"])
-        self.assertIn("sample metadata retrieval failed", parsed.warnings[0])
+        expected_warning = (
+            "GEO sample metadata retrieval failed; sample-level details may be incomplete. "
+            "Detail: network_failed"
+        )
+        self.assertEqual(
+            parsed.warnings,
+            [expected_warning],
+        )
+
+    def test_merge_preserves_warning_order(self):
+        primary = parse_soft("^SERIES = GSE000001", "GSE000001")
+        samples = parse_soft("^SAMPLE = GSM000001", "GSE000001")
+        primary.warnings.append("primary warning")
+        samples.warnings.append("sample warning")
+
+        merged = _merge_parse_results(primary, samples)
+
+        self.assertEqual(merged.warnings, ["primary warning", "sample warning"])
 
     def test_supplementary_display_metadata_handles_common_names(self):
         parsed = parse_soft(
