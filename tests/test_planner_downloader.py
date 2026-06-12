@@ -10,7 +10,13 @@ from pathlib import Path
 from unittest import mock
 
 from geo_getter import planner as planner_module
-from geo_getter.downloader import DownloadNetworkError, download_plan, download_url_to_part, verify_md5
+from geo_getter.downloader import (
+    DEFAULT_DOWNLOAD_CHUNK_SIZE,
+    DownloadNetworkError,
+    download_plan,
+    download_url_to_part,
+    verify_md5,
+)
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DownloadPlan, FastqFile
 from geo_getter.planner import (
@@ -33,6 +39,7 @@ class FakeUrlopenResponse:
         self.headers = headers or {}
         self.error = error
         self.offset = 0
+        self.read_sizes = []
 
     def __enter__(self):
         return self
@@ -44,6 +51,7 @@ class FakeUrlopenResponse:
         return self.status
 
     def read(self, size: int = -1):
+        self.read_sizes.append(size)
         if self.error:
             raise self.error
         if self.offset >= len(self.data):
@@ -908,6 +916,85 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertTrue(downloaded_part.resumed)
             self.assertIsNone(downloaded_part.streamed_md5)
             self.assertEqual(part.read_bytes(), b"abcdef")
+
+    def test_download_uses_larger_default_chunk_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            response = FakeUrlopenResponse(data=b"abc", headers={"Content-Length": "3"})
+
+            with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
+                download_url_to_part("https://example.invalid/fixture.fastq.gz", local_path)
+
+            self.assertEqual(response.read_sizes[0], DEFAULT_DOWNLOAD_CHUNK_SIZE)
+
+    def test_progress_is_throttled_by_bytes_and_final_progress_is_emitted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            response = FakeUrlopenResponse(data=b"abcdefghijklmnopqrst", headers={"Content-Length": "20"})
+            progress_events = []
+            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+            with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
+                download_url_to_part(
+                    "https://example.invalid/fixture.fastq.gz",
+                    local_path,
+                    progress_callback=lambda current, total: progress_events.append((current, total)),
+                    chunk_size=4,
+                    progress_min_bytes=10,
+                    progress_min_interval_seconds=999,
+                    now_func=lambda: now,
+                )
+
+            self.assertEqual(progress_events, [(12, 20), (20, 20)])
+
+    def test_progress_is_throttled_by_time(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            response = FakeUrlopenResponse(data=b"abcdefghijkl", headers={"Content-Length": "12"})
+            progress_events = []
+            base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            times = iter(
+                [
+                    base,
+                    base + timedelta(seconds=0.10),
+                    base + timedelta(seconds=0.26),
+                    base + timedelta(seconds=0.27),
+                    base + timedelta(seconds=0.28),
+                ]
+            )
+
+            with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
+                download_url_to_part(
+                    "https://example.invalid/fixture.fastq.gz",
+                    local_path,
+                    progress_callback=lambda current, total: progress_events.append((current, total)),
+                    chunk_size=4,
+                    progress_min_bytes=999,
+                    progress_min_interval_seconds=0.25,
+                    now_func=lambda: next(times),
+                )
+
+            self.assertEqual(progress_events, [(8, 12), (12, 12)])
+
+    def test_small_file_emits_final_progress(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            response = FakeUrlopenResponse(data=b"abc", headers={"Content-Length": "3"})
+            progress_events = []
+            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+            with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
+                download_url_to_part(
+                    "https://example.invalid/fixture.fastq.gz",
+                    local_path,
+                    progress_callback=lambda current, total: progress_events.append((current, total)),
+                    chunk_size=1,
+                    progress_min_bytes=999,
+                    progress_min_interval_seconds=999,
+                    now_func=lambda: now,
+                )
+
+            self.assertEqual(progress_events, [(3, 3)])
 
     def test_resumed_download_uses_full_md5_verification_after_append(self):
         with tempfile.TemporaryDirectory() as temp:
