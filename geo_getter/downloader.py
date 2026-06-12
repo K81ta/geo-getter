@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import http.client
 import re
 import time
@@ -23,7 +24,7 @@ from .errors import (
     OUTPUT_PATH_INVALID,
     SIZE_MISMATCH,
 )
-from .hashing import new_digest, verify_md5
+from .hashing import verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
 from .planner import ResumeArtifactDigest, ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
@@ -395,7 +396,7 @@ def _download_url_to_part_once(
             if not appending:
                 resume_from = 0
                 if stream_md5:
-                    streamed_digest = new_digest("md5")
+                    streamed_digest = hashlib.md5()
             total = _content_length(response)
             if total and appending:
                 total += resume_from
