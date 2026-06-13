@@ -1362,7 +1362,7 @@ class CliTest(unittest.TestCase):
                 raise DownloadNetworkError("fixture transfer failure")
 
             stdout = io.StringIO()
-            with mock.patch("geo_getter.cli.download_url_to_part", side_effect=fail_with_part):
+            with mock.patch("geo_getter.downloader.download_url_to_part", side_effect=fail_with_part):
                 with contextlib.redirect_stdout(stdout):
                     self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 1)
 

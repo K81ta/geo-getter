@@ -11,31 +11,24 @@ from pathlib import Path
 from . import __version__
 from .downloader import (
     DEFAULT_DOWNLOAD_WORKERS,
-    DownloadLocalIoError,
-    DownloadNetworkError,
-    DownloadSizeMismatchError,
+    download_error_outcome,
     download_plan,
-    download_url_to_part,
-    finalize_downloaded_part,
+    download_url_without_md5,
     normalize_download_workers,
 )
 from .errors import (
     DOWNLOAD_COMPLETE,
     INSUFFICIENT_SPACE,
-    LOCAL_IO_FAILED,
     MD5_UNAVAILABLE,
     MD5_VERIFIED,
-    NETWORK_FAILED,
     RESUME_REQUIRED,
     RESUME_SUPPLEMENTARY_UNSUPPORTED,
-    SIZE_MISMATCH,
     GeoGetterError,
 )
 from .models import DownloadPlan, FastqFile
 from .path_safety import (
     download_part_path,
     existing_candidate_path,
-    existing_size,
     name_collision_key,
     quarantine_candidate_path,
     reserved_download_names,
@@ -56,6 +49,10 @@ from .planner import (
 )
 from .providers.resolver import resolve_metadata
 from .updater import check_for_update, download_update_installer
+
+SUPPLEMENTARY_DOWNLOAD_COMPLETE_MESSAGE = (
+    "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
+)
 
 
 class GeoGetterArgumentParser(argparse.ArgumentParser):
@@ -543,15 +540,17 @@ def _download_supplementary_files(output_dir: Path, planned_supplementary: list[
     for item, local_path in planned_supplementary:
         file_name = local_path.name
         url = item.get("url", "")
-        downloaded = 0
         print(json.dumps({"event": "message", "message": f"supplementary_download_started: {file_name}"}, ensure_ascii=False), flush=True)
         try:
             if local_path.exists():
                 local_path.replace(_unique_existing_path(local_path))
+        except OSError as exc:
+            outcome = download_error_outcome(local_path, exc)
+        else:
+            def message(text: str) -> None:
+                print(json.dumps({"event": "message", "message": text}, ensure_ascii=False), flush=True)
 
             def progress(current: int, total: int) -> None:
-                nonlocal downloaded
-                downloaded = current
                 print(
                     json.dumps(
                         {
@@ -566,41 +565,26 @@ def _download_supplementary_files(output_dir: Path, planned_supplementary: list[
                     flush=True,
                 )
 
-            downloaded_part = download_url_to_part(
+            outcome = download_url_without_md5(
                 url,
                 local_path,
                 progress_callback=progress,
-                message_callback=lambda text: print(json.dumps({"event": "message", "message": text}, ensure_ascii=False), flush=True),
+                message_callback=message,
+                success_message=SUPPLEMENTARY_DOWNLOAD_COMPLETE_MESSAGE,
             )
-            downloaded = downloaded_part.bytes_downloaded
-            finalize_downloaded_part(local_path)
-            status = DOWNLOAD_COMPLETE
-            message = "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
-        except DownloadSizeMismatchError as exc:
-            status = SIZE_MISMATCH
-            message = str(exc)
-            downloaded = max(downloaded, existing_size(download_part_path(local_path)))
-        except DownloadNetworkError as exc:
-            status = NETWORK_FAILED
-            message = str(exc)
-            downloaded = max(downloaded, existing_size(download_part_path(local_path)))
-        except (DownloadLocalIoError, OSError) as exc:
-            status = LOCAL_IO_FAILED
-            message = str(exc)
-            downloaded = max(downloaded, existing_size(download_part_path(local_path)))
         append_download_log(
             output_dir,
             "GEO_SUPPLEMENTARY",
             file_name,
-            status,
+            outcome.status,
             "",
             "",
             0,
-            downloaded,
-            message,
+            outcome.bytes_downloaded,
+            outcome.message,
         )
-        print(json.dumps({"event": "message", "message": f"{status}: {file_name}"}, ensure_ascii=False), flush=True)
-        statuses.append(status)
+        print(json.dumps({"event": "message", "message": f"{outcome.status}: {file_name}"}, ensure_ascii=False), flush=True)
+        statuses.append(outcome.status)
     return statuses
 
 

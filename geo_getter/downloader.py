@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 
 from .errors import (
+    DOWNLOAD_COMPLETE,
     ERROR_MESSAGES,
     GeoGetterError,
     LOCAL_IO_FAILED,
@@ -197,32 +198,11 @@ def _download_planned_file(
             result_message=str(exc),
         )
     except DownloadNetworkError as exc:
-        status = NETWORK_FAILED
-        message = ERROR_MESSAGES[status]
-        return DownloadOutcome(
-            status,
-            f"{message} Detail: {exc}",
-            bytes_downloaded=existing_size(download_part_path(planned.local_path)),
-            result_message=str(exc),
-        )
+        return _planned_download_error_outcome(planned.local_path, exc)
     except DownloadLocalIoError as exc:
-        status = LOCAL_IO_FAILED
-        message = ERROR_MESSAGES[status]
-        return DownloadOutcome(
-            status,
-            f"{message} Detail: {exc}",
-            bytes_downloaded=existing_size(download_part_path(planned.local_path)),
-            result_message=str(exc),
-        )
+        return _planned_download_error_outcome(planned.local_path, exc)
     except OSError as exc:
-        status = LOCAL_IO_FAILED
-        message = ERROR_MESSAGES[status]
-        return DownloadOutcome(
-            status,
-            f"{message} Detail: {exc}",
-            bytes_downloaded=existing_size(download_part_path(planned.local_path)),
-            result_message=str(exc),
-        )
+        return _planned_download_error_outcome(planned.local_path, exc)
 
 
 def _record_outcome(
@@ -310,6 +290,31 @@ def download_url_to_part(
         message_callback=message_callback,
         stream_md5=stream_md5,
     )
+
+
+def download_url_without_md5(
+    url: str,
+    local_path: Path,
+    *,
+    progress_callback: ByteProgressCallback | None = None,
+    message_callback: MessageCallback | None = None,
+    success_message: str = "Downloaded file was saved without MD5 verification.",
+) -> DownloadOutcome:
+    try:
+        downloaded_part = download_url_to_part(
+            url,
+            local_path,
+            progress_callback=progress_callback,
+            message_callback=message_callback,
+        )
+        _finalize_part(downloaded_part.path, local_path)
+        return DownloadOutcome(
+            DOWNLOAD_COMPLETE,
+            success_message,
+            bytes_downloaded=downloaded_part.bytes_downloaded,
+        )
+    except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError, OSError) as exc:
+        return download_error_outcome(local_path, exc)
 
 
 def _download_url_to_part_with_retries(
@@ -587,14 +592,15 @@ def _reuse_or_quarantine_existing(
         raise GeoGetterError(OUTPUT_PATH_INVALID, f"download_target_is_not_file path={planned.local_path}")
     local_size = existing_size(planned.local_path)
     if planned.fastq.expected_md5:
-        if planned.fastq.size_bytes > 0 and local_size != planned.fastq.size_bytes:
+        if _candidate_size_mismatches(local_size, planned.fastq.size_bytes):
             quarantined = _quarantine_file(planned.local_path, "size-mismatch-existing")
             _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
             return None
-        try:
-            ok, actual_md5 = verify_md5(planned.local_path, planned.fastq.expected_md5)
-        except OSError as exc:
-            raise DownloadLocalIoError(f"Could not read existing FASTQ for MD5 verification: {planned.local_path}") from exc
+        ok, actual_md5 = _verify_md5_candidate(
+            planned.local_path,
+            planned.fastq.expected_md5,
+            "existing FASTQ",
+        )
         if ok:
             stale_part = download_part_path(planned.local_path)
             if stale_part.exists():
@@ -627,9 +633,9 @@ def _reuse_or_quarantine_complete_part(
     if not part_path.is_file():
         raise GeoGetterError(OUTPUT_PATH_INVALID, f"partial_download_target_is_not_file path={part_path}")
     part_size = existing_size(part_path)
-    if planned.fastq.size_bytes > 0 and part_size < planned.fastq.size_bytes:
+    if _candidate_size_is_short(part_size, planned.fastq.size_bytes):
         return None
-    if planned.fastq.size_bytes > 0 and part_size > planned.fastq.size_bytes:
+    if _candidate_size_exceeds(part_size, planned.fastq.size_bytes):
         raise DownloadSizeMismatchError(
             f"Partial file size exceeds expected size: expected={planned.fastq.size_bytes} actual={part_size}"
         )
@@ -638,10 +644,7 @@ def _reuse_or_quarantine_complete_part(
             quarantined = _quarantine_file(part_path, "unverified-existing")
             _emit(message_callback, f"partial_file_quarantined_unverified: {quarantined}")
         return None
-    try:
-        ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
-    except OSError as exc:
-        raise DownloadLocalIoError(f"Could not read partial FASTQ for MD5 verification: {part_path}") from exc
+    ok, actual_md5 = _verify_md5_candidate(part_path, planned.fastq.expected_md5, "partial FASTQ")
     if ok:
         _finalize_part(part_path, planned.local_path)
         return DownloadOutcome(
@@ -654,6 +657,52 @@ def _reuse_or_quarantine_complete_part(
         quarantined = _quarantine_file(part_path, "bad-md5")
         _emit(message_callback, f"partial_file_quarantined_bad_md5: {quarantined}")
     return None
+
+
+def _candidate_size_mismatches(candidate_size: int, expected_size: int) -> bool:
+    return expected_size > 0 and candidate_size != expected_size
+
+
+def _candidate_size_is_short(candidate_size: int, expected_size: int) -> bool:
+    return expected_size > 0 and candidate_size < expected_size
+
+
+def _candidate_size_exceeds(candidate_size: int, expected_size: int) -> bool:
+    return expected_size > 0 and candidate_size > expected_size
+
+
+def _verify_md5_candidate(path: Path, expected_md5: str, description: str) -> tuple[bool, str]:
+    try:
+        return verify_md5(path, expected_md5)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not read {description} for MD5 verification: {path}") from exc
+
+
+def _download_error_status(error: BaseException) -> str:
+    if isinstance(error, DownloadSizeMismatchError):
+        return SIZE_MISMATCH
+    if isinstance(error, DownloadNetworkError):
+        return NETWORK_FAILED
+    return LOCAL_IO_FAILED
+
+
+def download_error_outcome(local_path: Path, error: BaseException) -> DownloadOutcome:
+    return DownloadOutcome(
+        _download_error_status(error),
+        str(error),
+        bytes_downloaded=existing_size(download_part_path(local_path)),
+        result_message=str(error),
+    )
+
+
+def _planned_download_error_outcome(local_path: Path, error: BaseException) -> DownloadOutcome:
+    status = _download_error_status(error)
+    return DownloadOutcome(
+        status,
+        f"{ERROR_MESSAGES[status]} Detail: {error}",
+        bytes_downloaded=existing_size(download_part_path(local_path)),
+        result_message=str(error),
+    )
 
 
 def _finalize_part(part_path: Path, local_path: Path) -> None:

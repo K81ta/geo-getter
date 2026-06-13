@@ -18,6 +18,7 @@ from geo_getter.downloader import (
     _download_url_to_part_with_retries,
     download_plan,
     download_url_to_part,
+    download_url_without_md5,
     normalize_download_workers,
     verify_md5,
 )
@@ -972,6 +973,45 @@ class PlannerDownloaderTest(unittest.TestCase):
                 download_url_to_part("https://example.invalid/fixture.fastq.gz", local_path)
 
             self.assertEqual(response.read_sizes[0], DEFAULT_DOWNLOAD_CHUNK_SIZE)
+
+    def test_download_url_without_md5_finalizes_part_as_download_complete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "supplementary.txt"
+            part_path = Path(temp) / "supplementary.txt.part"
+            data = b"supplementary fixture\n"
+
+            def download_part(_url, _local_path, **_kwargs):
+                part_path.write_bytes(data)
+                return DownloadedPart(part_path, len(data))
+
+            with mock.patch("geo_getter.downloader.download_url_to_part", side_effect=download_part):
+                outcome = download_url_without_md5(
+                    "https://example.invalid/supplementary.txt",
+                    local_path,
+                    success_message="fixture saved without md5",
+                )
+
+            self.assertEqual(outcome.status, "download_complete")
+            self.assertEqual(outcome.message, "fixture saved without md5")
+            self.assertEqual(outcome.bytes_downloaded, len(data))
+            self.assertEqual(local_path.read_bytes(), data)
+            self.assertFalse(part_path.exists())
+
+    def test_download_url_without_md5_reports_failure_with_part_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "supplementary.txt"
+            part_path = Path(temp) / "supplementary.txt.part"
+
+            def fail_with_part(_url, _local_path, **_kwargs):
+                part_path.write_bytes(b"abc")
+                raise DownloadNetworkError("fixture transfer failure")
+
+            with mock.patch("geo_getter.downloader.download_url_to_part", side_effect=fail_with_part):
+                outcome = download_url_without_md5("https://example.invalid/supplementary.txt", local_path)
+
+            self.assertEqual(outcome.status, "network_failed")
+            self.assertEqual(outcome.message, "fixture transfer failure")
+            self.assertEqual(outcome.bytes_downloaded, 3)
 
     def test_progress_is_throttled_by_bytes_and_final_progress_is_emitted(self):
         with tempfile.TemporaryDirectory() as temp:
