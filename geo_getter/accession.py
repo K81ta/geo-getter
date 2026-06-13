@@ -3,18 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
-ACCESSION_PATTERN = re.compile(
-    r"\b("
-    r"GSE\d+|GSM\d+|SRP\d+|SRX\d+|SRR\d+|SRS\d+|"
-    r"ERP\d+|ERX\d+|ERR\d+|ERS\d+|"
-    r"DRP\d+|DRX\d+|DRR\d+|DRS\d+|"
-    r"PRJNA\d+|PRJEB\d+|PRJDB\d+|"
-    r"SAMN\d+|SAMEA\d+|SAMD\d+"
-    r")\b",
-    re.IGNORECASE,
-)
-
 GEO_PREFIXES = ("GSE", "GSM")
 ENA_QUERY_PREFIXES = (
     "SRP",
@@ -39,6 +27,12 @@ ENA_QUERY_PREFIXES = (
 SUPPORTED_ACCESSION_PREFIXES = GEO_PREFIXES + ENA_QUERY_PREFIXES
 _ACCESSION_PREFIX_MATCH_ORDER = tuple(
     sorted(SUPPORTED_ACCESSION_PREFIXES, key=len, reverse=True)
+)
+ACCESSION_PATTERN = re.compile(
+    r"\b("
+    + "|".join(f"{re.escape(prefix)}\\d+" for prefix in _ACCESSION_PREFIX_MATCH_ORDER)
+    + r")\b",
+    re.IGNORECASE,
 )
 
 
