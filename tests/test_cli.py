@@ -9,7 +9,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from geo_getter.cli import _load_json, _preflight_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
+from geo_getter.cli import _load_json, _parse_indices, _preflight_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
 from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
 from geo_getter.planner import (
@@ -71,11 +71,25 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("\n    resolve ", output)
         self.assertNotIn("\n    download-json", output)
 
+    def test_hidden_bridge_commands_accept_explicit_help(self):
+        for command in ("preflight-json", "verify-manifest-json", "check-update-json", "download-update-json"):
+            with self.subTest(command=command):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    with self.assertRaises(SystemExit) as context:
+                        main([command, "--help"])
+                self.assertEqual(context.exception.code, 0)
+                self.assertIn(command, stdout.getvalue())
+
     def test_load_json_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "payload.json"
             path.write_text("\ufeff{\"value\": 1}", encoding="utf-8")
             self.assertEqual(_load_json(path), {"value": 1})
+
+    def test_parse_indices_allows_empty_selection_for_overall_selection_check(self):
+        self.assertEqual(_parse_indices(""), [])
+        self.assertEqual(_parse_indices(" , "), [])
 
     def test_resolve_json_empty_input_emits_structured_stderr_error(self):
         payload = self.assert_cli_error(["resolve-json", ""], "invalid_input")
@@ -94,6 +108,30 @@ class CliTest(unittest.TestCase):
             )
 
         self.assertEqual(payload["command"], "selected-download-json")
+
+    def test_selected_download_supplementary_out_of_range_index_emits_target_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps({"input_text": "GSE", "primary_accession": "GSE", "fastq_files": [], "supplementary_files": []}),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--supp-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "selection_invalid",
+            )
+
+        self.assertIn("supplementary index is out of range", payload["detail"])
 
     def test_selected_download_missing_required_argument_emits_structured_stderr_error(self):
         payload = self.assert_cli_error(["selected-download-json"], "invalid_input")
@@ -163,6 +201,7 @@ class CliTest(unittest.TestCase):
             )
 
         self.assertEqual(payload["command"], "selected-download-json")
+        self.assertIn("FASTQ index is out of range", payload["detail"])
 
     def test_verify_manifest_invalid_manifest_emits_structured_stderr_error(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -234,9 +273,27 @@ class CliTest(unittest.TestCase):
         with self.assertRaises(IndexError):
             _selected_fastq_from_payload(payload, "-1")
 
-    def test_selected_fastq_rejects_empty_selection(self):
-        with self.assertRaises(ValueError):
-            _selected_fastq_from_payload({"fastq_files": []}, "")
+    def test_selected_download_rejects_empty_overall_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps({"input_text": "GSE", "primary_accession": "GSE", "fastq_files": [], "supplementary_files": []}),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--out",
+                    str(root / "out"),
+                ],
+                "invalid_input",
+            )
+
+        self.assertIn("Select at least one", payload["message"])
 
     def test_selected_download_supports_supplementary(self):
         with tempfile.TemporaryDirectory() as temp:
