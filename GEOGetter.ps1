@@ -586,6 +586,25 @@ function Set-OperationErrorFromProcessOutput {
     $script:LastOperationError = New-OperationError $Phase $Command $DefaultCode $detail $message "process_output" $ExitCode
 }
 
+function Get-JsonPropertyValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+    if ($null -eq $Object) { return $null }
+    $property = @($Object.PSObject.Properties | Where-Object { $_.Name -eq $Name } | Select-Object -First 1)
+    if ($property.Count -eq 0) { return $null }
+    return $property[0].Value
+}
+
+function Apply-PreflightErrorEventState {
+    param([object]$Event)
+    $existingOutputValue = Get-JsonPropertyValue $Event "existing_output_nonempty"
+    if ($null -ne $existingOutputValue) {
+        $script:LastExistingOutputNonEmpty = [bool]$existingOutputValue
+    }
+}
+
 function Get-PreflightErrorCode {
     param([string]$Message)
     if ($Message -match "空き容量|free space") { return "insufficient_space" }
@@ -1455,19 +1474,6 @@ function Assert-PreflightPathLength {
     }
 }
 
-function Test-DirectoryHasEntries {
-    param([string]$Path)
-    if (-not [System.IO.Directory]::Exists($Path)) { return $false }
-    $entries = [System.IO.Directory]::EnumerateFileSystemEntries($Path)
-    $enumerator = $entries.GetEnumerator()
-    try {
-        return $enumerator.MoveNext()
-    }
-    finally {
-        if ($enumerator -is [System.IDisposable]) { $enumerator.Dispose() }
-    }
-}
-
 function Confirm-ResumeExistingOutput {
     param([string]$OutputDir)
     if ($SelfTest -and $null -ne $script:ResumeExistingConfirmationForSelfTest) {
@@ -1516,6 +1522,11 @@ function Invoke-DownloadPreflightJsonForGui {
     }
     if ($result.ExitCode -ne 0) {
         Set-OperationErrorFromProcessOutput "download_preflight" "preflight-json" $result.ExitCode $result.Stdout $result.Stderr "preflight_failed" ""
+        $event = Get-CliErrorEventFromText $result.Stderr
+        if ($null -eq $event) {
+            $event = Get-CliErrorEventFromText $result.Stdout
+        }
+        Apply-PreflightErrorEventState $event
         if ($null -ne $script:LastOperationError -and [string]$script:LastOperationError.code -like "resume_*") {
             $script:LastResumeErrorCode = [string]$script:LastOperationError.code
         }
@@ -1576,7 +1587,6 @@ function Test-DownloadPreflight {
             throw ((T "preflightCannotWrite") -f ("{0} ({1})" -f $runOutputDir, $_.Exception.Message))
         }
 
-        $script:LastExistingOutputNonEmpty = Test-DirectoryHasEntries $runOutputDir
         $preflight = Invoke-DownloadPreflightJsonForGui (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty) $runOutputDir $ResumeExisting
         $plannedPaths = @($preflight.planned_paths | ForEach-Object { [string]$_ })
         Assert-PreflightPathLength $plannedPaths
@@ -1595,8 +1605,22 @@ function Test-DownloadPreflight {
         }
         $script:LastPreflightRequiredBytes = $requiredBytes
         $script:LastPreflightFreeBytes = $freeBytes
-        if ((-not $existingOutputNonEmpty -or $ResumeExisting) -and $null -ne $freeBytes -and $requiredBytes -gt [Int64]$freeBytes) {
-            throw ((T "preflightInsufficientSpace") -f (Format-Bytes $requiredBytes), (Format-Bytes ([Int64]$freeBytes)))
+        $capacityOk = $true
+        $capacityOkProperty = @($preflight.PSObject.Properties | Where-Object { $_.Name -eq "capacity_ok" } | Select-Object -First 1)
+        if ($capacityOkProperty.Count -gt 0 -and $null -ne $capacityOkProperty[0].Value) {
+            $capacityOk = [bool]$capacityOkProperty[0].Value
+        }
+        if (-not $capacityOk) {
+            $freeText = if ($null -ne $freeBytes) { Format-Bytes ([Int64]$freeBytes) } else { "unknown" }
+            $message = ((T "preflightInsufficientSpace") -f (Format-Bytes $requiredBytes), $freeText)
+            $detail = "required_bytes=$requiredBytes free_bytes=$freeBytes"
+            $code = "insufficient_space"
+            $capacityCodeProperty = @($preflight.PSObject.Properties | Where-Object { $_.Name -eq "capacity_error_code" } | Select-Object -First 1)
+            if ($capacityCodeProperty.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$capacityCodeProperty[0].Value)) {
+                $code = [string]$capacityCodeProperty[0].Value
+            }
+            $script:LastOperationError = New-OperationError "download_preflight" "preflight-json" $code $detail $message "preflight_json_result" 0
+            throw $message
         }
 
         $script:LastPreflightStatus = "ok"
