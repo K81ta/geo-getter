@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import shutil
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -278,12 +278,12 @@ def validate_resume_artifacts(plan: DownloadPlan) -> ResumeArtifacts:
     if not log.is_file():
         _raise_resume_mismatch("missing_download_log", log, f"planned_count={len(plan.files)}")
 
-    manifest_rows = _read_tsv_rows(manifest, FASTQ_MANIFEST_REQUIRED_COLUMNS, "fastq_manifest")
+    manifest_rows = _read_resume_tsv_rows(manifest, FASTQ_MANIFEST_REQUIRED_COLUMNS, "fastq_manifest")
     if not manifest_rows:
         _raise_resume_mismatch("empty_fastq_manifest", manifest, f"planned_count={len(plan.files)}")
     _assert_manifest_matches_plan(manifest, manifest_rows, plan)
 
-    log_rows = _read_tsv_rows(log, DOWNLOAD_LOG_REQUIRED_COLUMNS, "download_log")
+    log_rows = _read_resume_tsv_rows(log, DOWNLOAD_LOG_REQUIRED_COLUMNS, "download_log")
     _assert_download_log_matches_plan(log, log_rows, plan)
 
     required_bytes = _estimate_resume_required_bytes(plan)
@@ -320,10 +320,7 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
     if manifest.resolve() == output.resolve():
         raise GeoGetterError(INVALID_MANIFEST, "report_path_must_not_equal_manifest_path")
 
-    with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        _validate_fastq_manifest_columns(reader.fieldnames)
-        rows = list(reader)
+    rows = _read_fastq_manifest_rows(manifest)
     if not rows:
         raise GeoGetterError(INVALID_MANIFEST, "no_rows")
 
@@ -363,23 +360,83 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
     return {"report_path": output, "status_counts": counts, "total": len(rows)}
 
 
-def _read_tsv_rows(path: Path, required_columns: tuple[str, ...], artifact: str) -> list[dict[str, str]]:
+def _read_required_tsv_rows(
+    path: Path,
+    required_columns: tuple[str, ...],
+    *,
+    missing_header_callback: Callable[[], None],
+    missing_columns_callback: Callable[[list[str]], None],
+    read_error_callback: Callable[[OSError], None] | None = None,
+    empty_header_is_missing_header: bool = False,
+) -> list[dict[str, str]]:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle, delimiter="\t")
-            fieldnames = reader.fieldnames or []
-            missing = [name for name in required_columns if name not in fieldnames]
-            if missing:
-                _raise_resume_mismatch(
-                    f"missing_{artifact}_columns",
-                    path,
-                    f"missing={','.join(missing)}",
-                )
+            fieldnames = reader.fieldnames
+            if fieldnames is None:
+                if empty_header_is_missing_header:
+                    missing_header_callback()
+                else:
+                    missing_columns_callback(list(required_columns))
+            elif empty_header_is_missing_header and not fieldnames:
+                missing_header_callback()
+            else:
+                _validate_required_tsv_columns(fieldnames, required_columns, missing_columns_callback)
             return list(reader)
     except GeoGetterError:
         raise
     except OSError as exc:
+        if read_error_callback:
+            read_error_callback(exc)
+        raise
+
+
+def _validate_required_tsv_columns(
+    fieldnames: list[str],
+    required_columns: tuple[str, ...],
+    missing_columns_callback: Callable[[list[str]], None],
+) -> None:
+    missing = [name for name in required_columns if name not in fieldnames]
+    if missing:
+        missing_columns_callback(missing)
+
+
+def _read_resume_tsv_rows(path: Path, required_columns: tuple[str, ...], artifact: str) -> list[dict[str, str]]:
+    def missing_columns_callback(missing: list[str]) -> None:
+        _raise_resume_mismatch(
+            f"missing_{artifact}_columns",
+            path,
+            f"missing={','.join(missing)}",
+        )
+
+    def read_error_callback(exc: OSError) -> None:
         _raise_resume_mismatch(f"read_{artifact}_failed", path, str(exc))
+
+    return _read_required_tsv_rows(
+        path,
+        required_columns,
+        missing_header_callback=lambda: missing_columns_callback(list(required_columns)),
+        missing_columns_callback=missing_columns_callback,
+        read_error_callback=read_error_callback,
+    )
+
+
+def _read_fastq_manifest_rows(manifest: Path) -> list[dict[str, str]]:
+    return _read_required_tsv_rows(
+        manifest,
+        FASTQ_MANIFEST_REQUIRED_COLUMNS,
+        missing_header_callback=_raise_invalid_manifest_missing_header,
+        missing_columns_callback=_raise_invalid_manifest_missing_columns,
+        empty_header_is_missing_header=True,
+    )
+
+
+def _raise_invalid_manifest_missing_header() -> None:
+    raise GeoGetterError(INVALID_MANIFEST, "missing_header")
+
+
+def _raise_invalid_manifest_missing_columns(missing: list[str]) -> None:
+    raise GeoGetterError(INVALID_MANIFEST, f"missing_columns={','.join(missing)}")
 
 
 def _assert_manifest_matches_plan(manifest: Path, rows: list[dict[str, str]], plan: DownloadPlan) -> None:
@@ -492,14 +549,6 @@ def _planned_files(files: list[FastqFile], output_dir: Path) -> list[PlannedFile
         local_path = plan_download_child_path(output_dir, item.file_name, "download.fastq.gz", used_keys)
         planned.append(PlannedFile(fastq=item, local_path=local_path))
     return planned
-
-
-def _validate_fastq_manifest_columns(fieldnames: list[str] | None) -> None:
-    if not fieldnames:
-        raise GeoGetterError(INVALID_MANIFEST, "missing_header")
-    missing = [name for name in FASTQ_MANIFEST_REQUIRED_COLUMNS if name not in fieldnames]
-    if missing:
-        raise GeoGetterError(INVALID_MANIFEST, f"missing_columns={','.join(missing)}")
 
 
 def _resolve_manifest_local_path(manifest_path: Path, row: dict[str, str]) -> Path:

@@ -737,6 +737,42 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("fastq_manifest_selection_mismatch", context.exception.detail)
             self.assertEqual(manifest.read_text(encoding="utf-8-sig"), changed)
 
+    def test_resume_artifacts_reject_manifest_missing_columns_with_resume_error_detail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            manifest = fastq_manifest_path(output_dir)
+            lines = manifest.read_text(encoding="utf-8-sig").splitlines()
+            url_index = lines[0].split("\t").index("url")
+
+            def without_column(line: str, index: int) -> str:
+                parts = line.split("\t")
+                del parts[index]
+                return "\t".join(parts)
+
+            manifest.write_text(
+                "\n".join(without_column(line, url_index) for line in lines),
+                encoding="utf-8-sig",
+            )
+
+            with self.assertRaises(GeoGetterError) as context:
+                validate_resume_artifacts(plan)
+
+            self.assertEqual(context.exception.code, "resume_artifact_mismatch")
+            self.assertIn("missing_fastq_manifest_columns", context.exception.detail)
+            self.assertIn("missing=url", context.exception.detail)
+
     def test_resume_artifacts_reject_download_log_outside_selection(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
@@ -759,6 +795,43 @@ class PlannerDownloaderTest(unittest.TestCase):
 
             self.assertEqual(context.exception.code, "resume_artifact_mismatch")
             self.assertIn("download_log_selection_mismatch", context.exception.detail)
+
+    def test_resume_artifacts_reject_download_log_missing_columns_with_resume_error_detail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            append_download_log(output_dir, "FIXTURE_RUN", "fixture.fastq.gz", "network_failed", "1" * 32, "", 10, 3, "fixture")
+            log = download_log_path(output_dir)
+            lines = log.read_text(encoding="utf-8-sig").splitlines()
+            status_index = lines[0].split("\t").index("status")
+
+            def without_column(line: str, index: int) -> str:
+                parts = line.split("\t")
+                del parts[index]
+                return "\t".join(parts)
+
+            log.write_text(
+                "\n".join(without_column(line, status_index) for line in lines),
+                encoding="utf-8-sig",
+            )
+
+            with self.assertRaises(GeoGetterError) as context:
+                validate_resume_artifacts(plan)
+
+            self.assertEqual(context.exception.code, "resume_artifact_mismatch")
+            self.assertIn("missing_download_log_columns", context.exception.detail)
+            self.assertIn("missing=status", context.exception.detail)
 
     def test_resume_artifacts_ignore_supplementary_log_rows(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1842,6 +1915,10 @@ class PlannerDownloaderTest(unittest.TestCase):
             with self.assertRaises(GeoGetterError) as context:
                 verify_fastq_manifest(manifest)
             self.assertEqual(context.exception.code, "invalid_manifest")
+            self.assertIn(
+                "missing_columns=source_accession,query_accession,run_accession,file_index,url",
+                context.exception.detail,
+            )
 
     def test_verify_fastq_manifest_rejects_report_path_overwriting_manifest(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1864,25 +1941,31 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(manifest.read_text(encoding="utf-8-sig"), original_manifest)
 
     def test_verify_fastq_manifest_rejects_invalid_size_bytes(self):
-        with tempfile.TemporaryDirectory() as temp:
-            output_dir = Path(temp)
-            data = b"verified\n"
-            fastq_path = output_dir / "verified.fastq.gz"
-            fastq_path.write_bytes(data)
-            manifest = output_dir / "sample_fastq_manifest.tsv"
-            manifest.write_text(
-                "\n".join(
-                    [
-                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
-                        f"GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t{hashlib.md5(data).hexdigest()}\tabc\t{fastq_path}\tplanned",
-                    ]
-                ),
-                encoding="utf-8-sig",
-            )
+        for invalid_size in ("abc", "-1"):
+            with self.subTest(invalid_size=invalid_size):
+                with tempfile.TemporaryDirectory() as temp:
+                    output_dir = Path(temp)
+                    data = b"verified\n"
+                    fastq_path = output_dir / "verified.fastq.gz"
+                    fastq_path.write_bytes(data)
+                    manifest = output_dir / "sample_fastq_manifest.tsv"
+                    manifest.write_text(
+                        "\n".join(
+                            [
+                                "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                                (
+                                    "GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t"
+                                    f"{hashlib.md5(data).hexdigest()}\t{invalid_size}\t{fastq_path}\tplanned"
+                                ),
+                            ]
+                        ),
+                        encoding="utf-8-sig",
+                    )
 
-            with self.assertRaises(GeoGetterError) as context:
-                verify_fastq_manifest(manifest)
-            self.assertEqual(context.exception.code, "invalid_manifest")
+                    with self.assertRaises(GeoGetterError) as context:
+                        verify_fastq_manifest(manifest)
+                    self.assertEqual(context.exception.code, "invalid_manifest")
+                    self.assertIn(f"row=2 invalid_size_bytes={invalid_size}", context.exception.detail)
 
 
 if __name__ == "__main__":
