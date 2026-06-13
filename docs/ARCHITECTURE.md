@@ -49,7 +49,7 @@ flowchart TD
     GUI --> VerifyCLI["python -m geo_getter.cli verify-manifest-json"]
     GUI --> UpdateCheckCLI["python -m geo_getter.cli check-update-json"]
     GUI --> UpdateDownloadCLI["python -m geo_getter.cli download-update-json"]
-    ResolveCLI --> Resolver["MetadataResolver"]
+    ResolveCLI --> Resolver["resolve_metadata"]
     Resolver --> GEO["GeoProvider\nNCBI GEO SOFT"]
     Resolver --> ENA["EnaProvider\nENA filereport"]
     PreflightCLI --> Planner["planner.py\n保存計画・manifest・log"]

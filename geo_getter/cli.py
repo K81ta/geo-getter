@@ -54,7 +54,7 @@ from .planner import (
     verify_fastq_manifest,
     write_supplementary_manifest,
 )
-from .providers.resolver import MetadataResolver
+from .providers.resolver import resolve_metadata
 from .updater import check_for_update, download_update_installer
 
 
@@ -208,7 +208,7 @@ def _classify_error(exc: Exception) -> tuple[str, str, str]:
 
 def _resolve_json(input_text: str | None, input_file: str | None, out_json: str | None) -> int:
     text = _read_input_text(input_text, input_file)
-    result = MetadataResolver().resolve(text)
+    result = resolve_metadata(text)
     payload = {
         "app_version": __version__,
         "input_text": result.input_text,
