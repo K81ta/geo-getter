@@ -2,7 +2,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from geo_getter.path_safety import child_path, name_collision_key, reserve_unique_download_name, safe_file_name
+from geo_getter.path_safety import (
+    child_path,
+    download_part_path,
+    existing_candidate_path,
+    existing_size,
+    name_collision_key,
+    quarantine_candidate_path,
+    reserve_unique_download_name,
+    safe_file_name,
+)
 
 
 class PathSafetyTest(unittest.TestCase):
@@ -45,6 +54,47 @@ class PathSafetyTest(unittest.TestCase):
                 child_path(root, "../escape.fastq.gz")
 
             self.assertEqual(child_path(root, "safe.fastq.gz"), root.resolve() / "safe.fastq.gz")
+
+    def test_existing_size_returns_zero_for_non_files_and_os_errors(self):
+        class OSErrorPath:
+            def is_file(self):
+                raise OSError("boom")
+
+        class StatOSErrorPath:
+            def is_file(self):
+                return True
+
+            def stat(self):
+                raise OSError("boom")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            file_path = root / "file.bin"
+            file_path.write_bytes(b"data")
+            directory = root / "directory"
+            directory.mkdir()
+
+            self.assertEqual(existing_size(file_path), 4)
+            self.assertEqual(existing_size(root / "missing.bin"), 0)
+            self.assertEqual(existing_size(directory), 0)
+            self.assertEqual(existing_size(OSErrorPath()), 0)
+            self.assertEqual(existing_size(StatOSErrorPath()), 0)
+
+    def test_download_runtime_candidate_paths_share_suffix_rules(self):
+        target = Path("sample.fastq.gz")
+        part = download_part_path(target)
+
+        self.assertEqual(part.name, "sample.fastq.gz.part")
+        self.assertEqual(existing_candidate_path(target).name, "sample.fastq.gz.existing")
+        self.assertEqual(existing_candidate_path(target, 2).name, "sample.fastq.gz.existing.2")
+        self.assertEqual(
+            quarantine_candidate_path(target, "bad-md5-existing", "20000101T000000Z").name,
+            "sample.fastq.gz.bad-md5-existing-20000101T000000Z",
+        )
+        self.assertEqual(
+            quarantine_candidate_path(part, "bad-md5", "20000101T000000Z", 2).name,
+            "sample.fastq.gz.part.bad-md5-20000101T000000Z.2",
+        )
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from .errors import (
 from .hashing import verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
+from .path_safety import download_part_path, existing_size, quarantine_candidate_path
 from .planner import ResumeArtifactDigest, ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
 
 ProgressCallback = Callable[[PlannedFile, int, int], None]
@@ -182,8 +183,8 @@ def _download_planned_file(
         return _downloaded_part_outcome(planned, downloaded_part)
     except DownloadSizeMismatchError as exc:
         status = SIZE_MISMATCH
-        part_path = _part_path(planned.local_path)
-        downloaded = _existing_size(part_path)
+        part_path = download_part_path(planned.local_path)
+        downloaded = existing_size(part_path)
         message = ERROR_MESSAGES[status]
         try:
             if part_path.exists():
@@ -204,7 +205,7 @@ def _download_planned_file(
         return DownloadOutcome(
             status,
             f"{message} Detail: {exc}",
-            bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+            bytes_downloaded=existing_size(download_part_path(planned.local_path)),
             result_message=str(exc),
         )
     except DownloadLocalIoError as exc:
@@ -213,7 +214,7 @@ def _download_planned_file(
         return DownloadOutcome(
             status,
             f"{message} Detail: {exc}",
-            bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+            bytes_downloaded=existing_size(download_part_path(planned.local_path)),
             result_message=str(exc),
         )
     except OSError as exc:
@@ -222,7 +223,7 @@ def _download_planned_file(
         return DownloadOutcome(
             status,
             f"{message} Detail: {exc}",
-            bytes_downloaded=_existing_size(_part_path(planned.local_path)),
+            bytes_downloaded=existing_size(download_part_path(planned.local_path)),
             result_message=str(exc),
         )
 
@@ -315,7 +316,7 @@ def download_url_to_part(
 ) -> DownloadedPart:
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive.")
-    part_path = _part_path(local_path)
+    part_path = download_part_path(local_path)
     last_error: BaseException | None = None
     sleep = sleep_func or time.sleep
     now = now_func or _utc_now
@@ -350,7 +351,7 @@ def download_url_to_part(
 
 
 def finalize_downloaded_part(local_path: Path) -> None:
-    _finalize_part(_part_path(local_path), local_path)
+    _finalize_part(download_part_path(local_path), local_path)
 
 
 def _download_url_to_part_once(
@@ -370,7 +371,7 @@ def _download_url_to_part_once(
         part_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise DownloadLocalIoError(f"Could not create output folder: {part_path.parent}") from exc
-    resume_from = _existing_size(part_path)
+    resume_from = existing_size(part_path)
     if expected_size > 0 and resume_from > expected_size:
         raise DownloadSizeMismatchError(
             f"Partial file size exceeds expected size: expected={expected_size} actual={resume_from}"
@@ -444,7 +445,7 @@ def _download_url_to_part_once(
         raise _url_network_error(exc) from exc
     except (http.client.HTTPException, OSError, ValueError) as exc:
         raise DownloadNetworkError(str(exc)) from exc
-    final_size = _existing_size(part_path)
+    final_size = existing_size(part_path)
     if expected_size > 0 and final_size < expected_size:
         raise DownloadSizeMismatchError(
             f"Downloaded size is smaller than expected: expected={expected_size} actual={final_size}"
@@ -558,15 +559,6 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _existing_size(path: Path) -> int:
-    try:
-        if not path.is_file():
-            return 0
-        return path.stat().st_size
-    except OSError:
-        return 0
-
-
 def _emit(callback: MessageCallback | None, message: str) -> None:
     if callback:
         callback(message)
@@ -609,9 +601,9 @@ def _reuse_or_quarantine_existing(
         return None
     if not planned.local_path.is_file():
         raise GeoGetterError(OUTPUT_PATH_INVALID, f"download_target_is_not_file path={planned.local_path}")
-    existing_size = _existing_size(planned.local_path)
+    local_size = existing_size(planned.local_path)
     if planned.fastq.expected_md5:
-        if planned.fastq.size_bytes > 0 and existing_size != planned.fastq.size_bytes:
+        if planned.fastq.size_bytes > 0 and local_size != planned.fastq.size_bytes:
             quarantined = _quarantine_file(planned.local_path, "size-mismatch-existing")
             _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
             return None
@@ -620,7 +612,7 @@ def _reuse_or_quarantine_existing(
             planned.local_path,
             "final",
             planned.fastq.expected_md5,
-            existing_size,
+            local_size,
         )
         ok = actual_md5 is not None
         if actual_md5 is None:
@@ -629,7 +621,7 @@ def _reuse_or_quarantine_existing(
             except OSError as exc:
                 raise DownloadLocalIoError(f"Could not read existing FASTQ for MD5 verification: {planned.local_path}") from exc
         if ok:
-            stale_part = _part_path(planned.local_path)
+            stale_part = download_part_path(planned.local_path)
             if stale_part.exists():
                 try:
                     stale_part.unlink()
@@ -639,7 +631,7 @@ def _reuse_or_quarantine_existing(
                 MD5_VERIFIED,
                 "Existing file MD5 matched, so the file was reused without downloading again.",
                 actual_md5,
-                existing_size,
+                local_size,
             )
         quarantined = _quarantine_file(planned.local_path, "bad-md5-existing")
         _emit(message_callback, f"existing_file_quarantined_bad_md5: {quarantined}")
@@ -655,12 +647,12 @@ def _reuse_or_quarantine_complete_part(
     resume_digests: ResumeDigestLookup,
     message_callback: MessageCallback | None = None,
 ) -> DownloadOutcome | None:
-    part_path = _part_path(planned.local_path)
+    part_path = download_part_path(planned.local_path)
     if not part_path.exists():
         return None
     if not part_path.is_file():
         raise GeoGetterError(OUTPUT_PATH_INVALID, f"partial_download_target_is_not_file path={part_path}")
-    part_size = _existing_size(part_path)
+    part_size = existing_size(part_path)
     if planned.fastq.size_bytes > 0 and part_size < planned.fastq.size_bytes:
         return None
     if planned.fastq.size_bytes > 0 and part_size > planned.fastq.size_bytes:
@@ -707,17 +699,13 @@ def _finalize_part(part_path: Path, local_path: Path) -> None:
         raise DownloadLocalIoError(f"Could not move partial download into place: {part_path} -> {local_path}") from exc
 
 
-def _part_path(local_path: Path) -> Path:
-    return local_path.with_name(local_path.name + ".part")
-
-
 def _quarantine_file(path: Path, reason: str) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    candidate = path.with_name(f"{path.name}.{reason}-{timestamp}")
+    candidate = quarantine_candidate_path(path, reason, timestamp)
     counter = 2
     try:
         while candidate.exists():
-            candidate = path.with_name(f"{path.name}.{reason}-{timestamp}.{counter}")
+            candidate = quarantine_candidate_path(path, reason, timestamp, counter)
             counter += 1
         path.replace(candidate)
     except OSError as exc:
