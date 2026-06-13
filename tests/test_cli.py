@@ -12,6 +12,7 @@ from unittest import mock
 from geo_getter.cli import _load_json, _parse_indices, _preflight_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
 from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
+from geo_getter.models import DatasetMetadata, FastqFile, ResolveResult, SupplementaryFile
 from geo_getter.planner import (
     SUPPLEMENTARY_MANIFEST_COLUMNS,
     download_log_path,
@@ -95,6 +96,50 @@ class CliTest(unittest.TestCase):
         payload = self.assert_cli_error(["resolve-json", ""], "invalid_input")
         self.assertEqual(payload["command"], "resolve-json")
         self.assertIn("input_text or --input-file", payload["message"])
+
+    def test_resolve_json_writes_bridge_payload_from_dataclasses(self):
+        result = ResolveResult(
+            input_text="GSE000001",
+            primary_accession="GSE000001",
+            query_accessions=["SRP000001"],
+            fastq_files=[
+                FastqFile(
+                    source_accession="GSE000001",
+                    query_accession="SRP000001",
+                    run_accession="SRR000001",
+                    file_index=1,
+                    file_name="reads.fastq.gz",
+                    url="https://example.invalid/reads.fastq.gz",
+                    expected_md5="1" * 32,
+                    size_bytes=10,
+                )
+            ],
+            supplementary_files=[
+                SupplementaryFile(
+                    source_accession="GSE000001",
+                    scope="GEO Series supplementary/processed",
+                    name="matrix.tsv",
+                    url="https://example.invalid/matrix.tsv",
+                )
+            ],
+            dataset_metadata=DatasetMetadata(
+                accession="GSE000001",
+                title="dataset title",
+            ),
+            warnings=["fixture warning"],
+        )
+        resolver = mock.Mock()
+        resolver.resolve.return_value = result
+
+        with mock.patch("geo_getter.cli.MetadataResolver", return_value=resolver):
+            exit_code, stdout, stderr = self.run_cli_with_streams(["resolve-json", "GSE000001"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["dataset_metadata"]["title"], "dataset title")
+        self.assertEqual(payload["supplementary_files"][0]["name"], "matrix.tsv")
+        self.assertEqual(FastqFile(**payload["fastq_files"][0]), result.fastq_files[0])
 
     def test_selected_download_invalid_json_emits_structured_stderr_error(self):
         with tempfile.TemporaryDirectory() as temp:

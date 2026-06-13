@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -14,9 +13,6 @@ class DatasetMetadata:
     experiment_type: str = ""
     summary: str = ""
     overall_design: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -31,9 +27,6 @@ class SupplementaryFile:
     estimated_type: str = "other"
     size_status: str = "unknown"
     verification_status: str = "not_applicable"
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -58,9 +51,6 @@ class FastqFile:
     geo_sample_accession: str = ""
     geo_sample_title: str = ""
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
 
 @dataclass(frozen=True)
 class ResolveResult:
@@ -78,11 +68,6 @@ class PlannedFile:
     fastq: FastqFile
     local_path: Path
 
-    def to_dict(self) -> dict[str, Any]:
-        data = self.fastq.to_dict()
-        data["local_path"] = str(self.local_path)
-        return data
-
 
 @dataclass(frozen=True)
 class DownloadPlan:
@@ -94,15 +79,3 @@ class DownloadPlan:
     total_bytes: int
     available_bytes: int
     files: list[PlannedFile]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "app_version": self.app_version,
-            "created_at": self.created_at,
-            "input_text": self.input_text,
-            "primary_accession": self.primary_accession,
-            "output_dir": str(self.output_dir),
-            "total_bytes": self.total_bytes,
-            "available_bytes": self.available_bytes,
-            "files": [item.to_dict() for item in self.files],
-        }
