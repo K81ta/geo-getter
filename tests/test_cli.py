@@ -128,10 +128,7 @@ class CliTest(unittest.TestCase):
             ),
             warnings=["fixture warning"],
         )
-        resolver = mock.Mock()
-        resolver.resolve.return_value = result
-
-        with mock.patch("geo_getter.cli.MetadataResolver", return_value=resolver):
+        with mock.patch("geo_getter.cli.resolve_metadata", return_value=result):
             exit_code, stdout, stderr = self.run_cli_with_streams(["resolve-json", "GSE000001"])
 
         self.assertEqual(exit_code, 0)
