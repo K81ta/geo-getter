@@ -56,9 +56,10 @@ ERROR_MESSAGES = {
 
 
 class GeoGetterError(Exception):
-    def __init__(self, code: str, detail: str | None = None):
+    def __init__(self, code: str, detail: str | None = None, extra: dict[str, object] | None = None):
         self.code = code
         self.detail = detail or ""
+        self.extra = dict(extra or {})
         super().__init__(self.user_message)
 
     @property

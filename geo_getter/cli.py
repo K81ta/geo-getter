@@ -21,6 +21,7 @@ from .downloader import (
 )
 from .errors import (
     DOWNLOAD_COMPLETE,
+    INSUFFICIENT_SPACE,
     LOCAL_IO_FAILED,
     MD5_UNAVAILABLE,
     MD5_VERIFIED,
@@ -177,15 +178,18 @@ def _command_from_argv(argv: list[str]) -> str:
     return ""
 
 
-def _error_payload(command: str, exc: Exception) -> dict[str, str]:
+def _error_payload(command: str, exc: Exception) -> dict[str, object]:
     code, detail, message = _classify_error(exc)
-    return {
+    payload: dict[str, object] = {
         "event": "error",
         "command": command,
         "code": code,
         "detail": detail,
         "message": message,
     }
+    if isinstance(exc, GeoGetterError):
+        payload.update(exc.extra)
+    return payload
 
 
 def _classify_error(exc: Exception) -> tuple[str, str, str]:
@@ -236,9 +240,17 @@ def _build_cli_download_plan(
     run_output_dir.mkdir(parents=True, exist_ok=True)
     existing_output_nonempty = _directory_has_entries(run_output_dir)
     if existing_output_nonempty and selected_supp:
-        raise GeoGetterError(RESUME_SUPPLEMENTARY_UNSUPPORTED, f"output_dir={run_output_dir}")
+        raise GeoGetterError(
+            RESUME_SUPPLEMENTARY_UNSUPPORTED,
+            f"output_dir={run_output_dir}",
+            extra={"existing_output_nonempty": True, "output_dir": str(run_output_dir)},
+        )
     if require_resume_for_nonempty and existing_output_nonempty and not resume_existing:
-        raise GeoGetterError(RESUME_REQUIRED, f"output_dir={run_output_dir}")
+        raise GeoGetterError(
+            RESUME_REQUIRED,
+            f"output_dir={run_output_dir}",
+            extra={"existing_output_nonempty": True, "output_dir": str(run_output_dir)},
+        )
 
     reserved_output_names = reserved_download_artifact_names(run_output_dir)
     resume_active = existing_output_nonempty and resume_existing
@@ -367,6 +379,9 @@ def _preflight_json(
 
     free_bytes = shutil.disk_usage(cli_plan.output_dir).free
     required_bytes = 0
+    capacity_checked = not cli_plan.existing_output_nonempty or resume_existing
+    capacity_ok = True
+    capacity_error_code: str | None = None
     planned_paths: list[Path] = [cli_plan.output_dir]
     planned_fastq: list[dict[str, object]] = []
     planned_supp: list[dict[str, object]] = []
@@ -377,6 +392,9 @@ def _preflight_json(
         free_bytes = plan.available_bytes
         if cli_plan.resume_required_bytes is not None:
             required_bytes = cli_plan.resume_required_bytes
+        if capacity_checked and required_bytes > free_bytes:
+            capacity_ok = False
+            capacity_error_code = INSUFFICIENT_SPACE
         planned_paths.append(fastq_manifest_path(cli_plan.output_dir))
         planned_fastq = [
             {
@@ -413,6 +431,9 @@ def _preflight_json(
                 "existing_output_nonempty": cli_plan.existing_output_nonempty,
                 "required_bytes": required_bytes,
                 "free_bytes": free_bytes,
+                "capacity_checked": capacity_checked,
+                "capacity_ok": capacity_ok,
+                "capacity_error_code": capacity_error_code,
                 "resume_existing": cli_plan.resume_active,
                 "resume_required_bytes": cli_plan.resume_required_bytes,
                 "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.selected_fastq else "",

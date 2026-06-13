@@ -428,6 +428,9 @@ class CliTest(unittest.TestCase):
             self.assertEqual(preflight["existing_output_nonempty"], False)
             self.assertEqual(preflight["required_bytes"], len(data) * 4)
             self.assertGreater(preflight["free_bytes"], 0)
+            self.assertEqual(preflight["capacity_checked"], True)
+            self.assertEqual(preflight["capacity_ok"], True)
+            self.assertIsNone(preflight["capacity_error_code"])
             self.assertEqual(preflight["fastq_manifest"], str(fastq_manifest_path(out_dir.resolve())))
             self.assertEqual(preflight["supplementary_manifest"], str(supplementary_manifest_path(out_dir.resolve())))
             self.assertEqual(preflight["download_log"], str(download_log_path(out_dir.resolve())))
@@ -495,12 +498,17 @@ class CliTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            preflight = self.run_preflight_json(input_json, "0", "", out_dir)
+            with mock.patch("geo_getter.planner.shutil.disk_usage", return_value=mock.Mock(free=0)):
+                preflight = self.run_preflight_json(input_json, "0", "", out_dir)
 
             self.assertEqual(preflight["existing_output_nonempty"], True)
             self.assertEqual(preflight["resume_existing"], False)
             self.assertIsNone(preflight["resume_required_bytes"])
             self.assertEqual(preflight["required_bytes"], len(data))
+            self.assertEqual(preflight["free_bytes"], 0)
+            self.assertEqual(preflight["capacity_checked"], False)
+            self.assertEqual(preflight["capacity_ok"], True)
+            self.assertIsNone(preflight["capacity_error_code"])
 
     def test_preflight_json_validates_resume_when_requested(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -541,6 +549,49 @@ class CliTest(unittest.TestCase):
             self.assertEqual(preflight["resume_existing"], True)
             self.assertEqual(preflight["resume_required_bytes"], 0)
             self.assertEqual(preflight["required_bytes"], 0)
+            self.assertEqual(preflight["capacity_checked"], True)
+            self.assertEqual(preflight["capacity_ok"], True)
+            self.assertIsNone(preflight["capacity_error_code"])
+
+    def test_preflight_json_reports_insufficient_space_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out_dir = root / "out"
+
+            with mock.patch("geo_getter.planner.shutil.disk_usage", return_value=mock.Mock(free=len(data) - 1)):
+                preflight = self.run_preflight_json(input_json, "0", "", out_dir)
+
+            self.assertEqual(preflight["required_bytes"], len(data))
+            self.assertEqual(preflight["free_bytes"], len(data) - 1)
+            self.assertEqual(preflight["capacity_checked"], True)
+            self.assertEqual(preflight["capacity_ok"], False)
+            self.assertEqual(preflight["capacity_error_code"], "insufficient_space")
 
     def test_preflight_json_rejects_supplementary_in_nonempty_output(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -570,7 +621,7 @@ class CliTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assert_cli_error(
+            payload = self.assert_cli_error(
                 [
                     "preflight-json",
                     "--input-json",
@@ -583,6 +634,8 @@ class CliTest(unittest.TestCase):
                 ],
                 "resume_supplementary_unsupported",
             )
+            self.assertEqual(payload["existing_output_nonempty"], True)
+            self.assertEqual(payload["output_dir"], str(out_dir.resolve()))
 
     def test_preflight_json_resume_rejects_missing_manifest(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -679,6 +732,54 @@ class CliTest(unittest.TestCase):
             )
 
             self.assertIn(str(out_dir.resolve()), payload["detail"])
+            self.assertEqual(payload["existing_output_nonempty"], True)
+            self.assertEqual(payload["output_dir"], str(out_dir.resolve()))
+
+    def test_selected_download_rejects_insufficient_space_with_structured_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "query_accession": "SRP000001",
+                                "run_accession": "SRR000001",
+                                "file_index": 1,
+                                "file_name": "source.fastq.gz",
+                                "url": source.as_uri(),
+                                "expected_md5": hashlib.md5(data).hexdigest(),
+                                "size_bytes": len(data),
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("geo_getter.planner.shutil.disk_usage", return_value=mock.Mock(free=len(data) - 1)):
+                payload = self.assert_cli_error(
+                    [
+                        "selected-download-json",
+                        "--input-json",
+                        str(input_json),
+                        "--fastq-indices",
+                        "0",
+                        "--out",
+                        str(root / "out"),
+                    ],
+                    "insufficient_space",
+                )
+
+            self.assertIn("required=", payload["detail"])
 
     def test_selected_download_passes_download_workers_to_fastq_plan(self):
         with tempfile.TemporaryDirectory() as temp:
