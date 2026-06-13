@@ -56,15 +56,16 @@ def parse_file_report(
 ) -> list[FastqFile]:
     fastq_files: list[FastqFile] = []
     for row in rows:
-        urls = _split_url_values(row.get("fastq_ftp", ""))
         md5s = _split_positional_values(row.get("fastq_md5", ""))
         sizes = _split_positional_values(row.get("fastq_bytes", ""))
-        for file_index, raw_url in urls:
+        for file_index, raw_url in enumerate(_split_positional_values(row.get("fastq_ftp", ""))):
             if not raw_url:
                 continue
             download_url = _download_url(raw_url)
             if not download_url:
                 continue
+            expected_md5 = md5s[file_index] if file_index < len(md5s) else ""
+            size_value = sizes[file_index] if file_index < len(sizes) else ""
             fastq_files.append(
                 FastqFile(
                     source_accession=source_accession,
@@ -73,8 +74,8 @@ def parse_file_report(
                     file_index=file_index + 1,
                     file_name=_file_name_from_url(raw_url),
                     url=download_url,
-                    expected_md5=_value_at(md5s, file_index),
-                    size_bytes=_int_at(sizes, file_index),
+                    expected_md5=expected_md5,
+                    size_bytes=_int_or_zero(size_value),
                     experiment_accession=_clean_metadata_value(row.get("experiment_accession", "")),
                     sample_accession=_clean_metadata_value(row.get("sample_accession", "")),
                     secondary_sample_accession=_clean_metadata_value(row.get("secondary_sample_accession", "")),
@@ -95,24 +96,13 @@ def _clean_metadata_value(value: Any) -> str:
     return str(value)
 
 
-def _split_url_values(value: Any) -> list[tuple[int, str]]:
-    return [(index, item) for index, item in enumerate(_split_positional_values(value)) if item]
-
-
 def _split_positional_values(value: Any) -> list[str]:
     if value is None:
         return []
     return [item.strip() for item in str(value).split(";")]
 
 
-def _value_at(values: list[str], index: int) -> str:
-    if 0 <= index < len(values):
-        return values[index]
-    return ""
-
-
-def _int_at(values: list[str], index: int) -> int:
-    value = _value_at(values, index)
+def _int_or_zero(value: str) -> int:
     try:
         return int(value)
     except ValueError:

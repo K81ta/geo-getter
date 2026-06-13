@@ -51,6 +51,28 @@ class EnaProviderTest(unittest.TestCase):
         self.assertEqual(files[1].expected_md5, "22222222222222222222222222222222")
         self.assertEqual(files[1].size_bytes, 34)
 
+    def test_parse_defaults_empty_md5_and_invalid_or_empty_size_by_position(self):
+        rows = [
+            {
+                "run_accession": "SRR000008",
+                "fastq_ftp": (
+                    "ftp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000008/SRR000008_1.fastq.gz;"
+                    "ftp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000008/SRR000008_2.fastq.gz;"
+                    "ftp.sra.ebi.ac.uk/vol1/fastq/SRR000/SRR000008/SRR000008_3.fastq.gz"
+                ),
+                "fastq_md5": "11111111111111111111111111111111;;33333333333333333333333333333333",
+                "fastq_bytes": "12;invalid;",
+            }
+        ]
+
+        files = parse_file_report(rows, source_accession="GSE000008", query_accession="SRP000008")
+
+        self.assertEqual([file.file_index for file in files], [1, 2, 3])
+        self.assertEqual(files[1].expected_md5, "")
+        self.assertEqual(files[1].size_bytes, 0)
+        self.assertEqual(files[2].expected_md5, "33333333333333333333333333333333")
+        self.assertEqual(files[2].size_bytes, 0)
+
     def test_parse_sanitizes_decoded_fastq_file_name(self):
         rows = [
             {
