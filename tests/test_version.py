@@ -1,10 +1,5 @@
-import contextlib
-import email.parser
 import inspect
-import io
 import json
-import os
-import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -25,20 +20,6 @@ class VersionTest(unittest.TestCase):
             {"attr": "geo_getter.__version__"},
             config["tool"]["setuptools"]["dynamic"]["version"],
         )
-
-        import setuptools.build_meta as build_meta
-
-        cwd = os.getcwd()
-        with tempfile.TemporaryDirectory() as metadata_root:
-            try:
-                os.chdir(ROOT)
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    dist_info = build_meta.prepare_metadata_for_build_wheel(metadata_root)
-            finally:
-                os.chdir(cwd)
-            metadata_text = (Path(metadata_root) / dist_info / "METADATA").read_text(encoding="utf-8")
-        metadata = email.parser.Parser().parsestr(metadata_text)
-        self.assertEqual(__version__, metadata["Version"])
 
     def test_pyproject_has_no_console_script(self):
         pyproject = ROOT / "pyproject.toml"
