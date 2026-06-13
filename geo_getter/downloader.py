@@ -282,7 +282,6 @@ def download_one(
     planned: PlannedFile,
     progress_callback: ProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
-    chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
 ) -> DownloadedPart:
     def progress(downloaded: int, total: int) -> None:
         if progress_callback:
@@ -294,7 +293,6 @@ def download_one(
         expected_size=planned.fastq.size_bytes,
         progress_callback=progress,
         message_callback=message_callback,
-        chunk_size=chunk_size,
         stream_md5=bool(planned.fastq.expected_md5),
     )
 
@@ -305,9 +303,27 @@ def download_url_to_part(
     expected_size: int = 0,
     progress_callback: ByteProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
+    stream_md5: bool = False,
+) -> DownloadedPart:
+    return _download_url_to_part_with_retries(
+        url,
+        local_path,
+        expected_size=expected_size,
+        progress_callback=progress_callback,
+        message_callback=message_callback,
+        stream_md5=stream_md5,
+    )
+
+
+def _download_url_to_part_with_retries(
+    url: str,
+    local_path: Path,
+    expected_size: int = 0,
+    progress_callback: ByteProgressCallback | None = None,
+    message_callback: MessageCallback | None = None,
+    stream_md5: bool = False,
     chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
     max_attempts: int = 4,
-    stream_md5: bool = False,
     retry_delays: tuple[float, ...] = DEFAULT_RETRY_DELAYS,
     sleep_func: SleepCallback | None = None,
     now_func: NowCallback | None = None,
