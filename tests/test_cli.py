@@ -6,10 +6,20 @@ import io
 import tempfile
 import unittest
 import urllib.error
+from dataclasses import fields
 from pathlib import Path
 from unittest import mock
 
-from geo_getter.cli import _load_json, _parse_indices, _preflight_json, _selected_download_json, _selected_fastq_from_payload, main, run_cli
+from geo_getter.cli import (
+    CliDownloadPlan,
+    _load_json,
+    _parse_indices,
+    _preflight_json,
+    _selected_download_json,
+    _selected_fastq_from_payload,
+    main,
+    run_cli,
+)
 from geo_getter.downloader import DownloadNetworkError
 from geo_getter.errors import GeoGetterError
 from geo_getter.models import DatasetMetadata, FastqFile, ResolveResult, SupplementaryFile
@@ -52,6 +62,14 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(_preflight_json(input_json, fastq_indices, supp_indices, output_dir, resume_existing=resume_existing), 0)
         return json.loads(stdout.getvalue())
+
+    def test_cli_download_plan_keeps_execution_plan_state_only(self):
+        field_names = {field.name for field in fields(CliDownloadPlan)}
+        self.assertIn("fastq_plan", field_names)
+        self.assertIn("planned_supplementary", field_names)
+        self.assertNotIn("selected_fastq", field_names)
+        self.assertNotIn("selected_supplementary", field_names)
+        self.assertNotIn("resume_required_bytes", field_names)
 
     def test_help_only_exposes_gui_bridge_commands(self):
         stdout = io.StringIO()
