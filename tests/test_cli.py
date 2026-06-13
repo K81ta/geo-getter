@@ -82,6 +82,11 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(context.exception.code, 0)
                 self.assertIn(command, stdout.getvalue())
 
+    def test_hidden_bridge_missing_required_argument_keeps_command_in_error_payload(self):
+        payload = self.assert_cli_error(["verify-manifest-json"], "invalid_input")
+        self.assertEqual(payload["command"], "verify-manifest-json")
+        self.assertIn("required", payload["message"])
+
     def test_load_json_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "payload.json"
