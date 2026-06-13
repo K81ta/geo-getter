@@ -28,14 +28,13 @@ from .hashing import verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
 from .path_safety import download_part_path, existing_size, quarantine_candidate_path
-from .planner import ResumeArtifactDigest, ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
+from .planner import ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
 
 ProgressCallback = Callable[[PlannedFile, int, int], None]
 MessageCallback = Callable[[str], None]
 ByteProgressCallback = Callable[[int, int], None]
 SleepCallback = Callable[[float], None]
 NowCallback = Callable[[], datetime]
-ResumeDigestLookup = dict[tuple[Path, str], ResumeArtifactDigest]
 DEFAULT_RETRY_DELAYS = (1.0, 3.0, 9.0)
 DEFAULT_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS = 0.250
@@ -126,20 +125,19 @@ def download_plan(
 ) -> list[tuple[PlannedFile, str, str]]:
     ensure_capacity(plan, required_bytes=resume_artifacts.required_bytes if resume_artifacts else None)
     write_fastq_outputs(plan, resume_artifacts=resume_artifacts)
-    resume_digests = _resume_digest_lookup(resume_artifacts)
     results: list[tuple[PlannedFile, str, str]] = []
     worker_count = normalize_download_workers(download_workers)
 
     if worker_count == 1 or len(plan.files) <= 1:
         for planned in plan.files:
-            outcome = _download_planned_file(planned, resume_digests, progress_callback, message_callback)
+            outcome = _download_planned_file(planned, progress_callback, message_callback)
             _record_outcome(plan, planned, outcome, results, message_callback)
         return results
 
     worker_count = min(worker_count, len(plan.files))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [
-            executor.submit(_download_planned_file, planned, resume_digests, progress_callback, message_callback)
+            executor.submit(_download_planned_file, planned, progress_callback, message_callback)
             for planned in plan.files
         ]
         for planned, future in zip(plan.files, futures):
@@ -161,17 +159,16 @@ def normalize_download_workers(value: int) -> int:
 
 def _download_planned_file(
     planned: PlannedFile,
-    resume_digests: ResumeDigestLookup,
     progress_callback: ProgressCallback | None,
     message_callback: MessageCallback | None,
 ) -> DownloadOutcome:
     try:
         _emit(message_callback, f"download_started: {planned.fastq.file_name}")
-        existing_result = _reuse_or_quarantine_existing(planned, resume_digests, message_callback)
+        existing_result = _reuse_or_quarantine_existing(planned, message_callback)
         if existing_result:
             return existing_result
 
-        part_result = _reuse_or_quarantine_complete_part(planned, resume_digests, message_callback)
+        part_result = _reuse_or_quarantine_complete_part(planned, message_callback)
         if part_result:
             return part_result
 
@@ -580,37 +577,8 @@ def _emit(callback: MessageCallback | None, message: str) -> None:
         callback(message)
 
 
-def _resume_digest_lookup(resume_artifacts: ResumeArtifacts | None) -> ResumeDigestLookup:
-    if not resume_artifacts:
-        return {}
-    return {(artifact.path, artifact.kind): artifact for artifact in resume_artifacts.verified_artifacts}
-
-
-def _cached_resume_md5(
-    lookup: ResumeDigestLookup,
-    path: Path,
-    kind: str,
-    expected_md5: str,
-    size_bytes: int,
-) -> str | None:
-    artifact = lookup.get((path, kind))
-    if not artifact:
-        return None
-    if artifact.expected_md5.lower() != expected_md5.lower():
-        return None
-    if artifact.size_bytes != size_bytes:
-        return None
-    try:
-        if path.stat().st_mtime_ns != artifact.mtime_ns:
-            return None
-    except OSError:
-        return None
-    return artifact.actual_md5
-
-
 def _reuse_or_quarantine_existing(
     planned: PlannedFile,
-    resume_digests: ResumeDigestLookup,
     message_callback: MessageCallback | None = None,
 ) -> DownloadOutcome | None:
     if not planned.local_path.exists():
@@ -623,19 +591,10 @@ def _reuse_or_quarantine_existing(
             quarantined = _quarantine_file(planned.local_path, "size-mismatch-existing")
             _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
             return None
-        actual_md5 = _cached_resume_md5(
-            resume_digests,
-            planned.local_path,
-            "final",
-            planned.fastq.expected_md5,
-            local_size,
-        )
-        ok = actual_md5 is not None
-        if actual_md5 is None:
-            try:
-                ok, actual_md5 = verify_md5(planned.local_path, planned.fastq.expected_md5)
-            except OSError as exc:
-                raise DownloadLocalIoError(f"Could not read existing FASTQ for MD5 verification: {planned.local_path}") from exc
+        try:
+            ok, actual_md5 = verify_md5(planned.local_path, planned.fastq.expected_md5)
+        except OSError as exc:
+            raise DownloadLocalIoError(f"Could not read existing FASTQ for MD5 verification: {planned.local_path}") from exc
         if ok:
             stale_part = download_part_path(planned.local_path)
             if stale_part.exists():
@@ -660,7 +619,6 @@ def _reuse_or_quarantine_existing(
 
 def _reuse_or_quarantine_complete_part(
     planned: PlannedFile,
-    resume_digests: ResumeDigestLookup,
     message_callback: MessageCallback | None = None,
 ) -> DownloadOutcome | None:
     part_path = download_part_path(planned.local_path)
@@ -680,19 +638,10 @@ def _reuse_or_quarantine_complete_part(
             quarantined = _quarantine_file(part_path, "unverified-existing")
             _emit(message_callback, f"partial_file_quarantined_unverified: {quarantined}")
         return None
-    actual_md5 = _cached_resume_md5(
-        resume_digests,
-        part_path,
-        "complete_part",
-        planned.fastq.expected_md5,
-        part_size,
-    )
-    ok = actual_md5 is not None
-    if actual_md5 is None:
-        try:
-            ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
-        except OSError as exc:
-            raise DownloadLocalIoError(f"Could not read partial FASTQ for MD5 verification: {part_path}") from exc
+    try:
+        ok, actual_md5 = verify_md5(part_path, planned.fastq.expected_md5)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not read partial FASTQ for MD5 verification: {part_path}") from exc
     if ok:
         _finalize_part(part_path, planned.local_path)
         return DownloadOutcome(

@@ -85,22 +85,11 @@ DOWNLOAD_LOG_REQUIRED_COLUMNS = DOWNLOAD_LOG_COLUMNS
 
 
 @dataclass(frozen=True)
-class ResumeArtifactDigest:
-    path: Path
-    kind: str
-    expected_md5: str
-    actual_md5: str
-    size_bytes: int
-    mtime_ns: int
-
-
-@dataclass(frozen=True)
 class ResumeArtifacts:
     manifest_path: Path
     download_log_path: Path
     required_bytes: int
     matched_fastq_count: int
-    verified_artifacts: tuple[ResumeArtifactDigest, ...] = ()
 
 
 def build_download_plan(
@@ -297,46 +286,32 @@ def validate_resume_artifacts(plan: DownloadPlan) -> ResumeArtifacts:
     log_rows = _read_tsv_rows(log, DOWNLOAD_LOG_REQUIRED_COLUMNS, "download_log")
     _assert_download_log_matches_plan(log, log_rows, plan)
 
-    required_bytes, verified_artifacts = _inspect_resume_artifacts(plan)
+    required_bytes = _estimate_resume_required_bytes(plan)
     return ResumeArtifacts(
         manifest_path=manifest,
         download_log_path=log,
         required_bytes=required_bytes,
         matched_fastq_count=len(plan.files),
-        verified_artifacts=verified_artifacts,
     )
 
 
-def _inspect_resume_artifacts(plan: DownloadPlan) -> tuple[int, tuple[ResumeArtifactDigest, ...]]:
+def _estimate_resume_required_bytes(plan: DownloadPlan) -> int:
     required = 0
-    verified: list[ResumeArtifactDigest] = []
     for planned in plan.files:
         expected_size = max(0, int(planned.fastq.size_bytes))
-        completed = _verified_resume_artifact(
-            planned.local_path,
-            "final",
-            planned.fastq.expected_md5,
-            expected_size,
-        )
-        if completed:
-            verified.append(completed)
+        if expected_size <= 0:
+            continue
+        if planned.local_path.is_file() and existing_size(planned.local_path) == expected_size:
             continue
         part_path = download_part_path(planned.local_path)
         part_size = existing_size(part_path)
-        if expected_size > 0 and 0 < part_size < expected_size:
+        if 0 < part_size < expected_size:
             required += expected_size - part_size
             continue
-        complete_part = _verified_resume_artifact(
-            part_path,
-            "complete_part",
-            planned.fastq.expected_md5,
-            expected_size,
-        )
-        if complete_part:
-            verified.append(complete_part)
+        if part_path.is_file() and part_size == expected_size:
             continue
         required += expected_size
-    return required, tuple(verified)
+    return required
 
 
 def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> dict:
@@ -475,30 +450,6 @@ def _resume_log_key_from_row(row: dict[str, str]) -> tuple[str, ...]:
         (row.get("file_name") or "").strip(),
         (row.get("expected_md5") or "").strip(),
         (row.get("bytes_expected") or "").strip(),
-    )
-
-
-def _verified_resume_artifact(
-    path: Path,
-    kind: str,
-    expected_md5: str,
-    expected_size: int,
-) -> ResumeArtifactDigest | None:
-    if not expected_md5 or not path.is_file():
-        return None
-    stat = path.stat()
-    if expected_size > 0 and stat.st_size != expected_size:
-        return None
-    actual_md5 = _calculate_md5(path)
-    if actual_md5.lower() != expected_md5.lower():
-        return None
-    return ResumeArtifactDigest(
-        path=path,
-        kind=kind,
-        expected_md5=expected_md5,
-        actual_md5=actual_md5,
-        size_bytes=stat.st_size,
-        mtime_ns=stat.st_mtime_ns,
     )
 
 
