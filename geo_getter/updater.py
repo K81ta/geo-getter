@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import hashlib
-import http.client
 import re
 import tempfile
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from .downloader import (
+    DownloadLocalIoError,
+    DownloadNetworkError,
+    DownloadSizeMismatchError,
+    download_url_to_part,
+    finalize_downloaded_part,
+)
 from .errors import (
     UPDATE_ASSET_MISSING,
     UPDATE_ASSET_URL_MISSING,
@@ -21,7 +24,9 @@ from .errors import (
     UPDATE_VERSION_INVALID,
     GeoGetterError,
 )
-from .http_client import USER_AGENT, fetch_json
+from .hashing import calculate_sha256
+from .http_client import fetch_json
+from .path_safety import download_part_path
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/K81ta/geo-getter/releases/latest"
 GITHUB_API_HEADERS = {
@@ -30,7 +35,6 @@ GITHUB_API_HEADERS = {
 }
 SHA256_DIGEST_RE = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
 VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
-DEFAULT_UPDATE_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def compare_versions(left: str, right: str) -> int:
@@ -88,7 +92,6 @@ def download_update_installer(
     output_dir: str | Path | None = None,
     current_version: str = __version__,
     fetcher: Callable[..., Any] = fetch_json,
-    opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> dict[str, Any]:
     check = check_for_update(current_version=current_version, fetcher=fetcher)
     if not check["update_available"] or check["latest_version"] != version:
@@ -98,48 +101,51 @@ def download_update_installer(
     installer_dir = _update_output_dir(version, output_dir)
     installer_dir.mkdir(parents=True, exist_ok=True)
     installer_path = installer_dir / str(asset["name"])
-    part_path = installer_path.with_name(installer_path.name + ".part")
+    part_path = download_part_path(installer_path)
     expected_sha256 = str(asset["sha256"])
     expected_size = _int_or_zero(asset.get("size"))
 
-    if part_path.exists():
-        part_path.unlink()
-    request = urllib.request.Request(str(asset["download_url"]), headers={"User-Agent": USER_AGENT})
-    downloaded = 0
-    digest = hashlib.sha256()
     try:
-        with opener(request, timeout=120) as response:
-            with part_path.open("wb") as handle:
-                while True:
-                    chunk = response.read(DEFAULT_UPDATE_DOWNLOAD_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+        if part_path.exists():
+            part_path.unlink()
+    except OSError as exc:
+        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
+
+    try:
+        downloaded_part = download_url_to_part(
+            str(asset["download_url"]),
+            installer_path,
+            expected_size=expected_size,
+        )
+    except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError) as exc:
         _remove_if_exists(part_path)
         raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
 
-    if expected_size and downloaded != expected_size:
+    try:
+        actual_sha256 = calculate_sha256(downloaded_part.path)
+    except OSError as exc:
         _remove_if_exists(part_path)
-        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, f"expected_size={expected_size} downloaded={downloaded}")
+        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
 
-    actual_sha256 = digest.hexdigest()
     if actual_sha256.lower() != expected_sha256.lower():
         _remove_if_exists(part_path)
         raise GeoGetterError(UPDATE_SHA256_MISMATCH, f"expected={expected_sha256} actual={actual_sha256}")
 
-    if installer_path.exists():
-        installer_path.unlink()
-    part_path.replace(installer_path)
+    try:
+        if installer_path.exists():
+            installer_path.unlink()
+        finalize_downloaded_part(installer_path)
+    except (DownloadLocalIoError, OSError) as exc:
+        _remove_if_exists(part_path)
+        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
+
     return {
         "event": "done",
         "kind": "update_installer",
         "version": version,
         "installer_path": str(installer_path),
         "sha256": actual_sha256,
-        "bytes": downloaded,
+        "bytes": downloaded_part.bytes_downloaded,
     }
 
 
