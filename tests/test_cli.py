@@ -383,6 +383,8 @@ class CliTest(unittest.TestCase):
             self.assertIn("same.3.fastq.gz", planned_names)
             self.assertIn("same.4.fastq.gz", planned_names)
             self.assertIn("same.4.fastq.gz.part", planned_names)
+            self.assertIn("Same.fastq.gz.part.unverified-existing-20000101T000000Z", planned_names)
+            self.assertIn("Same.fastq.gz.part.unverified-existing-20000101T000000Z.2", planned_names)
             self.assertIn("same.fastq.gz.2.part", planned_names)
             self.assertIn("same.fastq.gz.2.part.part", planned_names)
             self.assertIn("collision output_fastq_manifest.tsv", planned_names)

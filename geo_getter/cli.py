@@ -600,6 +600,8 @@ def _download_runtime_paths(local_path: Path, kind: str) -> list[Path]:
                 quarantine_candidate_path(part_path, "bad-md5", timestamp, 2),
                 quarantine_candidate_path(part_path, "size-mismatch", timestamp),
                 quarantine_candidate_path(part_path, "size-mismatch", timestamp, 2),
+                quarantine_candidate_path(part_path, "unverified-existing", timestamp),
+                quarantine_candidate_path(part_path, "unverified-existing", timestamp, 2),
             ]
         )
     else:
