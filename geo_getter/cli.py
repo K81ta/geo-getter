@@ -86,29 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     resolve_json_parser.add_argument("--out-json")
 
     selected_download_parser = subparsers.add_parser("selected-download-json", help="download selected FASTQ and GEO supplementary files")
-    selected_download_parser.add_argument("--input-json", required=True)
-    selected_download_parser.add_argument("--fastq-indices", default="")
-    selected_download_parser.add_argument("--supp-indices", default="")
-    selected_download_parser.add_argument("--out", required=True)
-    selected_download_parser.add_argument("--resume-existing", action="store_true")
+    _add_download_selection_arguments(selected_download_parser)
     selected_download_parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
 
-    if argv_list and argv_list[0] == "preflight-json":
-        preflight_parser = subparsers.add_parser("preflight-json", help=argparse.SUPPRESS)
-        preflight_parser.add_argument("--input-json", required=True)
-        preflight_parser.add_argument("--fastq-indices", default="")
-        preflight_parser.add_argument("--supp-indices", default="")
-        preflight_parser.add_argument("--out", required=True)
-        preflight_parser.add_argument("--resume-existing", action="store_true")
-    if argv_list and argv_list[0] == "verify-manifest-json":
-        verify_manifest_parser = subparsers.add_parser("verify-manifest-json", help=argparse.SUPPRESS)
-        verify_manifest_parser.add_argument("--manifest", required=True)
-    if argv_list and argv_list[0] == "check-update-json":
-        subparsers.add_parser("check-update-json", help=argparse.SUPPRESS)
-    if argv_list and argv_list[0] == "download-update-json":
-        update_download_parser = subparsers.add_parser("download-update-json", help=argparse.SUPPRESS)
-        update_download_parser.add_argument("--version", required=True)
-        update_download_parser.add_argument("--out-dir")
+    _add_requested_hidden_parser(subparsers, _command_from_argv(argv_list))
 
     args = parser.parse_args(argv_list)
     if args.command == "resolve-json":
@@ -137,6 +118,47 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "download-update-json":
         return _download_update_json(args.version, args.out_dir)
     return 2
+
+
+def _add_download_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input-json", required=True)
+    parser.add_argument("--fastq-indices", default="")
+    parser.add_argument("--supp-indices", default="")
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--resume-existing", action="store_true")
+
+
+def _add_requested_hidden_parser(subparsers, command: str) -> None:
+    add_arguments = _HIDDEN_BRIDGE_COMMANDS.get(command)
+    if command not in _HIDDEN_BRIDGE_COMMANDS:
+        return
+    parser = subparsers.add_parser(command, help=argparse.SUPPRESS)
+    add_arguments(parser)
+
+
+def _add_preflight_parser(parser: argparse.ArgumentParser) -> None:
+    _add_download_selection_arguments(parser)
+
+
+def _add_verify_manifest_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", required=True)
+
+
+def _add_update_check_parser(parser: argparse.ArgumentParser) -> None:
+    pass
+
+
+def _add_update_download_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--out-dir")
+
+
+_HIDDEN_BRIDGE_COMMANDS = {
+    "preflight-json": _add_preflight_parser,
+    "verify-manifest-json": _add_verify_manifest_parser,
+    "check-update-json": _add_update_check_parser,
+    "download-update-json": _add_update_download_parser,
+}
 
 
 def run_cli(argv: list[str] | None = None) -> int:
@@ -461,28 +483,24 @@ def _parse_indices(text: str) -> list[int]:
         stripped = part.strip()
         if stripped:
             indices.append(int(stripped))
-    if not indices:
-        raise ValueError("No FASTQ files are selected.")
     return indices
 
 
 def _selected_fastq_from_payload(payload: dict, indices_text: str) -> list[FastqFile]:
-    fastq_items = payload.get("fastq_files", [])
-    selected: list[FastqFile] = []
-    for index in _parse_indices(indices_text):
-        if index < 0 or index >= len(fastq_items):
-            raise IndexError(f"FASTQ index is out of range: {index}")
-        selected.append(FastqFile(**fastq_items[index]))
-    return selected
+    return _selected_items_from_payload(payload, "fastq_files", indices_text, "FASTQ", lambda item: FastqFile(**item))
 
 
 def _selected_supplementary_from_payload(payload: dict, indices_text: str) -> list[dict]:
-    supp_items = payload.get("supplementary_files", [])
-    selected: list[dict] = []
+    return _selected_items_from_payload(payload, "supplementary_files", indices_text, "supplementary", dict)
+
+
+def _selected_items_from_payload(payload: dict, key: str, indices_text: str, label: str, build_item) -> list:
+    items = payload.get(key, [])
+    selected = []
     for index in _parse_indices(indices_text):
-        if index < 0 or index >= len(supp_items):
-            raise IndexError(f"supplementary index is out of range: {index}")
-        selected.append(dict(supp_items[index]))
+        if index < 0 or index >= len(items):
+            raise IndexError(f"{label} index is out of range: {index}")
+        selected.append(build_item(items[index]))
     return selected
 
 
