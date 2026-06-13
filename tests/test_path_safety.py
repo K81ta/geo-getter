@@ -40,6 +40,15 @@ class PathSafetyTest(unittest.TestCase):
         self.assertEqual(first, "\u00df.fastq.gz")
         self.assertEqual(second, "SS.2.fastq.gz")
 
+    def test_download_name_reserves_final_and_part_names(self):
+        used_keys = {name_collision_key("sample.fastq.gz.part")}
+
+        planned = reserve_unique_download_name("sample.fastq.gz", used_keys)
+
+        self.assertEqual(planned, "sample.2.fastq.gz")
+        self.assertIn(name_collision_key("sample.2.fastq.gz"), used_keys)
+        self.assertIn(name_collision_key("sample.2.fastq.gz.part"), used_keys)
+
     def test_safe_file_name_preserves_windows_reserved_and_unsafe_protection(self):
         self.assertEqual(safe_file_name("CON.txt", "download.txt"), "_CON.txt")
         self.assertEqual(safe_file_name("../escape:bad?.fastq.gz", "download.fastq.gz"), "_escape_bad_.fastq.gz")

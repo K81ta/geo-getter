@@ -31,7 +31,6 @@ from .path_safety import (
     existing_candidate_path,
     name_collision_key,
     quarantine_candidate_path,
-    reserved_download_names,
 )
 from .planner import (
     append_download_log,
@@ -277,7 +276,11 @@ def _build_cli_download_plan(
             resume_artifacts = validate_resume_artifacts(fastq_plan)
         reserved_output_names = [
             *reserved_output_names,
-            *(name for planned in fastq_plan.files for name in reserved_download_names(planned.local_path.name)),
+            *(
+                name
+                for planned in fastq_plan.files
+                for name in (planned.local_path.name, download_part_path(planned.local_path).name)
+            ),
         ]
 
     planned_supplementary = _planned_supplementary_files(run_output_dir, selected_supp, reserved_output_names) if selected_supp else []
