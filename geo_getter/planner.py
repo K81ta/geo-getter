@@ -516,13 +516,23 @@ def _artifact_prefix(value: str) -> str:
     return safe_file_name(value, "geo_getter_download")
 
 
+def plan_download_child_path(
+    output_dir: Path,
+    file_name: object,
+    default_name: str,
+    used_keys: set[str],
+) -> Path:
+    planned_name = safe_file_name(file_name, default_name)
+    planned_name = reserve_unique_download_name(planned_name, used_keys)
+    return child_path(output_dir, planned_name)
+
+
 def _planned_files(files: list[FastqFile], output_dir: Path) -> list[PlannedFile]:
     used_keys = {name_collision_key(name) for name in reserved_download_artifact_names(output_dir)}
     planned: list[PlannedFile] = []
     for item in files:
-        file_name = safe_file_name(item.file_name, "download.fastq.gz")
-        file_name = reserve_unique_download_name(file_name, used_keys)
-        planned.append(PlannedFile(fastq=item, local_path=child_path(output_dir, file_name)))
+        local_path = plan_download_child_path(output_dir, item.file_name, "download.fastq.gz", used_keys)
+        planned.append(PlannedFile(fastq=item, local_path=local_path))
     return planned
 
 

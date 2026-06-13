@@ -31,13 +31,14 @@ from .errors import (
     GeoGetterError,
 )
 from .models import DownloadPlan, FastqFile
-from .path_safety import child_path, name_collision_key, reserve_unique_download_name, reserved_download_names, safe_file_name
+from .path_safety import name_collision_key, reserved_download_names
 from .planner import (
     append_download_log,
     build_download_plan,
     download_log_path,
     fastq_manifest_path,
     initialize_log,
+    plan_download_child_path,
     ResumeArtifacts,
     reserved_download_artifact_names,
     supplementary_manifest_path,
@@ -565,9 +566,13 @@ def _planned_supplementary_files(
     used_keys = {name_collision_key(name) for name in reserved_names or []}
     planned: list[tuple[dict, Path]] = []
     for item in selected_supp:
-        file_name = safe_file_name(item.get("name", "") or "geo_supplementary_file", "geo_supplementary_file")
-        file_name = reserve_unique_download_name(file_name, used_keys)
-        planned.append((item, child_path(output_dir, file_name)))
+        local_path = plan_download_child_path(
+            output_dir,
+            item.get("name", "") or "geo_supplementary_file",
+            "geo_supplementary_file",
+            used_keys,
+        )
+        planned.append((item, local_path))
     return planned
 
 
