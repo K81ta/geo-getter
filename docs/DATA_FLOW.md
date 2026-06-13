@@ -12,6 +12,7 @@ GEOGetter は、入力された accession または GEO URL からファイル�
 | GEO SOFT | GEO record をテキストで取得する形式 |
 | SRA / ENA / Project / BioSample accession | raw sequencing data を ENA で探すための accession |
 | ENA Portal API | raw FASTQ の URL、期待 MD5、ファイルサイズを返す |
+| GitHub Releases API | アプリ更新確認で最新 release、installer asset、SHA256 digest を返す |
 
 ## 入力からファイル候補まで
 
@@ -44,6 +45,32 @@ GEO supplementary / processed file は GEO SOFT の `Series_supplementary_file` 
 
 supplementary / processed file は GEO 側の URL から保存する。raw FASTQ のように ENA `fastq_md5` を使った MD5 照合は行わない。
 
+## 保存前検査
+
+`選択ファイルをダウンロード` を押すと、GUI は実際のダウンロードを始める前に保存前検査を行う。
+
+```mermaid
+flowchart TD
+    Selection["GUI の選択状態"] --> LocalCheck["保存先・選択・書き込み可否・パス長を確認"]
+    LocalCheck --> Preflight["preflight-json"]
+    Preflight --> Plan["保存予定 path・manifest/log path・容量を計画"]
+    Plan --> Existing{"保存先に既存ファイルあり"}
+    Existing -->|no| Download["selected-download-json"]
+    Existing -->|yes, FASTQ only| Confirm["再開確認"]
+    Confirm -->|承認| ResumePreflight["preflight-json --resume-existing"]
+    ResumePreflight --> Download
+    Confirm -->|キャンセル| Stop["停止"]
+    Existing -->|supplementary を含む| Stop
+```
+
+GUI 側では、保存先が空でないこと、保存先が既存ファイルではないこと、フォルダを作成できること、一時ファイルを書き込めること、予定 path が長すぎないことを確認する。
+
+Python 側の `preflight-json` は、選択 index を実ファイル候補に戻し、保存名の衝突を避けた最終 `local_path`、manifest path、download log path、`.part` path、必要容量、空き容量を返す。preflight は保存先フォルダを作成することがあるが、manifest、download log、選択ファイルは作成しない。
+
+既存ファイルがある保存フォルダで supplementary / processed file を保存することはできない。既存ファイルがあり、選択が FASTQ だけの場合は、GUI が再開確認を出す。承認された場合だけ、既存 FASTQ manifest と download log が今回の FASTQ 選択と一致するかを確認してから続行する。
+
+FASTQ の必要容量は ENA `fastq_bytes` の合計である。再開時は完成済み FASTQ と途中 `.part` を差し引いた残り容量を使う。supplementary / processed file は事前サイズを確定しないため、必要容量には入れない。
+
 ## 保存時に作成される情報
 
 検索後、GUI の保存先欄には実際に保存する accession フォルダが表示される。選択したファイルは、保存先欄に表示されたフォルダ直下に保存する。
@@ -65,6 +92,8 @@ GEO supplementary / processed file を選んだ場合は `*_supplementary_manife
 
 保存済み FASTQ をあとから確認した場合は、manifest と同じフォルダに `verification_report.tsv` が作成される。
 
+保存名は Windows のファイル名として安全な形に変換される。同じ保存名が複数ある場合は `same.fastq.gz`, `same.2.fastq.gz` のように suffix を付ける。大文字小文字だけが違う名前も Windows 上では同じ path になるため、衝突として扱う。manifest や download log と同じ名前になる候補も避ける。
+
 ## 完全性確認の違い
 
 | 種別 | URL の取得元 | MD5 照合 | 主な成功 status |
@@ -79,13 +108,41 @@ GEO supplementary / processed file を選んだ場合は `*_supplementary_manife
 
 ## 途中ファイルと既存ファイル
 
-ダウンロード中のファイルは `.part` として保存される。同じ保存パスに `.part` が残っている場合は、HTTP Range で再開を試みる。通信失敗、HTTP 429、HTTP 5xx は指数バックオフ後に再試行し、再試行しても保存できなかった場合は `network_failed` として記録する。
+ダウンロード中のファイルは `.part` として保存される。同じ保存パスに `.part` が残っている場合は、HTTP Range で再開を試みる。HTTP 206 と妥当な `Content-Range` が返れば追記し、そうでなければ最初から取り直す。
+
+通信失敗、HTTP 429、HTTP 5xx は最大 4 回まで再試行する。`Retry-After` がある場合はその待機時間を使い、ない場合は 1 秒、3 秒、9 秒の順に待機する。再試行待機中は GUI の status が「通信再試行待機中」になる。再試行しても保存できなかった場合は `network_failed` として記録する。
+
+FASTQ は 1 から 4 件まで同時に保存でき、既定値は 2 である。進捗はファイル単位の bytes と、選択 FASTQ 全体の aggregate bytes の両方で GUI に渡される。
 
 既存ファイルがある保存フォルダで FASTQ を再開する場合は、既存の `*_fastq_manifest.tsv` と `*_download_log.tsv` が今回の FASTQ 選択と一致する場合だけ続行する。過去の `*_download_log.tsv` に GEO supplementary / processed file の記録があっても、今回の FASTQ 選択とは別に扱う。一致しない場合や必要な記録がない場合は、推測で続行せず停止する。
 
 完成済みの同名 FASTQ は、期待サイズがある場合はサイズも確認したうえで、期待 MD5 が一致する場合だけ再利用する。MD5 が合わない場合、期待サイズがあるのにサイズが合わない場合、または期待 MD5 がない既存 FASTQ は、正式ファイル名のまま使わず別名に退避して取り直す。
 
 GEO supplementary / processed file は MD5 照合を行わない。既存ファイルがある保存フォルダでは保存せず、空の保存先を選ぶ必要がある。
+
+## アプリ更新確認
+
+`ヘルプ > 更新を確認` / `Help > Check for updates` は、GitHub Releases API の latest release を確認する。
+
+```mermaid
+flowchart TD
+    Menu["更新を確認"] --> Check["check-update-json"]
+    Check --> Release["GitHub latest release"]
+    Release --> Version{"latest version > current version"}
+    Version -->|no| Latest["最新版として終了"]
+    Version -->|yes| Asset["GEOGetter-Setup-v{version}.exe と SHA256 digest を確認"]
+    Asset --> Prompt["GUI が更新インストーラー取得を確認"]
+    Prompt -->|承認| DownloadInstaller["download-update-json"]
+    Prompt -->|キャンセル| StopUpdate["停止"]
+    DownloadInstaller --> Part["installer.part に保存"]
+    Part --> Sha256["SHA256 を計算して release digest と照合"]
+    Sha256 -->|一致| StartInstaller["インストーラーを起動して GEOGetter を終了"]
+    Sha256 -->|不一致| Error["更新を中止"]
+```
+
+更新確認では、latest release tag と現在の package version を数値として比較する。新しい version がある場合は、latest release に `GEOGetter-Setup-v<version>.exe` があり、その asset に `sha256:<64 hex>` 形式の digest があることを要求する。
+
+更新インストーラーの取得も通常の downloader を使うため、`.part`、サイズ確認、HTTP Range、HTTP 429 / 5xx 再試行、`Retry-After` に対応する。取得後に SHA256 が digest と一致した場合だけ正式な `.exe` として保存し、GUI がそのインストーラーを起動してアプリを終了する。
 
 ## FASTQ が見つからない場合
 

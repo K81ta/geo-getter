@@ -34,6 +34,8 @@ GEOGetter の入口は、入力欄に貼り付けられた accession または G
 | supplementary manifest | supplementary / processed file の URL と保存パス |
 | download log | ファイルごとの保存結果 |
 | verification report | 保存済み FASTQ manifest の再確認結果 |
+| download preflight result | 保存前の保存先、容量、予定パス、再開可否の検査結果 |
+| update installer | GitHub Releases から取得して SHA256 を確認した更新インストーラー |
 
 ## 全体構成
 
@@ -42,25 +44,35 @@ flowchart TD
     User["ユーザー"] --> Launcher["start_geo_getter.vbs / installer shortcut"]
     Launcher --> GUI["GEOGetter.ps1\nPowerShell WinForms"]
     GUI --> ResolveCLI["python -m geo_getter.cli resolve-json"]
+    GUI --> PreflightCLI["python -m geo_getter.cli preflight-json"]
     GUI --> DownloadCLI["python -m geo_getter.cli selected-download-json"]
     GUI --> VerifyCLI["python -m geo_getter.cli verify-manifest-json"]
+    GUI --> UpdateCheckCLI["python -m geo_getter.cli check-update-json"]
+    GUI --> UpdateDownloadCLI["python -m geo_getter.cli download-update-json"]
     ResolveCLI --> Resolver["MetadataResolver"]
     Resolver --> GEO["GeoProvider\nNCBI GEO SOFT"]
     Resolver --> ENA["EnaProvider\nENA filereport"]
+    PreflightCLI --> Planner["planner.py\n保存計画・manifest・log"]
     DownloadCLI --> Planner["planner.py\n保存計画・manifest・log"]
     DownloadCLI --> Downloader["downloader.py\n.part・Range・MD5"]
     VerifyCLI --> Planner
+    UpdateCheckCLI --> Updater["updater.py\nGitHub Releases・version・digest"]
+    UpdateDownloadCLI --> Updater
+    Updater --> GitHub["GitHub Releases API"]
+    Updater --> Downloader
     Planner --> Output["accession別保存フォルダ"]
     Downloader --> Output
+    Updater --> Installer["更新インストーラー"]
 ```
 
 | 層 | 担当 | 責務 |
 | --- | --- | --- |
 | Launcher | `start_geo_getter.vbs`, `start_geo_getter.bat` | PowerShell WinForms GUI を STA で起動する |
-| GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、非同期実行、進捗、キャンセル |
-| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存処理、manifest 再確認 |
+| GUI | `GEOGetter.ps1` | 入力、表示、選択、保存先、保存前検査、非同期実行、進捗、キャンセル、更新確認 |
+| CLI bridge | `geo_getter/cli.py` | GUI 用 JSON 入出力、index 選択、保存前検査、保存処理、manifest 再確認、更新確認 |
 | Metadata core | `accession.py`, `providers/*` | accession 抽出、GEO/ENA 問い合わせ、候補統合 |
-| Download core | `planner.py`, `downloader.py`, `path_safety.py` | 出力先決定、manifest/log、容量確認、ファイル名安全化、ダウンロード、MD5 検証 |
+| Download core | `planner.py`, `downloader.py`, `path_safety.py` | 出力先決定、manifest/log、容量確認、ファイル名安全化、並列ダウンロード、`.part` 再開、MD5 検証 |
+| Update core | `updater.py`, `http_client.py`, `hashing.py` | GitHub 最新リリース確認、installer asset 選択、SHA256 digest 検証、更新インストーラー取得 |
 
 ## 内部実行フロー
 
@@ -113,7 +125,45 @@ FASTQ 表と supplementary 表では、ソート後も元の配列と対応で�
 
 Python 側では、これを `resolve-json` の `fastq_files` / `supplementary_files` 配列 index として扱う。
 
-### 4. 選択ファイルのダウンロード
+### 4. 保存前検査
+
+GUI はダウンロード subprocess を起動する前に、PowerShell 側のローカル検査と Python 側の保存計画検査を行う。
+
+PowerShell 側では次を確認する。
+
+- 現在の入力と保持している `resolve-json` 結果が一致している。
+- FASTQ または supplementary / processed file が 1 件以上選択されている。
+- 保存先が空でない文字列で、既存ファイルではない。
+- 保存先フォルダを作成でき、一時ファイルを書き込み・削除できる。
+- 保存先と予定パスが Windows の通常パス長制限に収まる。
+
+続いて、次の内部 CLI を同期実行する。
+
+```powershell
+python -m geo_getter.cli preflight-json `
+  --input-json <resolved-json> `
+  --fastq-indices <selected-fastq-indices> `
+  --supp-indices <selected-supp-indices> `
+  --out <output-dir> `
+  [--resume-existing]
+```
+
+`preflight-json` は `selected-download-json` と同じ index 選択、保存名予約、FASTQ plan、supplementary plan、再開 artifact 検査を使う。ただし、manifest、download log、実ファイルは保存しない。保存先フォルダは、検査のために作成されることがある。
+
+`preflight-json` は次を返す。
+
+- 実保存フォルダ
+- 既存ファイルの有無
+- FASTQ の必要容量と空き容量
+- 容量検査の実施有無と結果
+- 再開時に必要な残り容量
+- 作成予定の manifest / download log path
+- FASTQ / supplementary の最終保存予定 path
+- `.part` や衝突回避名を含む予定 path 一覧
+
+既存ファイルがある保存フォルダでは、supplementary / processed file を選んでいる場合は停止する。FASTQ だけの場合は GUI がユーザーに再開確認を出し、承認された場合だけ `--resume-existing` を付けて preflight を再実行する。
+
+### 5. 選択ファイルのダウンロード
 
 GUI のダウンロード処理は次の内部 CLI を非同期 subprocess として起動する。
 
@@ -123,12 +173,15 @@ python -m geo_getter.cli selected-download-json `
   --fastq-indices <selected-fastq-indices> `
   --supp-indices <selected-supp-indices> `
   --out <output-dir> `
+  --download-workers <1-4> `
   [--resume-existing]
 ```
 
 `--out` は実保存フォルダである。GUI は検索成功後に `Downloads\GEOGetter\<primary_accession>` を保存先欄に表示し、ユーザーが保存先を変更した場合も、そのフォルダを実保存フォルダとして CLI に渡す。
 
 `--resume-existing` は、既存ファイルがある実保存フォルダで FASTQ ダウンロードを再開する場合だけ GUI が付ける。通常の新規保存では付けない。
+
+`--download-workers` は FASTQ の同時ダウンロード数である。GUI の `同時FASTQ` / `FASTQ workers` から 1 から 4 の値を渡す。既定値は 2 である。supplementary / processed file は FASTQ manifest と MD5 検証の対象外であり、FASTQ 保存後に順番に保存する。
 
 ```text
 Downloads/GEOGetter/
@@ -139,7 +192,7 @@ Downloads/GEOGetter/
     SRR1039508_1.fastq.gz
 ```
 
-### 5. 保存済み FASTQ manifest 再確認
+### 6. 保存済み FASTQ manifest 再確認
 
 GUI の `ツール > 保存済みFASTQを確認` は、保存済みの `*_fastq_manifest.tsv` を選び、次の内部 CLI を非同期 subprocess として起動する。
 
@@ -153,9 +206,29 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
 
 再確認では、manifest の `local_path` を優先してファイルを探す。フォルダ移動などで絶対パスが古く、同じフォルダに `file_name` のファイルが存在する場合は、manifest と同じフォルダのファイルを確認対象にする。
 
-### 6. 進捗と終了
+### 7. 更新確認
 
-`selected-download-json` は stdout に JSON Lines を出す。GUI は stdout を 1 行ずつ読み取り、進捗バー、ログ、完了表示を更新する。
+GUI の `ヘルプ > 更新を確認` / `Help > Check for updates` は、次の内部 CLI を非同期 subprocess として起動する。
+
+```powershell
+python -m geo_getter.cli check-update-json
+```
+
+`check-update-json` は GitHub Releases API の latest release を取得し、現在の `geo_getter.__version__` と latest release tag を比較する。新しい version がある場合は、`GEOGetter-Setup-v<version>.exe` asset を探し、GitHub release asset の `digest` から `sha256:<64 hex>` を取り出して GUI に返す。
+
+更新がある場合、GUI は確認ダイアログを表示する。ユーザーが承認すると、次の内部 CLI を非同期 subprocess として起動する。
+
+```powershell
+python -m geo_getter.cli download-update-json --version <latest-version>
+```
+
+`download-update-json` は、既定では `%TEMP%\GEOGetter\updates\<version>` に更新インストーラーを保存する。ダウンロード中は `<installer>.part` を使い、`downloader.py` の通常ダウンロード関数でサイズ検査、HTTP Range、HTTP 429 / 5xx 再試行、`Retry-After` を扱う。取得後に SHA256 を計算し、GitHub release asset digest と一致した場合だけ正式ファイル名に置き換える。
+
+GUI は検証済みインストーラーを起動し、GEOGetter を終了する。SHA256 不一致、asset 不足、digest 不足、通信失敗、保存先 I/O 失敗は更新処理の error として表示する。
+
+### 8. 進捗と終了
+
+`preflight-json`、`selected-download-json`、`verify-manifest-json`、`check-update-json`、`download-update-json` は stdout に JSON を出す。継続的な進捗を返すのは `selected-download-json` であり、stdout に JSON Lines を出す。GUI は stdout を 1 行ずつ読み取り、進捗バー、ログ、完了表示を更新する。
 
 `progress`:
 
@@ -165,7 +238,10 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
   "kind": "fastq",
   "file_name": "SRR000001_1.fastq.gz",
   "downloaded": 1048576,
-  "total": 5242880
+  "total": 5242880,
+  "aggregate_downloaded": 1048576,
+  "aggregate_total": 10485760,
+  "download_workers": 2
 }
 ```
 
@@ -191,7 +267,8 @@ python -m geo_getter.cli verify-manifest-json --manifest <fastq-manifest>
   "supplementary_manifest": "C:\\path\\GSE52778\\GSE52778_supplementary_manifest.tsv",
   "download_log": "C:\\path\\GSE52778\\GSE52778_download_log.tsv",
   "resume_existing": false,
-  "resume_required_bytes": null
+  "resume_required_bytes": null,
+  "download_workers": 2
 }
 ```
 
@@ -269,6 +346,22 @@ FASTQ 候補生成に使う field:
 
 `ftp.sra.ebi.ac.uk/...` と `ftp://ftp.sra.ebi.ac.uk/...` は `https://ftp.sra.ebi.ac.uk/...` に正規化する。それ以外の URL 形式は、明示的な変換対象でない限りそのまま使う。
 
+### GitHub Releases API
+
+更新確認は GitHub Releases API の latest release を使う。
+
+```text
+https://api.github.com/repos/K81ta/geo-getter/releases/latest
+```
+
+`check-update-json` は `tag_name` から latest version を読み、現在の package version と数値比較する。新しい version がある場合は、次の asset を更新インストーラーとして扱う。
+
+```text
+GEOGetter-Setup-v<version>.exe
+```
+
+更新インストーラーの完全性確認には GitHub release asset の `digest` を使う。`digest` は `sha256:<64 hex>` 形式である必要がある。
+
 ## 内部データ形式
 
 ### `resolve-json`
@@ -329,6 +422,77 @@ FASTQ 候補生成に使う field:
 | `estimated_type` | 表示用に推定した種別。`geo_raw_archive`, `fastq_like_supplementary`, `count_matrix`, `genome_track`, `table_text`, `archive`, `other` のいずれか |
 | `size_status` | supplementary / processed file は事前サイズを確定しないため `unknown` |
 | `verification_status` | supplementary / processed file は FASTQ MD5 検証対象外のため `not_applicable` |
+
+### `preflight-json`
+
+`preflight-json` は、保存開始前に Python 側の保存計画を GUI へ返す内部 JSON bridge である。通常の CLI help には表示しない。
+
+```json
+{
+  "event": "done",
+  "kind": "download_preflight",
+  "output_dir": "C:\\path\\GSE52778",
+  "existing_output_nonempty": false,
+  "required_bytes": 10485760,
+  "free_bytes": 107374182400,
+  "capacity_checked": true,
+  "capacity_ok": true,
+  "capacity_error_code": null,
+  "resume_existing": false,
+  "resume_required_bytes": null,
+  "fastq_manifest": "C:\\path\\GSE52778\\GSE52778_fastq_manifest.tsv",
+  "supplementary_manifest": "C:\\path\\GSE52778\\GSE52778_supplementary_manifest.tsv",
+  "download_log": "C:\\path\\GSE52778\\GSE52778_download_log.tsv",
+  "planned_paths": [],
+  "fastq_files": [],
+  "supplementary_files": []
+}
+```
+
+`planned_paths` には、実保存フォルダ、manifest、download log、最終保存名、`.part`、衝突回避のため予約した runtime path が入る。GUI はこの一覧を使って保存開始前にパス長を検査する。
+
+`capacity_checked` は、空フォルダへの新規保存、または `--resume-existing` 付きの再開で `true` になる。既存ファイルがあるフォルダに `--resume-existing` なしで試す最初の preflight では、再開確認のために `existing_output_nonempty` を返し、容量不足としては止めない。
+
+`fastq_files` と `supplementary_files` は、Python 側で決めた最終 `local_path` を GUI が確認するための配列である。FASTQ の容量計算は ENA `fastq_bytes` を使う。supplementary / processed file は事前サイズを確定しないため、必要容量には入れない。
+
+### `check-update-json`
+
+`check-update-json` は、更新確認結果を 1 つの JSON として返す。通常の CLI help には表示しない。
+
+```json
+{
+  "event": "done",
+  "kind": "update_check",
+  "current_version": "0.1.4",
+  "latest_version": "0.1.5",
+  "update_available": true,
+  "release_url": "https://github.com/K81ta/geo-getter/releases/tag/v0.1.5",
+  "asset": {
+    "name": "GEOGetter-Setup-v0.1.5.exe",
+    "size": 12345678,
+    "digest": "sha256:<64 hex>",
+    "sha256": "<64 hex>",
+    "download_url": "https://github.com/K81ta/geo-getter/releases/download/v0.1.5/GEOGetter-Setup-v0.1.5.exe"
+  }
+}
+```
+
+最新版の場合は `update_available` が `false` になり、`asset` は `null` になる。
+
+### `download-update-json`
+
+`download-update-json` は、検証済み更新インストーラーの保存結果を返す。通常の CLI help には表示しない。
+
+```json
+{
+  "event": "done",
+  "kind": "update_installer",
+  "version": "0.1.5",
+  "installer_path": "C:\\Users\\<user>\\AppData\\Local\\Temp\\GEOGetter\\updates\\0.1.5\\GEOGetter-Setup-v0.1.5.exe",
+  "sha256": "<64 hex>",
+  "bytes": 12345678
+}
+```
 
 ### 出力ファイル
 
@@ -412,23 +576,28 @@ FASTQ と supplementary file は完全性の扱いが違う。
 FASTQ 保存処理:
 
 1. 保存先フォルダを作る。
-2. 既存ファイルがあるフォルダで `--resume-existing` がない場合は停止する。
-3. `--resume-existing` がある場合は、既存 FASTQ manifest と download log が今回の FASTQ 選択と一致することを確認する。
-4. 再開時は、完成済み FASTQ と `.part` を考慮した残り必要容量を保存先空き容量と比較する。新規保存時は選択 FASTQ の合計 `size_bytes` を比較する。
-5. FASTQ manifest と download log を準備する。再開時の FASTQ manifest と download log は既存内容を保持し、download log に追記する。
-6. 完成済み同名ファイルがある場合、期待サイズがあればサイズも確認し、期待 MD5 が一致すれば再利用する。
-7. 完成済み同名ファイルのサイズまたは MD5 が不一致、または期待 MD5 がない場合は quarantine 名に退避して取り直す。
-8. 期待 MD5 がある完成済み `.part` は、サイズと MD5 が妥当なら正式ファイル名へ昇格する。期待 MD5 がない完成済み `.part` は再利用しない。
-9. 途中 `.part` がある場合、HTTP `Range` で再開を試みる。期待 MD5 がない場合も、同じ local path の途中 `.part` であれば Range 再開の対象になる。
-10. 保存後、期待 MD5 があれば照合する。
-11. MD5 一致なら `.part` を正式ファイル名へ置き換える。
-12. 期待 MD5 がなければ正式ファイル名へ置き換え、actual MD5 は計算せずに `md5_unavailable` を記録する。
-13. MD5 不一致またはサイズ過大なら正式名にせず quarantine 名へ退避する。
-14. 結果を download log に追記する。
+2. 保存前に `preflight-json` で保存予定 path、空き容量、既存フォルダ状態を確認する。
+3. 既存ファイルがあるフォルダで `--resume-existing` がない場合は停止する。
+4. `--resume-existing` がある場合は、既存 FASTQ manifest と download log が今回の FASTQ 選択と一致することを確認する。
+5. 再開時は、完成済み FASTQ と `.part` を考慮した残り必要容量を保存先空き容量と比較する。新規保存時は選択 FASTQ の合計 `size_bytes` を比較する。
+6. FASTQ manifest と download log を準備する。再開時の FASTQ manifest と download log は既存内容を保持し、download log に追記する。
+7. FASTQ は `--download-workers` の値に応じて 1 から 4 並列で保存する。
+8. 完成済み同名ファイルがある場合、期待サイズがあればサイズも確認し、期待 MD5 が一致すれば再利用する。
+9. 完成済み同名ファイルのサイズまたは MD5 が不一致、または期待 MD5 がない場合は quarantine 名に退避して取り直す。
+10. 期待 MD5 がある完成済み `.part` は、サイズと MD5 が妥当なら正式ファイル名へ昇格する。期待 MD5 がない完成済み `.part` は再利用しない。
+11. 途中 `.part` がある場合、HTTP `Range` で再開を試みる。期待 MD5 がない場合も、同じ local path の途中 `.part` であれば Range 再開の対象になる。
+12. 通信失敗、HTTP 429、HTTP 5xx は最大 4 回まで再試行する。`Retry-After` があればそれを優先し、なければ 1 秒、3 秒、9 秒の待機を使う。
+13. 保存後、期待 MD5 があれば照合する。
+14. MD5 一致なら `.part` を正式ファイル名へ置き換える。
+15. 期待 MD5 がなければ正式ファイル名へ置き換え、actual MD5 は計算せずに `md5_unavailable` を記録する。
+16. MD5 不一致またはサイズ過大なら正式名にせず quarantine 名へ退避する。
+17. 結果を download log に追記する。
 
 quarantine 名には、`bad-md5-existing`、`size-mismatch-existing`、`unverified-existing`、`bad-md5`、`size-mismatch` などの理由と UTC timestamp を含める。
 
 supplementary file は同じ `.part` ダウンロード関数を使うが、FASTQ manifest と MD5 照合は使わない。既存ファイルがある保存フォルダでは supplementary file の保存を停止する。
+
+更新インストーラーも同じ `.part` ダウンロード関数を使う。FASTQ manifest や download log には記録せず、GitHub release asset digest の SHA256 と一致した場合だけ正式な `.exe` として保存する。
 
 ## status とエラー
 
@@ -450,3 +619,16 @@ Python 側の status / error code は英語で統一する。GUI の主要ラベ
 保存済み FASTQ manifest 再確認では、すべての FASTQ が `md5_verified` の場合だけ終了コード `0` を返す。`md5_unavailable`, `missing`, `size_mismatch`, `md5_mismatch` がある場合は、`verification_report.tsv` を作成したうえで終了コード `1` を返す。
 
 ファイル単位の失敗は download log に残し、次のファイル処理へ進む。metadata 解決時に情報が不足した場合は `warnings` に記録し、該当する項目は空欄のまま返す。
+
+主な update error code:
+
+| code | 意味 |
+| --- | --- |
+| `update_not_available` | 指定 version の新しい更新がない |
+| `update_asset_missing` | latest release に期待する installer asset がない |
+| `update_asset_url_missing` | installer asset に download URL がない |
+| `update_digest_missing` | installer asset に SHA256 digest がない |
+| `update_digest_invalid` | digest が `sha256:<64 hex>` 形式ではない |
+| `update_download_failed` | installer の取得または保存に失敗した |
+| `update_sha256_mismatch` | 取得した installer の SHA256 が release asset digest と一致しない |
+| `update_version_invalid` | release tag または version 文字列を比較できない |
