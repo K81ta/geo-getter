@@ -888,7 +888,7 @@ function Invoke-JsonBridgeHandlerError {
 
 function Set-JsonBridgeStartFailure {
     param(
-        [ValidateSet("resolve", "verification")]
+        [ValidateSet("resolve", "download", "verification", "update")]
         [string]$OperationName,
         [string]$CommandName,
         [string]$StartFailurePhase,
@@ -901,7 +901,7 @@ function Set-JsonBridgeStartFailure {
 
 function Start-JsonBridgeOperation {
     param(
-        [ValidateSet("resolve", "verification")]
+        [ValidateSet("resolve", "download", "verification", "update")]
         [string]$OperationName,
         [string]$CommandName,
         [string]$StartFailurePhase,
@@ -2267,61 +2267,31 @@ function Start-UpdateProcess {
     $progressBar.MarqueeAnimationSpeed = 30
     $progressBar.Value = 0
     $statusLabel.Text = T $StatusKey
-    Start-GeoGetterPythonProcess `
+    $commandName = (Get-OperationState "update").LastCommand
+    Start-JsonBridgeOperation `
         -OperationName "update" `
+        -CommandName $commandName `
+        -StartFailurePhase "update_process_start" `
         -CreateStartInfo { New-UpdateProcessStartInfo $Arguments } `
-        -OutputHandler ([System.Action[string]]{
+        -CompleteIfReady { Complete-UpdateIfReady } `
+        -OnOutputLine {
             param($line)
-            Append-OperationProcessOutput "update" "stdout" $line
             try {
                 Handle-UpdateLine $line
             }
             catch {
                 try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
             }
-        }) `
-        -ErrorHandler ([System.Action[string]]{
+        } `
+        -OnErrorLine {
             param($line)
-            Append-OperationProcessOutput "update" "stderr" $line
             try {
                 Handle-UpdateErrorLine $line
             }
             catch { }
-        }) `
-        -ExitHandler ([System.Action[int]]{
-            param($code)
-            try {
-                Set-OperationExitObserved "update" $code
-                Complete-UpdateIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -OutputClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "update" "stdout"
-                Complete-UpdateIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -ErrorClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "update" "stderr"
-                Complete-UpdateIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -SetProcess { param($value) Set-OperationProcess "update" $value } `
-        -SetBridge { param($value) Set-OperationBridge "update" $value } `
+        } `
         -OnStartFailure {
             param($message)
-            (Get-OperationState "update").LastStartError = $message
-            $script:LastOperationError = New-OperationError "update_process_start" (Get-OperationState "update").LastCommand "process_start_failed" (Get-OperationState "update").LastStartError (Get-OperationState "update").LastStartError "process_start" $null
             $progressBar.Style = "Continuous"
             $progressBar.Value = 0
             Set-Busy $false
@@ -2465,61 +2435,27 @@ function Start-DownloadProcess {
     $progressBar.Style = "Continuous"
     $progressBar.Value = 0
     $statusLabel.Text = T "downloading"
-    Start-GeoGetterPythonProcess `
+    Start-JsonBridgeOperation `
         -OperationName "download" `
+        -CommandName "selected-download-json" `
+        -StartFailurePhase "download_process_start" `
         -CreateStartInfo { New-DownloadProcessStartInfo $fastqIndices $suppIndices $resumeExisting } `
-        -OutputHandler ([System.Action[string]]{
+        -CompleteIfReady { Complete-DownloadIfReady } `
+        -OnOutputLine {
             param($line)
-            Append-OperationProcessOutput "download" "stdout" $line
             try {
                 Handle-DownloadLine $line
             }
             catch {
                 try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
             }
-        }) `
-        -ErrorHandler ([System.Action[string]]{
+        } `
+        -OnErrorLine {
             param($line)
-            Append-OperationProcessOutput "download" "stderr" $line
             try {
                 Handle-DownloadErrorLine $line
             }
             catch { }
-        }) `
-        -ExitHandler ([System.Action[int]]{
-            param($code)
-            try {
-                Set-OperationExitObserved "download" $code
-                Complete-DownloadIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -OutputClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "download" "stdout"
-                Complete-DownloadIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -ErrorClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "download" "stderr"
-                Complete-DownloadIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -SetProcess { param($value) Set-OperationProcess "download" $value } `
-        -SetBridge { param($value) Set-OperationBridge "download" $value } `
-        -OnStartFailure {
-            param($message)
-            (Get-OperationState "download").LastStartError = $message
-            $script:LastOperationError = New-OperationError "download_process_start" "selected-download-json" "process_start_failed" (Get-OperationState "download").LastStartError (Get-OperationState "download").LastStartError "process_start" $null
         }
 }
 
