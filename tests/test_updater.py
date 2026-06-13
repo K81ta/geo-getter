@@ -1,10 +1,15 @@
 import hashlib
-import http.client
 import tempfile
 import unittest
-import urllib.error
 from pathlib import Path
+from unittest import mock
 
+from geo_getter.downloader import (
+    DownloadedPart,
+    DownloadLocalIoError,
+    DownloadNetworkError,
+    DownloadSizeMismatchError,
+)
 from geo_getter.errors import GeoGetterError
 from geo_getter.updater import (
     GITHUB_API_HEADERS,
@@ -16,38 +21,6 @@ from geo_getter.updater import (
     extract_sha256_digest,
     installer_asset_name,
 )
-
-
-class FakeResponse:
-    def __init__(self, data: bytes):
-        self.data = data
-        self.offset = 0
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def read(self, size: int = -1) -> bytes:
-        if self.offset >= len(self.data):
-            return b""
-        if size < 0:
-            size = len(self.data) - self.offset
-        chunk = self.data[self.offset : self.offset + size]
-        self.offset += len(chunk)
-        return chunk
-
-
-class FailingReadResponse:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def read(self, size: int = -1) -> bytes:
-        raise http.client.IncompleteRead(b"partial")
 
 
 class UpdaterTest(unittest.TestCase):
@@ -72,6 +45,11 @@ class UpdaterTest(unittest.TestCase):
         with self.assertRaises(GeoGetterError) as context:
             callback(*args, **kwargs)
         self.assertEqual(context.exception.code, code)
+
+    def write_downloaded_part(self, local_path, data):
+        part_path = local_path.with_name(local_path.name + ".part")
+        part_path.write_bytes(data)
+        return DownloadedPart(part_path, len(data))
 
     def test_version_comparison_is_numeric(self):
         self.assertGreater(compare_versions("0.1.10", "0.1.9"), 0)
@@ -132,9 +110,21 @@ class UpdaterTest(unittest.TestCase):
         data = b"verified installer"
         release = self.release_payload(data=data)
         fetcher = lambda *_args, **_kwargs: release
-        opener = lambda *_args, **_kwargs: FakeResponse(data)
+        calls = []
+
+        def download_installer(url, local_path, **kwargs):
+            calls.append((url, local_path, kwargs))
+            self.assertFalse(local_path.with_name(local_path.name + ".part").exists())
+            return self.write_downloaded_part(local_path, data)
+
         with tempfile.TemporaryDirectory() as temp:
-            payload = download_update_installer("0.1.4", output_dir=temp, current_version="0.1.3", fetcher=fetcher, opener=opener)
+            installer_path = Path(temp) / installer_asset_name("0.1.4")
+            installer_path.write_bytes(b"old installer")
+            stale_part = installer_path.with_name(installer_path.name + ".part")
+            stale_part.write_bytes(b"stale part")
+
+            with mock.patch("geo_getter.updater.download_url_to_part", side_effect=download_installer):
+                payload = download_update_installer("0.1.4", output_dir=temp, current_version="0.1.3", fetcher=fetcher)
             installer_path = Path(payload["installer_path"])
 
             self.assertEqual(payload["kind"], "update_installer")
@@ -142,61 +132,80 @@ class UpdaterTest(unittest.TestCase):
             self.assertEqual(payload["bytes"], len(data))
             self.assertTrue(installer_path.exists())
             self.assertEqual(installer_path.read_bytes(), data)
+            self.assertFalse(stale_part.exists())
+            self.assertEqual(
+                calls,
+                [
+                    (
+                        release["assets"][0]["browser_download_url"],
+                        installer_path,
+                        {"expected_size": len(data)},
+                    )
+                ],
+            )
 
     def test_download_failure_does_not_return_installer_path(self):
         release = self.release_payload()
         fetcher = lambda *_args, **_kwargs: release
 
-        def fail_open(*_args, **_kwargs):
-            raise urllib.error.URLError("temporary failure")
+        def fail_download(_url, local_path, **_kwargs):
+            self.write_downloaded_part(local_path, b"partial")
+            raise DownloadNetworkError("temporary failure")
 
         with tempfile.TemporaryDirectory() as temp:
-            self.assert_geo_error(
-                "update_download_failed",
-                download_update_installer,
-                "0.1.4",
-                output_dir=temp,
-                current_version="0.1.3",
-                fetcher=fetcher,
-                opener=fail_open,
-            )
+            with mock.patch("geo_getter.updater.download_url_to_part", side_effect=fail_download):
+                self.assert_geo_error(
+                    "update_download_failed",
+                    download_update_installer,
+                    "0.1.4",
+                    output_dir=temp,
+                    current_version="0.1.3",
+                    fetcher=fetcher,
+                )
             self.assertFalse(list(Path(temp).glob("*.exe")))
+            self.assertFalse(list(Path(temp).glob("*.part")))
 
     def test_download_size_mismatch_does_not_return_installer_path(self):
         data = b"short installer"
         release = self.release_payload(data=data)
         release["assets"][0]["size"] = len(data) + 1
         fetcher = lambda *_args, **_kwargs: release
-        opener = lambda *_args, **_kwargs: FakeResponse(data)
+
+        def fail_size(_url, local_path, **_kwargs):
+            self.write_downloaded_part(local_path, data)
+            raise DownloadSizeMismatchError(f"expected={len(data) + 1} actual={len(data)}")
 
         with tempfile.TemporaryDirectory() as temp:
-            self.assert_geo_error(
-                "update_download_failed",
-                download_update_installer,
-                "0.1.4",
-                output_dir=temp,
-                current_version="0.1.3",
-                fetcher=fetcher,
-                opener=opener,
-            )
+            with mock.patch("geo_getter.updater.download_url_to_part", side_effect=fail_size):
+                self.assert_geo_error(
+                    "update_download_failed",
+                    download_update_installer,
+                    "0.1.4",
+                    output_dir=temp,
+                    current_version="0.1.3",
+                    fetcher=fetcher,
+                )
             self.assertFalse(list(Path(temp).glob("*.exe")))
             self.assertFalse(list(Path(temp).glob("*.part")))
 
-    def test_incomplete_read_cleans_part_and_reports_download_failure(self):
+    def test_local_io_failure_cleans_part_and_reports_download_failure(self):
         release = self.release_payload()
         fetcher = lambda *_args, **_kwargs: release
-        opener = lambda *_args, **_kwargs: FailingReadResponse()
+
+        def fail_local_io(_url, local_path, **_kwargs):
+            self.write_downloaded_part(local_path, b"partial")
+            raise DownloadLocalIoError("could not write partial download")
 
         with tempfile.TemporaryDirectory() as temp:
-            self.assert_geo_error(
-                "update_download_failed",
-                download_update_installer,
-                "0.1.4",
-                output_dir=temp,
-                current_version="0.1.3",
-                fetcher=fetcher,
-                opener=opener,
-            )
+            with mock.patch("geo_getter.updater.download_url_to_part", side_effect=fail_local_io):
+                self.assert_geo_error(
+                    "update_download_failed",
+                    download_update_installer,
+                    "0.1.4",
+                    output_dir=temp,
+                    current_version="0.1.3",
+                    fetcher=fetcher,
+                )
             self.assertFalse(list(Path(temp).glob("*.exe")))
             self.assertFalse(list(Path(temp).glob("*.part")))
 
@@ -204,19 +213,46 @@ class UpdaterTest(unittest.TestCase):
         data = b"downloaded installer"
         release = self.release_payload(data=data, digest="sha256:" + "0" * 64)
         fetcher = lambda *_args, **_kwargs: release
-        opener = lambda *_args, **_kwargs: FakeResponse(data)
+
+        def download_installer(_url, local_path, **_kwargs):
+            return self.write_downloaded_part(local_path, data)
 
         with tempfile.TemporaryDirectory() as temp:
-            self.assert_geo_error(
-                "update_sha256_mismatch",
-                download_update_installer,
-                "0.1.4",
-                output_dir=temp,
-                current_version="0.1.3",
-                fetcher=fetcher,
-                opener=opener,
-            )
+            with mock.patch("geo_getter.updater.download_url_to_part", side_effect=download_installer):
+                self.assert_geo_error(
+                    "update_sha256_mismatch",
+                    download_update_installer,
+                    "0.1.4",
+                    output_dir=temp,
+                    current_version="0.1.3",
+                    fetcher=fetcher,
+                )
             self.assertFalse(list(Path(temp).glob("*.exe")))
+            self.assertFalse(list(Path(temp).glob("*.part")))
+
+    def test_finalize_failure_reports_download_failure(self):
+        data = b"downloaded installer"
+        release = self.release_payload(data=data)
+        fetcher = lambda *_args, **_kwargs: release
+
+        def download_installer(_url, local_path, **_kwargs):
+            return self.write_downloaded_part(local_path, data)
+
+        with tempfile.TemporaryDirectory() as temp:
+            with (
+                mock.patch("geo_getter.updater.download_url_to_part", side_effect=download_installer),
+                mock.patch("geo_getter.updater.finalize_downloaded_part", side_effect=DownloadLocalIoError("replace failed")),
+            ):
+                self.assert_geo_error(
+                    "update_download_failed",
+                    download_update_installer,
+                    "0.1.4",
+                    output_dir=temp,
+                    current_version="0.1.3",
+                    fetcher=fetcher,
+                )
+            self.assertFalse(list(Path(temp).glob("*.exe")))
+            self.assertFalse(list(Path(temp).glob("*.part")))
 
 
 if __name__ == "__main__":
