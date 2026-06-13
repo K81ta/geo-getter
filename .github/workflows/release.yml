@@ -31,21 +31,12 @@ jobs:
             throw "Release tag must start with v: $tag"
           }
           $tagVersion = $tag.Substring(1)
-          $pyproject = Get-Content -Raw -Encoding UTF8 pyproject.toml
-          if ($pyproject -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
-            throw "Could not read version from pyproject.toml"
+          $sourceVersion = (python -c "from geo_getter import __version__; print(__version__)").Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceVersion)) {
+            throw "Could not read source version from geo_getter.__version__"
           }
-          $projectVersion = $Matches[1]
-          if ($projectVersion -ne $tagVersion) {
-            throw "Tag version $tagVersion does not match pyproject.toml version $projectVersion"
-          }
-          $init = Get-Content -Raw -Encoding UTF8 geo_getter/__init__.py
-          if ($init -notmatch '(?m)^__version__\s*=\s*"([^"]+)"') {
-            throw "Could not read version from geo_getter/__init__.py"
-          }
-          $packageVersion = $Matches[1]
-          if ($packageVersion -ne $tagVersion) {
-            throw "Tag version $tagVersion does not match geo_getter.__version__ $packageVersion"
+          if ($sourceVersion -ne $tagVersion) {
+            throw "Tag version $tagVersion does not match geo_getter.__version__ $sourceVersion"
           }
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           if ($LASTEXITCODE -ne 0) {

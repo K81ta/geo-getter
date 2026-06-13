@@ -18,8 +18,8 @@ GEO accession、GEO ページ URL、SRA / ENA accession、BioProject accession�
 
 [GitHub Releases](https://github.com/K81ta/geo-getter/releases/latest) から最新版をダウンロードします。
 
-- インストーラー: `GEOGetter-Setup-v0.1.4.exe`
-- portable zip: `GEOGetter-v0.1.4-win-x64-portable.zip`
+- インストーラー: 最新 release assets の `GEOGetter-Setup-v*.exe`
+- portable zip: 最新 release assets の `GEOGetter-v*-win-x64-portable.zip`
 
 通常はインストーラーを使います。インストール後は、スタートメニューの `GEOGetter` から起動できます。
 

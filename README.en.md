@@ -18,8 +18,8 @@ Enter a GEO accession, GEO page URL, SRA / ENA accession, BioProject accession, 
 
 Download the latest version from [GitHub Releases](https://github.com/K81ta/geo-getter/releases/latest).
 
-- Installer: `GEOGetter-Setup-v0.1.4.exe`
-- Portable zip: `GEOGetter-v0.1.4-win-x64-portable.zip`
+- Installer: `GEOGetter-Setup-v*.exe` in the latest release assets
+- Portable zip: `GEOGetter-v*-win-x64-portable.zip` in the latest release assets
 
 The installer is recommended for normal use. After installation, start `GEOGetter` from the Start menu.
 
