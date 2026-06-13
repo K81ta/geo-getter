@@ -28,8 +28,12 @@ function Get-DefaultOutputFolder {
 
 function Get-DefaultOutputFolderForAccession {
     param([string]$PrimaryAccession)
-    $baseSource = if ([string]::IsNullOrWhiteSpace($PrimaryAccession)) { "geo_getter_download" } else { $PrimaryAccession.Trim() }
-    $baseName = ConvertTo-GeoGetterSafeName $baseSource
+    $baseName = if ([string]::IsNullOrWhiteSpace($PrimaryAccession)) {
+        "geo_getter_download"
+    }
+    else {
+        $PrimaryAccession.Trim().ToUpperInvariant()
+    }
     return [System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) $baseName))
 }
 
@@ -1561,22 +1565,6 @@ function Update-SelectionSummary {
     $suppSummary = Get-SupplementarySelectionSummary $suppCount
     $output = if ($outputBox) { [string]$outputBox.Text } else { "" }
     $selectionSummaryLabel.Text = (T "selectionSummary") -f $fastqCount, (Format-Bytes (Get-SelectedTotalBytes)), $suppSummary, $output
-}
-
-function ConvertTo-GeoGetterSafeName {
-    param(
-        [string]$Value,
-        [string]$DefaultName = "geo_getter_download",
-        [switch]$ArtifactPrefix
-    )
-    $safe = [regex]::Replace([string]$Value, '[<>:"/\\|?*\x00-\x1F\x7F]', '_')
-    $safe = $safe.Trim(" .".ToCharArray())
-    if ([string]::IsNullOrWhiteSpace($safe) -or $safe -eq "." -or $safe -eq "..") { return $DefaultName }
-    $stem = ($safe -split '\.', 2)[0].ToUpperInvariant()
-    if (@("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9") -contains $stem) {
-        $safe = "_" + $safe
-    }
-    return $safe
 }
 
 function Assert-PreflightPathLength {
@@ -3525,8 +3513,10 @@ if ($SelfTest) {
     Assert-Equal (Format-Bytes ([Int64]2377036173)) "2.21 GB" "Format-Bytes over Int32"
     Assert-Equal (Format-Bytes ([Int64]5000000000)) "4.66 GB" "Format-Bytes 5GB"
     Assert-Equal (Format-Bytes ([Int64]-1)) "0 B" "Format-Bytes negative"
-    Assert-Equal (ConvertTo-GeoGetterSafeName "CON") "_CON" "preflight safe name handles reserved Windows name"
-    Assert-Equal (ConvertTo-GeoGetterSafeName "..") "geo_getter_download" "preflight safe name handles dot-only name"
+    Assert-Equal (Get-DefaultOutputFolderForAccession " gse000001 ") ([System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) "GSE000001"))) "accession output folder trims and uppercases accession"
+    Assert-Equal (Get-DefaultOutputFolderForAccession "") ([System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) "geo_getter_download"))) "accession output folder uses fixed fallback"
+    Assert-Equal (Get-DefaultOutputFolderForAccession "   ") ([System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) "geo_getter_download"))) "accession output folder treats whitespace as fallback"
+    Assert-Equal (Get-DefaultOutputFolderForAccession " con ") ([System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) "CON"))) "accession output folder does not apply generic Windows reserved-name rules"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
     Assert-PythonArgumentRoundTrip @("", 'C:\tmp\geo getter\a.txt', 'C:\tmp\日本語 path\manifest.tsv', 'C:\tmp\space path\', 'quote"name', 'C:\tmp\backslash\"quote') "process argument round trip"
     $updateCheckArgs = Get-UpdateCheckPythonArguments
@@ -4609,7 +4599,7 @@ if ($SelfTest) {
     Assert-Equal (Get-OperationState "download").Process $null "async download process finished"
     Assert-Equal $statusLabel.Text (T "complete") "async download status"
     $asyncOutputDir = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
-    $asyncPrefix = ConvertTo-GeoGetterSafeName ([System.IO.Path]::GetFileName($asyncOutputDir)) -ArtifactPrefix
+    $asyncPrefix = "async out folder"
     Assert-Contains (Get-Content -Raw -Encoding UTF8 (Join-Path $asyncOutputDir ("{0}_download_log.tsv" -f $asyncPrefix))) "md5_verified" "async download log md5 success"
 
     Write-Output "PowerShell WinForms self test OK"
