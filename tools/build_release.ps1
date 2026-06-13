@@ -16,10 +16,10 @@ $PythonCacheRoot = Join-Path $BuildRoot "python"
 $InstallerScript = Join-Path $RepoRoot "installer\GEOGetter.iss"
 
 function Get-AppVersion {
-    $pyproject = Join-Path $RepoRoot "pyproject.toml"
-    $match = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    $init = Join-Path $RepoRoot "geo_getter\__init__.py"
+    $match = Select-String -Path $init -Pattern '^__version__\s*=\s*"([^"]+)"' | Select-Object -First 1
     if (-not $match) {
-        throw "Could not read project version from pyproject.toml."
+        throw "Could not read source version from geo_getter.__version__."
     }
     return $match.Matches[0].Groups[1].Value
 }
