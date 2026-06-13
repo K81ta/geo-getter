@@ -870,6 +870,126 @@ function Start-GeoGetterPythonProcess {
     }
 }
 
+function Invoke-JsonBridgeHandlerError {
+    param(
+        [scriptblock]$Handler,
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+    if ($null -ne $Handler) {
+        & $Handler $ErrorRecord
+        return
+    }
+    try { Append-Log ((T "exitHandlerError") -f $ErrorRecord.Exception.Message) } catch { }
+}
+
+function Set-JsonBridgeStartFailure {
+    param(
+        [ValidateSet("resolve", "verification")]
+        [string]$OperationName,
+        [string]$CommandName,
+        [string]$StartFailurePhase,
+        [string]$Message
+    )
+    $state = Get-OperationState $OperationName
+    $state.LastStartError = $Message
+    $script:LastOperationError = New-OperationError $StartFailurePhase $CommandName "process_start_failed" $state.LastStartError $state.LastStartError "process_start" $null
+}
+
+function Start-JsonBridgeOperation {
+    param(
+        [ValidateSet("resolve", "verification")]
+        [string]$OperationName,
+        [string]$CommandName,
+        [string]$StartFailurePhase,
+        [scriptblock]$CreateStartInfo,
+        [scriptblock]$CompleteIfReady,
+        [scriptblock]$OnOutputLine,
+        [scriptblock]$OnErrorLine,
+        [scriptblock]$OnStartFailure,
+        [scriptblock]$OnExitHandlerError,
+        [scriptblock]$OnStreamClosedHandlerError
+    )
+    if ([string]::IsNullOrWhiteSpace($CommandName)) {
+        throw "CommandName is required."
+    }
+    if ([string]::IsNullOrWhiteSpace($StartFailurePhase)) {
+        throw "StartFailurePhase is required."
+    }
+    if ($null -eq $CompleteIfReady) {
+        throw "CompleteIfReady is required."
+    }
+
+    $outputHandler = [System.Action[string]]({
+        param($line)
+        Append-OperationProcessOutput $OperationName "stdout" $line
+        if ($null -ne $OnOutputLine) {
+            & $OnOutputLine $line
+        }
+    }.GetNewClosure())
+    $errorHandler = [System.Action[string]]({
+        param($line)
+        Append-OperationProcessOutput $OperationName "stderr" $line
+        if ($null -ne $OnErrorLine) {
+            & $OnErrorLine $line
+        }
+    }.GetNewClosure())
+    $exitHandler = [System.Action[int]]({
+        param($code)
+        try {
+            Set-OperationExitObserved $OperationName $code
+            & $CompleteIfReady
+        }
+        catch {
+            Invoke-JsonBridgeHandlerError $OnExitHandlerError $_
+        }
+    }.GetNewClosure())
+    $outputClosedHandler = [System.Action]({
+        try {
+            Set-OperationStreamClosed $OperationName "stdout"
+            & $CompleteIfReady
+        }
+        catch {
+            Invoke-JsonBridgeHandlerError $OnStreamClosedHandlerError $_
+        }
+    }.GetNewClosure())
+    $errorClosedHandler = [System.Action]({
+        try {
+            Set-OperationStreamClosed $OperationName "stderr"
+            & $CompleteIfReady
+        }
+        catch {
+            Invoke-JsonBridgeHandlerError $OnStreamClosedHandlerError $_
+        }
+    }.GetNewClosure())
+    $setProcess = {
+        param($value)
+        Set-OperationProcess $OperationName $value
+    }.GetNewClosure()
+    $setBridge = {
+        param($value)
+        Set-OperationBridge $OperationName $value
+    }.GetNewClosure()
+    $startFailureHandler = {
+        param($message)
+        if ($null -ne $OnStartFailure) {
+            & $OnStartFailure $message
+        }
+        Set-JsonBridgeStartFailure $OperationName $CommandName $StartFailurePhase $message
+    }.GetNewClosure()
+
+    Start-GeoGetterPythonProcess `
+        -OperationName $OperationName `
+        -CreateStartInfo $CreateStartInfo `
+        -OutputHandler $outputHandler `
+        -ErrorHandler $errorHandler `
+        -ExitHandler $exitHandler `
+        -OutputClosedHandler $outputClosedHandler `
+        -ErrorClosedHandler $errorClosedHandler `
+        -SetProcess $setProcess `
+        -SetBridge $setBridge `
+        -OnStartFailure $startFailureHandler
+}
+
 function Clear-OperationRunState {
     param(
         [ValidateSet("resolve", "download", "verification", "update")]
@@ -2269,58 +2389,24 @@ function Start-ResolveProcess {
     $script:LastOperationError = $null
     $script:ResolveInputPath = New-ResolveInputFile $InputText
     (Get-OperationState "resolve").LastArguments = Get-ResolvePythonArguments $script:ResolveInputPath
-    Start-GeoGetterPythonProcess `
+    Start-JsonBridgeOperation `
         -OperationName "resolve" `
+        -CommandName "resolve-json" `
+        -StartFailurePhase "resolve_process_start" `
         -CreateStartInfo { New-ResolveProcessStartInfo $script:ResolveInputPath } `
-        -OutputHandler ([System.Action[string]]{
-            param($line)
-            Append-OperationProcessOutput "resolve" "stdout" $line
-        }) `
-        -ErrorHandler ([System.Action[string]]{
-            param($line)
-            Append-OperationProcessOutput "resolve" "stderr" $line
-        }) `
-        -ExitHandler ([System.Action[int]]{
-            param($code)
-            try {
-                Set-OperationExitObserved "resolve" $code
-                Complete-ResolveIfReady
-            }
-            catch {
-                try {
-                    $progressBar.Style = "Continuous"
-                    $progressBar.Value = 0
-                    Set-Busy $false
-                    Show-AppError $_.Exception.Message
-                }
-                catch { }
-            }
-        }) `
-        -OutputClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "resolve" "stdout"
-                Complete-ResolveIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -ErrorClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "resolve" "stderr"
-                Complete-ResolveIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -SetProcess { param($value) Set-OperationProcess "resolve" $value } `
-        -SetBridge { param($value) Set-OperationBridge "resolve" $value } `
+        -CompleteIfReady { Complete-ResolveIfReady } `
         -OnStartFailure {
-            param($message)
             Remove-ResolveInputFile
-            (Get-OperationState "resolve").LastStartError = $message
-            $script:LastOperationError = New-OperationError "resolve_process_start" "resolve-json" "process_start_failed" (Get-OperationState "resolve").LastStartError (Get-OperationState "resolve").LastStartError "process_start" $null
+        } `
+        -OnExitHandlerError {
+            param($errorRecord)
+            try {
+                $progressBar.Style = "Continuous"
+                $progressBar.Value = 0
+                Set-Busy $false
+                Show-AppError $errorRecord.Exception.Message
+            }
+            catch { }
         }
 }
 
@@ -2334,61 +2420,27 @@ function Start-ManifestVerificationProcess {
     (Get-OperationState "verification").LastArguments = Get-VerifyManifestPythonArguments $ManifestPath
     Append-Log ((T "verifyManifestStartedLog") -f $ManifestPath)
 
-    Start-GeoGetterPythonProcess `
+    Start-JsonBridgeOperation `
         -OperationName "verification" `
+        -CommandName "verify-manifest-json" `
+        -StartFailurePhase "verification_process_start" `
         -CreateStartInfo { New-VerifyManifestProcessStartInfo $ManifestPath } `
-        -OutputHandler ([System.Action[string]]{
+        -CompleteIfReady { Complete-ManifestVerificationIfReady } `
+        -OnOutputLine {
             param($line)
-            Append-OperationProcessOutput "verification" "stdout" $line
             try {
                 Handle-ManifestVerificationLine $line
             }
             catch {
                 try { Append-Log ((T "progressDisplayError") -f $_.Exception.Message) } catch { }
             }
-        }) `
-        -ErrorHandler ([System.Action[string]]{
+        } `
+        -OnErrorLine {
             param($line)
-            Append-OperationProcessOutput "verification" "stderr" $line
             try {
                 Append-Log $line
             }
             catch { }
-        }) `
-        -ExitHandler ([System.Action[int]]{
-            param($code)
-            try {
-                Set-OperationExitObserved "verification" $code
-                Complete-ManifestVerificationIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -OutputClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "verification" "stdout"
-                Complete-ManifestVerificationIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -ErrorClosedHandler ([System.Action]{
-            try {
-                Set-OperationStreamClosed "verification" "stderr"
-                Complete-ManifestVerificationIfReady
-            }
-            catch {
-                try { Append-Log ((T "exitHandlerError") -f $_.Exception.Message) } catch { }
-            }
-        }) `
-        -SetProcess { param($value) Set-OperationProcess "verification" $value } `
-        -SetBridge { param($value) Set-OperationBridge "verification" $value } `
-        -OnStartFailure {
-            param($message)
-            (Get-OperationState "verification").LastStartError = $message
-            $script:LastOperationError = New-OperationError "verification_process_start" "verify-manifest-json" "process_start_failed" (Get-OperationState "verification").LastStartError (Get-OperationState "verification").LastStartError "process_start" $null
         }
 }
 
@@ -4471,6 +4523,7 @@ if ($SelfTest) {
     }
     Assert-Equal $threwResolveStart $true "resolve start failure throws"
     Assert-Equal (Get-OperationState "resolve").Process $null "resolve start failure clears process"
+    Assert-Equal (Get-OperationState "resolve").Bridge $null "resolve start failure clears bridge"
     Assert-Equal $script:ResolveInputPath $null "resolve start failure clears temp input path"
     Assert-Equal $resolveStartInputPath $null "resolve start failure removes temp input path before returning"
     $leakedResolveInputs = @(
@@ -4498,6 +4551,9 @@ if ($SelfTest) {
     }
     Assert-Equal $threwVerifyStart $true "manifest verification start failure throws"
     Assert-Equal (Get-OperationState "verification").Process $null "manifest verification start failure clears process"
+    Assert-Equal (Get-OperationState "verification").Bridge $null "manifest verification start failure clears bridge"
+    Assert-Equal $script:LastOperationError.phase "verification_process_start" "manifest verification start failure records phase"
+    Assert-Equal $script:LastOperationError.code "process_start_failed" "manifest verification start failure records code"
 
     $outputBox.Text = Join-Path $selfTestRoot "download start failure output"
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
