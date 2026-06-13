@@ -501,6 +501,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(preflight["download_log"], str(download_log_path(out_dir.resolve())))
             self.assertEqual(Path(preflight["fastq_files"][3]["local_path"]).name, "collision output_fastq_manifest.2.tsv")
             self.assertEqual(Path(preflight["supplementary_files"][0]["local_path"]).name, "same.4.fastq.gz")
+            self.assertEqual(Path(preflight["supplementary_files"][1]["local_path"]).name, "same.fastq.gz.2.part")
 
             planned_names = {Path(path).name for path in preflight["planned_paths"]}
             self.assertIn("Same.fastq.gz", planned_names)

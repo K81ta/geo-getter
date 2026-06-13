@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -41,9 +40,6 @@ def unique_numbered_name(file_name: str, count: int) -> str:
     return f"{stem}.{count + 1}{suffix}"
 
 
-DOWNLOAD_RESERVED_SUFFIXES = (".part",)
-
-
 def existing_size(path: Path) -> int:
     try:
         if not path.is_file():
@@ -65,27 +61,15 @@ def quarantine_candidate_path(path: Path, reason: str, timestamp: str, counter: 
     return _numbered_sidecar_path(path, f".{reason}-{timestamp}", counter)
 
 
-def reserve_unique_name(file_name: str, used_keys: set[str], reserved_suffixes: Iterable[str] = ()) -> str:
+def reserve_unique_download_name(file_name: str, used_keys: set[str]) -> str:
     count = 0
     candidate = file_name
-    while any(name_collision_key(name) in used_keys for name in reserved_runtime_names(candidate, reserved_suffixes)):
+    while name_collision_key(candidate) in used_keys or name_collision_key(f"{candidate}.part") in used_keys:
         count += 1
         candidate = unique_numbered_name(file_name, count)
-    for name in reserved_runtime_names(candidate, reserved_suffixes):
-        used_keys.add(name_collision_key(name))
+    used_keys.add(name_collision_key(candidate))
+    used_keys.add(name_collision_key(f"{candidate}.part"))
     return candidate
-
-
-def reserve_unique_download_name(file_name: str, used_keys: set[str]) -> str:
-    return reserve_unique_name(file_name, used_keys, DOWNLOAD_RESERVED_SUFFIXES)
-
-
-def reserved_download_names(file_name: str) -> tuple[str, ...]:
-    return reserved_runtime_names(file_name, DOWNLOAD_RESERVED_SUFFIXES)
-
-
-def reserved_runtime_names(file_name: str, reserved_suffixes: Iterable[str]) -> tuple[str, ...]:
-    return (file_name, *(f"{file_name}{suffix}" for suffix in reserved_suffixes))
 
 
 def name_collision_key(file_name: str) -> str:
