@@ -75,20 +75,7 @@ class CliDownloadPlan:
 
 def main(argv: list[str] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    parser = GeoGetterArgumentParser(description="GEOGetter internal GUI bridge")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    resolve_json_parser = subparsers.add_parser("resolve-json", help="write resolved metadata as JSON")
-    resolve_json_parser.add_argument("input_text", nargs="?")
-    resolve_json_parser.add_argument("--input-file")
-    resolve_json_parser.add_argument("--out-json")
-
-    selected_download_parser = subparsers.add_parser("selected-download-json", help="download selected FASTQ and GEO supplementary files")
-    _add_download_selection_arguments(selected_download_parser)
-    selected_download_parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
-
-    _add_requested_hidden_parser(subparsers, _command_from_argv(argv_list))
-
+    parser = _build_parser()
     args = parser.parse_args(argv_list)
     if args.command == "resolve-json":
         return _resolve_json(args.input_text, args.input_file, args.out_json)
@@ -118,6 +105,49 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
+def _build_parser() -> GeoGetterArgumentParser:
+    parser = GeoGetterArgumentParser(description="GEOGetter internal GUI bridge")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{resolve-json,selected-download-json}",
+    )
+
+    resolve_json_parser = subparsers.add_parser("resolve-json", help="write resolved metadata as JSON")
+    _add_resolve_json_arguments(resolve_json_parser)
+
+    selected_download_parser = subparsers.add_parser("selected-download-json", help="download selected FASTQ and GEO supplementary files")
+    _add_selected_download_arguments(selected_download_parser)
+
+    preflight_parser = _add_hidden_bridge_parser(subparsers, "preflight-json")
+    _add_preflight_arguments(preflight_parser)
+
+    verify_manifest_parser = _add_hidden_bridge_parser(subparsers, "verify-manifest-json")
+    _add_verify_manifest_arguments(verify_manifest_parser)
+
+    _add_hidden_bridge_parser(subparsers, "check-update-json")
+
+    download_update_parser = _add_hidden_bridge_parser(subparsers, "download-update-json")
+    _add_update_download_arguments(download_update_parser)
+
+    return parser
+
+
+def _add_hidden_bridge_parser(subparsers: argparse._SubParsersAction, command: str) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(command, help=argparse.SUPPRESS)
+    # Subparsers print "==SUPPRESS==" unless the generated help row is removed.
+    subparsers._choices_actions = [
+        action for action in subparsers._choices_actions if action.dest != command
+    ]
+    return parser
+
+
+def _add_resolve_json_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("input_text", nargs="?")
+    parser.add_argument("--input-file")
+    parser.add_argument("--out-json")
+
+
 def _add_download_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--fastq-indices", default="")
@@ -126,37 +156,22 @@ def _add_download_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--resume-existing", action="store_true")
 
 
-def _add_requested_hidden_parser(subparsers, command: str) -> None:
-    add_arguments = _HIDDEN_BRIDGE_COMMANDS.get(command)
-    if command not in _HIDDEN_BRIDGE_COMMANDS:
-        return
-    parser = subparsers.add_parser(command, help=argparse.SUPPRESS)
-    add_arguments(parser)
+def _add_selected_download_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_download_selection_arguments(parser)
+    parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
 
 
-def _add_preflight_parser(parser: argparse.ArgumentParser) -> None:
+def _add_preflight_arguments(parser: argparse.ArgumentParser) -> None:
     _add_download_selection_arguments(parser)
 
 
-def _add_verify_manifest_parser(parser: argparse.ArgumentParser) -> None:
+def _add_verify_manifest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", required=True)
 
 
-def _add_update_check_parser(parser: argparse.ArgumentParser) -> None:
-    pass
-
-
-def _add_update_download_parser(parser: argparse.ArgumentParser) -> None:
+def _add_update_download_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--out-dir")
-
-
-_HIDDEN_BRIDGE_COMMANDS = {
-    "preflight-json": _add_preflight_parser,
-    "verify-manifest-json": _add_verify_manifest_parser,
-    "check-update-json": _add_update_check_parser,
-    "download-update-json": _add_update_download_parser,
-}
 
 
 def run_cli(argv: list[str] | None = None) -> int:
