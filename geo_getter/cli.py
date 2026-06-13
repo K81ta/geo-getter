@@ -63,14 +63,17 @@ class GeoGetterArgumentParser(argparse.ArgumentParser):
 @dataclass(frozen=True)
 class CliDownloadPlan:
     output_dir: Path
-    selected_fastq: list[FastqFile]
-    selected_supplementary: list[dict]
     existing_output_nonempty: bool
     resume_active: bool
     fastq_plan: DownloadPlan | None
     resume_artifacts: ResumeArtifacts | None
-    resume_required_bytes: int | None
     planned_supplementary: list[tuple[dict, Path]]
+
+    @property
+    def resume_required_bytes(self) -> int | None:
+        if self.resume_artifacts is None:
+            return None
+        return self.resume_artifacts.required_bytes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -268,12 +271,10 @@ def _build_cli_download_plan(
     resume_active = existing_output_nonempty and resume_existing
     fastq_plan = None
     resume_artifacts = None
-    resume_required_bytes: int | None = None
     if selected_fastq:
         fastq_plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
         if resume_active:
             resume_artifacts = validate_resume_artifacts(fastq_plan)
-            resume_required_bytes = resume_artifacts.required_bytes
         reserved_output_names = [
             *reserved_output_names,
             *(name for planned in fastq_plan.files for name in reserved_download_names(planned.local_path.name)),
@@ -282,13 +283,10 @@ def _build_cli_download_plan(
     planned_supplementary = _planned_supplementary_files(run_output_dir, selected_supp, reserved_output_names) if selected_supp else []
     return CliDownloadPlan(
         output_dir=run_output_dir,
-        selected_fastq=selected_fastq,
-        selected_supplementary=selected_supp,
         existing_output_nonempty=existing_output_nonempty,
         resume_active=resume_active,
         fastq_plan=fastq_plan,
         resume_artifacts=resume_artifacts,
-        resume_required_bytes=resume_required_bytes,
         planned_supplementary=planned_supplementary,
     )
 
@@ -359,8 +357,8 @@ def _selected_download_json(
                 "event": "done",
                 "statuses": statuses,
                 "output_dir": str(cli_plan.output_dir),
-                "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.selected_fastq else "",
-                "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.selected_supplementary else "",
+                "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.fastq_plan else "",
+                "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.planned_supplementary else "",
                 "download_log": str(download_log_path(cli_plan.output_dir)),
                 "resume_existing": cli_plan.resume_active,
                 "resume_required_bytes": cli_plan.resume_required_bytes,
@@ -448,8 +446,8 @@ def _preflight_json(
                 "capacity_error_code": capacity_error_code,
                 "resume_existing": cli_plan.resume_active,
                 "resume_required_bytes": cli_plan.resume_required_bytes,
-                "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.selected_fastq else "",
-                "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.selected_supplementary else "",
+                "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.fastq_plan else "",
+                "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.planned_supplementary else "",
                 "download_log": str(download_log_path(cli_plan.output_dir)),
                 "planned_paths": [str(path) for path in planned_paths],
                 "fastq_files": planned_fastq,
