@@ -17,6 +17,7 @@ from geo_getter.downloader import (
     DownloadedPart,
     DownloadNetworkError,
     MAX_DOWNLOAD_WORKERS,
+    _download_url_to_part_with_retries,
     download_plan,
     download_url_to_part,
     normalize_download_workers,
@@ -990,7 +991,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1021,7 +1022,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             now = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                download_url_to_part(
+                _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     progress_callback=lambda current, total: progress_events.append((current, total)),
@@ -1050,7 +1051,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                download_url_to_part(
+                _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     progress_callback=lambda current, total: progress_events.append((current, total)),
@@ -1070,7 +1071,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             now = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                download_url_to_part(
+                _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     progress_callback=lambda current, total: progress_events.append((current, total)),
@@ -1151,7 +1152,7 @@ class PlannerDownloaderTest(unittest.TestCase):
 
                     with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
                         with self.assertRaises(OSError):
-                            download_url_to_part(
+                            _download_url_to_part_with_retries(
                                 "https://example.invalid/fixture.fastq.gz",
                                 local_path,
                                 expected_size=6,
@@ -1179,7 +1180,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                         return item
 
                     with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                        downloaded_part = download_url_to_part(
+                        downloaded_part = _download_url_to_part_with_retries(
                             "https://example.invalid/fixture.fastq.gz",
                             local_path,
                             expected_size=6,
@@ -1218,7 +1219,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return responses.pop(0)
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1257,7 +1258,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return item
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1286,7 +1287,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return item
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1297,7 +1298,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(downloaded_part.path.read_bytes(), b"abcdef")
             self.assertEqual(delays, [5.0])
 
-    def test_http_503_retry_after_date_uses_current_time(self):
+    def test_http_503_retry_after_date_uses_injected_current_time(self):
         with tempfile.TemporaryDirectory() as temp:
             local_path = Path(temp) / "fixture.fastq.gz"
             delays = []
@@ -1315,7 +1316,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return item
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1343,7 +1344,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return item
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/retryable.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1365,7 +1366,7 @@ class PlannerDownloaderTest(unittest.TestCase):
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_404):
                 with self.assertRaises(DownloadNetworkError) as context:
-                    download_url_to_part(
+                    _download_url_to_part_with_retries(
                         "https://example.invalid/permanent.fastq.gz",
                         local_path,
                         expected_size=6,
@@ -1394,7 +1395,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return item
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
@@ -1429,7 +1430,7 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return item
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = download_url_to_part(
+                downloaded_part = _download_url_to_part_with_retries(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
