@@ -21,7 +21,14 @@ from .errors import (
 )
 from .hashing import calculate_md5 as _calculate_md5
 from .models import DownloadPlan, FastqFile, PlannedFile
-from .path_safety import child_path, name_collision_key, reserve_unique_download_name, safe_file_name
+from .path_safety import (
+    child_path,
+    download_part_path,
+    existing_size,
+    name_collision_key,
+    reserve_unique_download_name,
+    safe_file_name,
+)
 
 
 FASTQ_MANIFEST_SUFFIX = "fastq_manifest.tsv"
@@ -314,8 +321,8 @@ def _inspect_resume_artifacts(plan: DownloadPlan) -> tuple[int, tuple[ResumeArti
         if completed:
             verified.append(completed)
             continue
-        part_path = planned.local_path.with_name(planned.local_path.name + ".part")
-        part_size = _existing_size(part_path)
+        part_path = download_part_path(planned.local_path)
+        part_size = existing_size(part_path)
         if expected_size > 0 and 0 < part_size < expected_size:
             required += expected_size - part_size
             continue
@@ -354,7 +361,7 @@ def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | N
             exists = local_path.is_file()
             expected_size = _parse_manifest_size(row.get("size_bytes"), row_number)
             expected_md5 = (row.get("expected_md5", "") or "").strip()
-            actual_size = _existing_size(local_path) if exists else 0
+            actual_size = existing_size(local_path)
             actual_md5 = (
                 _calculate_md5(local_path)
                 if _should_calculate_md5(exists, expected_size, actual_size, expected_md5)
@@ -582,15 +589,6 @@ def _parse_manifest_size(value: str | None, row_number: int) -> int:
     if parsed < 0:
         raise GeoGetterError(INVALID_MANIFEST, f"row={row_number} invalid_size_bytes={text}")
     return parsed
-
-
-def _existing_size(path: Path) -> int:
-    try:
-        if not path.is_file():
-            return 0
-        return path.stat().st_size
-    except OSError:
-        return 0
 
 
 def _should_calculate_md5(exists: bool, expected_size: int, actual_size: int, expected_md5: str) -> bool:

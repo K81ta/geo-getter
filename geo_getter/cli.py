@@ -31,7 +31,14 @@ from .errors import (
     GeoGetterError,
 )
 from .models import DownloadPlan, FastqFile
-from .path_safety import name_collision_key, reserved_download_names
+from .path_safety import (
+    download_part_path,
+    existing_candidate_path,
+    existing_size,
+    name_collision_key,
+    quarantine_candidate_path,
+    reserved_download_names,
+)
 from .planner import (
     append_download_log,
     build_download_plan,
@@ -533,15 +540,15 @@ def _download_supplementary_files(output_dir: Path, planned_supplementary: list[
         except DownloadSizeMismatchError as exc:
             status = SIZE_MISMATCH
             message = str(exc)
-            downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
+            downloaded = max(downloaded, existing_size(download_part_path(local_path)))
         except DownloadNetworkError as exc:
             status = NETWORK_FAILED
             message = str(exc)
-            downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
+            downloaded = max(downloaded, existing_size(download_part_path(local_path)))
         except (DownloadLocalIoError, OSError) as exc:
             status = LOCAL_IO_FAILED
             message = str(exc)
-            downloaded = max(downloaded, _existing_size(local_path.with_name(local_path.name + ".part")))
+            downloaded = max(downloaded, existing_size(download_part_path(local_path)))
         append_download_log(
             output_dir,
             "GEO_SUPPLEMENTARY",
@@ -577,41 +584,34 @@ def _planned_supplementary_files(
 
 
 def _download_runtime_paths(local_path: Path, kind: str) -> list[Path]:
-    names = [local_path.name, f"{local_path.name}.part"]
+    paths = [local_path, download_part_path(local_path)]
     if kind == "fastq":
         timestamp = "20000101T000000Z"
-        part_name = f"{local_path.name}.part"
-        names.extend(
+        part_path = download_part_path(local_path)
+        paths.extend(
             [
-                f"{local_path.name}.bad-md5-existing-{timestamp}",
-                f"{local_path.name}.bad-md5-existing-{timestamp}.2",
-                f"{local_path.name}.size-mismatch-existing-{timestamp}",
-                f"{local_path.name}.size-mismatch-existing-{timestamp}.2",
-                f"{local_path.name}.unverified-existing-{timestamp}",
-                f"{local_path.name}.unverified-existing-{timestamp}.2",
-                f"{part_name}.bad-md5-{timestamp}",
-                f"{part_name}.bad-md5-{timestamp}.2",
-                f"{part_name}.size-mismatch-{timestamp}",
-                f"{part_name}.size-mismatch-{timestamp}.2",
+                quarantine_candidate_path(local_path, "bad-md5-existing", timestamp),
+                quarantine_candidate_path(local_path, "bad-md5-existing", timestamp, 2),
+                quarantine_candidate_path(local_path, "size-mismatch-existing", timestamp),
+                quarantine_candidate_path(local_path, "size-mismatch-existing", timestamp, 2),
+                quarantine_candidate_path(local_path, "unverified-existing", timestamp),
+                quarantine_candidate_path(local_path, "unverified-existing", timestamp, 2),
+                quarantine_candidate_path(part_path, "bad-md5", timestamp),
+                quarantine_candidate_path(part_path, "bad-md5", timestamp, 2),
+                quarantine_candidate_path(part_path, "size-mismatch", timestamp),
+                quarantine_candidate_path(part_path, "size-mismatch", timestamp, 2),
             ]
         )
     else:
-        names.extend([f"{local_path.name}.existing", f"{local_path.name}.existing.2"])
-    return [local_path.with_name(name) for name in names]
-
-
-def _existing_size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return 0
+        paths.extend([existing_candidate_path(local_path), existing_candidate_path(local_path, 2)])
+    return paths
 
 
 def _unique_existing_path(path: Path) -> Path:
-    candidate = path.with_name(path.name + ".existing")
+    candidate = existing_candidate_path(path)
     counter = 2
     while candidate.exists():
-        candidate = path.with_name(f"{path.name}.existing.{counter}")
+        candidate = existing_candidate_path(path, counter)
         counter += 1
     return candidate
 

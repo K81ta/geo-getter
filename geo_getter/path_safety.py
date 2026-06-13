@@ -44,6 +44,27 @@ def unique_numbered_name(file_name: str, count: int) -> str:
 DOWNLOAD_RESERVED_SUFFIXES = (".part",)
 
 
+def existing_size(path: Path) -> int:
+    try:
+        if not path.is_file():
+            return 0
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def download_part_path(local_path: Path) -> Path:
+    return local_path.with_name(local_path.name + ".part")
+
+
+def existing_candidate_path(path: Path, counter: int = 1) -> Path:
+    return _numbered_sidecar_path(path, ".existing", counter)
+
+
+def quarantine_candidate_path(path: Path, reason: str, timestamp: str, counter: int = 1) -> Path:
+    return _numbered_sidecar_path(path, f".{reason}-{timestamp}", counter)
+
+
 def reserve_unique_name(file_name: str, used_keys: set[str], reserved_suffixes: Iterable[str] = ()) -> str:
     count = 0
     candidate = file_name
@@ -76,6 +97,13 @@ def split_download_name(file_name: str) -> tuple[str, str]:
         return file_name[:-9], ".fastq.gz"
     path = Path(file_name)
     return path.stem, path.suffix
+
+
+def _numbered_sidecar_path(path: Path, suffix: str, counter: int) -> Path:
+    name = f"{path.name}{suffix}"
+    if counter > 1:
+        name = f"{name}.{counter}"
+    return path.with_name(name)
 
 
 def _is_unsafe_char(char: str) -> bool:
