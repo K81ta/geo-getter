@@ -5,7 +5,7 @@ import json
 import shutil
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import __version__
@@ -215,9 +215,9 @@ def _resolve_json(input_text: str | None, input_file: str | None, out_json: str 
         "primary_accession": result.primary_accession,
         "query_accessions": result.query_accessions,
         "warnings": result.warnings,
-        "dataset_metadata": result.dataset_metadata.to_dict(),
-        "fastq_files": [item.to_dict() for item in result.fastq_files],
-        "supplementary_files": [item.to_dict() for item in result.supplementary_files],
+        "dataset_metadata": asdict(result.dataset_metadata),
+        "fastq_files": [asdict(item) for item in result.fastq_files],
+        "supplementary_files": [asdict(item) for item in result.supplementary_files],
     }
     _write_or_print_json(payload, out_json)
     return 0
