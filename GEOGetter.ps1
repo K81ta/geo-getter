@@ -1621,6 +1621,32 @@ function Get-PreflightPathErrorText {
     return "{0} ({1})" -f $path, $errorText
 }
 
+function Format-CapacityErrorMessage {
+    param(
+        [Int64]$RequiredBytes,
+        [object]$AvailableBytes
+    )
+    $availableText = if ($null -ne $AvailableBytes) { Format-Bytes ([Int64]$AvailableBytes) } else { "unknown" }
+    return ((T "preflightInsufficientSpace") -f (Format-Bytes $RequiredBytes), $availableText)
+}
+
+function Get-CapacityErrorMessageFromData {
+    param([object]$Data)
+    if ($null -eq $Data) { return "" }
+    $requiredValue = Get-JsonPropertyValue $Data "required_bytes"
+    $availableValue = Get-JsonPropertyValue $Data "available_bytes"
+    if ($null -eq $availableValue) {
+        $availableValue = Get-JsonPropertyValue $Data "free_bytes"
+    }
+    if ($null -eq $requiredValue -or $null -eq $availableValue) { return "" }
+    try {
+        return Format-CapacityErrorMessage ([Int64]$requiredValue) ([Int64]$availableValue)
+    }
+    catch {
+        return ""
+    }
+}
+
 function Get-PreflightErrorMessage {
     param([object]$OperationError)
     if ($null -eq $OperationError) {
@@ -1632,6 +1658,10 @@ function Get-PreflightErrorMessage {
             $path = [string](Get-JsonPropertyValue $OperationError.data "path")
             if ([string]::IsNullOrWhiteSpace($path)) { $path = [string]$OperationError.detail }
             return ((T "preflightPathTooLong") -f $path)
+        }
+        "insufficient_space" {
+            $message = Get-CapacityErrorMessageFromData $OperationError.data
+            if (-not [string]::IsNullOrWhiteSpace($message)) { return $message }
         }
         "output_path_invalid" {
             $pathReason = [string](Get-JsonPropertyValue $OperationError.data "path_error_code")
@@ -1733,8 +1763,7 @@ function Test-DownloadPreflight {
             $capacityOk = [bool]$capacityOkProperty[0].Value
         }
         if (-not $capacityOk) {
-            $freeText = if ($null -ne $freeBytes) { Format-Bytes ([Int64]$freeBytes) } else { "unknown" }
-            $message = ((T "preflightInsufficientSpace") -f (Format-Bytes $requiredBytes), $freeText)
+            $message = Format-CapacityErrorMessage $requiredBytes $freeBytes
             $detail = "required_bytes=$requiredBytes free_bytes=$freeBytes"
             $code = "insufficient_space"
             $capacityCodeProperty = @($preflight.PSObject.Properties | Where-Object { $_.Name -eq "capacity_error_code" } | Select-Object -First 1)
@@ -2039,7 +2068,17 @@ function Handle-DownloadErrorLine {
             if ([string]$event.code -like "resume_*") {
                 $script:LastResumeErrorCode = [string]$event.code
             }
-            Append-Log ([string]$event.message)
+            $message = ""
+            if ([string]$event.code -eq "insufficient_space") {
+                $message = Get-CapacityErrorMessageFromData $event
+            }
+            if ([string]::IsNullOrWhiteSpace($message)) {
+                $message = [string]$event.message
+            }
+            if ($null -ne $script:LastOperationError -and [string]$event.code -eq "insufficient_space" -and -not [string]::IsNullOrWhiteSpace($message)) {
+                $script:LastOperationError.message = $message
+            }
+            Append-Log $message
             return
         }
     }
@@ -4486,6 +4525,13 @@ if ($SelfTest) {
     Assert-Equal $statusLabel.Text (T "downloadRetryWaiting") "retry message updates status"
     Handle-DownloadLine '{"event":"progress","file_name":"large1.fastq.gz","downloaded":1188518086,"total":2377036173}'
     Assert-Equal $statusLabel.Text (T "downloading") "progress restores status after retry wait"
+    $logBox.Clear()
+    Handle-DownloadErrorLine '{"event":"error","command":"selected-download-json","code":"insufficient_space","detail":"required_bytes=2377036173 available_bytes=5000000000","message":"The output folder does not have enough free space.","required_bytes":2377036173,"available_bytes":5000000000}'
+    Assert-Contains $logBox.Text "2.21 GB" "download capacity error formats required bytes in GUI"
+    Assert-Contains $logBox.Text "4.66 GB" "download capacity error formats available bytes in GUI"
+    Assert-Contains $script:LastOperationError.message "2.21 GB" "download capacity operation error uses GUI byte formatting"
+    Assert-Equal ([Int64](Get-JsonPropertyValue $script:LastOperationError.data "required_bytes")) ([Int64]2377036173) "download capacity error keeps required bytes numeric"
+    Assert-Equal ([Int64](Get-JsonPropertyValue $script:LastOperationError.data "available_bytes")) ([Int64]5000000000) "download capacity error keeps available bytes numeric"
     (Get-OperationState "download").ExitObserved = $false
     (Get-OperationState "download").StdoutClosed = $false
     (Get-OperationState "download").Finalized = $false

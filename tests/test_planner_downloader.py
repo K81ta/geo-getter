@@ -1845,7 +1845,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("network_failed", log_text)
             self.assertIn("IncompleteRead", log_text)
 
-    def test_capacity_shortage_raises_english_error(self):
+    def test_capacity_shortage_raises_numeric_error_contract(self):
         plan = DownloadPlan(
             app_version="test",
             created_at="2026-01-01T00:00:00+00:00",
@@ -1859,6 +1859,9 @@ class PlannerDownloaderTest(unittest.TestCase):
         with self.assertRaises(GeoGetterError) as context:
             ensure_capacity(plan)
         self.assertEqual(context.exception.code, "insufficient_space")
+        self.assertEqual(context.exception.detail, "required_bytes=10 available_bytes=9")
+        self.assertEqual(context.exception.extra["required_bytes"], 10)
+        self.assertEqual(context.exception.extra["available_bytes"], 9)
 
     def test_duplicate_output_names_are_disambiguated(self):
         with tempfile.TemporaryDirectory() as temp:
