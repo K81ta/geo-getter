@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import shutil
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +90,16 @@ class ResumeArtifacts:
     download_log_path: Path
     required_bytes: int
     matched_fastq_count: int
+
+
+class _TsvMissingHeaderError(Exception):
+    pass
+
+
+class _TsvMissingColumnsError(Exception):
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__("missing_columns=" + ",".join(missing))
 
 
 def build_download_plan(
@@ -364,79 +374,62 @@ def _read_required_tsv_rows(
     path: Path,
     required_columns: tuple[str, ...],
     *,
-    missing_header_callback: Callable[[], None],
-    missing_columns_callback: Callable[[list[str]], None],
-    read_error_callback: Callable[[OSError], None] | None = None,
     empty_header_is_missing_header: bool = False,
 ) -> list[dict[str, str]]:
-    try:
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            fieldnames = reader.fieldnames
-            if fieldnames is None:
-                if empty_header_is_missing_header:
-                    missing_header_callback()
-                else:
-                    missing_columns_callback(list(required_columns))
-            elif empty_header_is_missing_header and not fieldnames:
-                missing_header_callback()
-            else:
-                _validate_required_tsv_columns(fieldnames, required_columns, missing_columns_callback)
-            return list(reader)
-    except GeoGetterError:
-        raise
-    except OSError as exc:
-        if read_error_callback:
-            read_error_callback(exc)
-        raise
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        fieldnames = reader.fieldnames
+        if fieldnames is None:
+            if empty_header_is_missing_header:
+                raise _TsvMissingHeaderError()
+            raise _TsvMissingColumnsError(list(required_columns))
+        if empty_header_is_missing_header and not fieldnames:
+            raise _TsvMissingHeaderError()
+        _validate_required_tsv_columns(fieldnames, required_columns)
+        return list(reader)
 
 
 def _validate_required_tsv_columns(
     fieldnames: list[str],
     required_columns: tuple[str, ...],
-    missing_columns_callback: Callable[[list[str]], None],
 ) -> None:
     missing = [name for name in required_columns if name not in fieldnames]
     if missing:
-        missing_columns_callback(missing)
+        raise _TsvMissingColumnsError(missing)
 
 
 def _read_resume_tsv_rows(path: Path, required_columns: tuple[str, ...], artifact: str) -> list[dict[str, str]]:
-    def missing_columns_callback(missing: list[str]) -> None:
+    try:
+        return _read_required_tsv_rows(path, required_columns)
+    except _TsvMissingHeaderError:
         _raise_resume_mismatch(
             f"missing_{artifact}_columns",
             path,
-            f"missing={','.join(missing)}",
+            f"missing={','.join(required_columns)}",
         )
-
-    def read_error_callback(exc: OSError) -> None:
+    except _TsvMissingColumnsError as exc:
+        _raise_resume_mismatch(
+            f"missing_{artifact}_columns",
+            path,
+            f"missing={','.join(exc.missing)}",
+        )
+    except OSError as exc:
         _raise_resume_mismatch(f"read_{artifact}_failed", path, str(exc))
-
-    return _read_required_tsv_rows(
-        path,
-        required_columns,
-        missing_header_callback=lambda: missing_columns_callback(list(required_columns)),
-        missing_columns_callback=missing_columns_callback,
-        read_error_callback=read_error_callback,
-    )
 
 
 def _read_fastq_manifest_rows(manifest: Path) -> list[dict[str, str]]:
-    return _read_required_tsv_rows(
-        manifest,
-        FASTQ_MANIFEST_REQUIRED_COLUMNS,
-        missing_header_callback=_raise_invalid_manifest_missing_header,
-        missing_columns_callback=_raise_invalid_manifest_missing_columns,
-        empty_header_is_missing_header=True,
-    )
-
-
-def _raise_invalid_manifest_missing_header() -> None:
-    raise GeoGetterError(INVALID_MANIFEST, "missing_header")
-
-
-def _raise_invalid_manifest_missing_columns(missing: list[str]) -> None:
-    raise GeoGetterError(INVALID_MANIFEST, f"missing_columns={','.join(missing)}")
+    try:
+        return _read_required_tsv_rows(
+            manifest,
+            FASTQ_MANIFEST_REQUIRED_COLUMNS,
+            empty_header_is_missing_header=True,
+        )
+    except _TsvMissingHeaderError as exc:
+        raise GeoGetterError(INVALID_MANIFEST, "missing_header") from exc
+    except _TsvMissingColumnsError as exc:
+        raise GeoGetterError(INVALID_MANIFEST, f"missing_columns={','.join(exc.missing)}") from exc
+    except OSError as exc:
+        raise GeoGetterError(INVALID_MANIFEST, f"read_failed path={manifest} detail={exc}") from exc
 
 
 def _assert_manifest_matches_plan(manifest: Path, rows: list[dict[str, str]], plan: DownloadPlan) -> None:
