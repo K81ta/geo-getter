@@ -7,7 +7,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from . import __version__
@@ -29,7 +29,7 @@ from .errors import (
     SELECTION_REQUIRED,
     GeoGetterError,
 )
-from .models import DownloadPlan, FastqFile
+from .models import DownloadPlan, FastqFile, PlannedSupplementaryFile, SupplementaryFile
 from .path_safety import (
     download_part_path,
     download_runtime_paths,
@@ -64,13 +64,17 @@ class CliDownloadPlan:
     resume_active: bool
     fastq_plan: DownloadPlan | None
     resume_artifacts: ResumeArtifacts | None
-    planned_supplementary: list[tuple[dict, Path]]
+    planned_supplementary: list[PlannedSupplementaryFile]
 
     @property
     def resume_required_bytes(self) -> int | None:
         if self.resume_artifacts is None:
             return None
         return self.resume_artifacts.required_bytes
+
+
+_SUPPLEMENTARY_PAYLOAD_FIELDS = {field.name for field in fields(SupplementaryFile)}
+_SUPPLEMENTARY_REQUIRED_FIELDS = ("source_accession", "scope", "name", "url")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -472,13 +476,13 @@ def _preflight_json(
     if cli_plan.planned_supplementary:
         planned_supp = [
             {
-                "name": item.get("name", ""),
-                "source_accession": item.get("source_accession", ""),
-                "scope": item.get("scope", ""),
-                "url": item.get("url", ""),
-                "local_path": str(local_path),
+                "name": planned.supplementary.name,
+                "source_accession": planned.supplementary.source_accession,
+                "scope": planned.supplementary.scope,
+                "url": planned.supplementary.url,
+                "local_path": str(planned.local_path),
             }
-            for item, local_path in cli_plan.planned_supplementary
+            for planned in cli_plan.planned_supplementary
         ]
 
     print(
@@ -592,8 +596,26 @@ def _selected_fastq_from_payload(payload: dict, indices_text: str) -> list[Fastq
     return _selected_items_from_payload(payload, "fastq_files", indices_text, "FASTQ", lambda item: FastqFile(**item))
 
 
-def _selected_supplementary_from_payload(payload: dict, indices_text: str) -> list[dict]:
-    return _selected_items_from_payload(payload, "supplementary_files", indices_text, "supplementary", dict)
+def _selected_supplementary_from_payload(payload: dict, indices_text: str) -> list[SupplementaryFile]:
+    return _selected_items_from_payload(
+        payload,
+        "supplementary_files",
+        indices_text,
+        "supplementary",
+        _supplementary_file_from_payload,
+    )
+
+
+def _supplementary_file_from_payload(item: object) -> SupplementaryFile:
+    if not isinstance(item, dict):
+        raise ValueError("supplementary item must be an object")
+    missing_fields = [name for name in _SUPPLEMENTARY_REQUIRED_FIELDS if name not in item]
+    if missing_fields:
+        raise ValueError(f"supplementary item is missing required field(s): {', '.join(missing_fields)}")
+
+    # Filter at the bridge boundary so legacy or future JSON fields do not leak into the plan model.
+    payload = {name: item[name] for name in _SUPPLEMENTARY_PAYLOAD_FIELDS if name in item}
+    return SupplementaryFile(**payload)
 
 
 def _selected_items_from_payload(payload: dict, key: str, indices_text: str, label: str, build_item) -> list:
@@ -606,7 +628,7 @@ def _selected_items_from_payload(payload: dict, key: str, indices_text: str, lab
     return selected
 
 
-def _ensure_any_selected(selected_fastq: list[FastqFile], selected_supp: list[dict]) -> None:
+def _ensure_any_selected(selected_fastq: list[FastqFile], selected_supp: list[SupplementaryFile]) -> None:
     if not selected_fastq and not selected_supp:
         raise GeoGetterError(SELECTION_REQUIRED)
 
@@ -706,8 +728,8 @@ def _preflight_planned_paths(cli_plan: CliDownloadPlan) -> list[Path]:
         planned_paths.append(supplementary_manifest_path(cli_plan.output_dir))
         planned_paths.extend(
             path
-            for _item, local_path in cli_plan.planned_supplementary
-            for path in download_runtime_paths(local_path)
+            for planned in cli_plan.planned_supplementary
+            for path in download_runtime_paths(planned.local_path)
         )
     planned_paths.append(download_log_path(cli_plan.output_dir))
     return planned_paths
@@ -729,19 +751,19 @@ def _directory_has_entries(path: Path) -> bool:
 
 def _planned_supplementary_files(
     output_dir: Path,
-    selected_supp: list[dict],
+    selected_supp: list[SupplementaryFile],
     reserved_names: list[str] | None = None,
-) -> list[tuple[dict, Path]]:
+) -> list[PlannedSupplementaryFile]:
     used_keys = {name_collision_key(name) for name in reserved_names or []}
-    planned: list[tuple[dict, Path]] = []
+    planned: list[PlannedSupplementaryFile] = []
     for item in selected_supp:
         local_path = plan_download_child_path(
             output_dir,
-            item.get("name", "") or "geo_supplementary_file",
+            item.name or "geo_supplementary_file",
             "geo_supplementary_file",
             used_keys,
         )
-        planned.append((item, local_path))
+        planned.append(PlannedSupplementaryFile(supplementary=item, local_path=local_path))
     return planned
 
 

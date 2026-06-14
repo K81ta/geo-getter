@@ -70,6 +70,12 @@ class PlannedFile:
 
 
 @dataclass(frozen=True)
+class PlannedSupplementaryFile:
+    supplementary: SupplementaryFile
+    local_path: Path
+
+
+@dataclass(frozen=True)
 class DownloadPlan:
     app_version: str
     created_at: str

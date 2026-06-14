@@ -27,7 +27,7 @@ from .errors import (
 )
 from .hashing import verify_md5
 from .http_client import USER_AGENT
-from .models import DownloadPlan, PlannedFile
+from .models import DownloadPlan, PlannedFile, PlannedSupplementaryFile
 from .path_safety import download_part_path, existing_size, unique_existing_path, unique_quarantine_path
 from .planner import ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
 
@@ -165,11 +165,11 @@ def download_plan(
 
 def download_supplementary_files(
     output_dir: Path,
-    planned_supplementary: list[tuple[dict, Path]],
+    planned_supplementary: list[PlannedSupplementaryFile],
     progress_callback: _PlannedProgressCallback | None = None,
     message_callback: MessageCallback | None = None,
 ) -> list[tuple[_PlannedDownload, str, str]]:
-    items = [_supplementary_download_record(item, local_path) for item, local_path in planned_supplementary]
+    items = [_supplementary_download_record(planned) for planned in planned_supplementary]
     return _execute_planned_downloads(
         output_dir,
         items,
@@ -233,13 +233,14 @@ def _fastq_download_record(planned: PlannedFile) -> _PlannedDownload:
     )
 
 
-def _supplementary_download_record(item: dict, local_path: Path) -> _PlannedDownload:
+def _supplementary_download_record(planned: PlannedSupplementaryFile) -> _PlannedDownload:
     return _PlannedDownload(
         kind="supplementary",
-        file_name=local_path.name,
-        local_path=local_path,
+        file_name=planned.local_path.name,
+        local_path=planned.local_path,
         run_accession="GEO_SUPPLEMENTARY",
-        url=str(item.get("url", "")),
+        url=planned.supplementary.url,
+        source=planned,
     )
 
 
