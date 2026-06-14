@@ -13,6 +13,7 @@ from unittest import mock
 from geo_getter.cli import (
     BRIDGE_COMMANDS,
     CliDownloadPlan,
+    _ensure_preflight_path_lengths,
     _load_json,
     _parse_indices,
     _preflight_json,
@@ -77,6 +78,35 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(_preflight_json(input_json, fastq_indices, supp_indices, output_dir, resume_existing=resume_existing), 0)
         return json.loads(stdout.getvalue())
+
+    def write_single_fastq_payload(self, root: Path):
+        source = root / "source.fastq.gz"
+        data = b"@r1\nACGT\n+\n!!!!\n"
+        source.write_bytes(data)
+        input_json = root / "payload.json"
+        input_json.write_text(
+            json.dumps(
+                {
+                    "input_text": "GSE000001",
+                    "primary_accession": "GSE000001",
+                    "fastq_files": [
+                        {
+                            "source_accession": "GSE000001",
+                            "query_accession": "SRP000001",
+                            "run_accession": "SRR000001",
+                            "file_index": 1,
+                            "file_name": "source.fastq.gz",
+                            "url": source.as_uri(),
+                            "expected_md5": hashlib.md5(data).hexdigest(),
+                            "size_bytes": len(data),
+                        }
+                    ],
+                    "supplementary_files": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return input_json
 
     def test_cli_download_plan_keeps_execution_plan_state_only(self):
         field_names = {field.name for field in fields(CliDownloadPlan)}
@@ -206,6 +236,108 @@ class CliTest(unittest.TestCase):
             )
 
         self.assertEqual(payload["command"], "selected-download-json")
+
+    def test_preflight_json_rejects_blank_output_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    "",
+                ],
+                "output_path_invalid",
+            )
+
+        self.assertEqual(payload["path_error_code"], "output_required")
+
+    def test_preflight_json_rejects_output_path_that_is_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+            output_file = root / "output-file"
+            output_file.write_text("not a directory", encoding="utf-8")
+
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(output_file),
+                ],
+                "output_path_invalid",
+            )
+
+        self.assertEqual(payload["path_error_code"], "output_is_file")
+        self.assertEqual(payload["output_dir"], str(output_file.resolve()))
+
+    def test_preflight_json_reports_write_probe_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+
+            with mock.patch("geo_getter.cli.tempfile.NamedTemporaryFile", side_effect=PermissionError("denied")):
+                payload = self.assert_cli_error(
+                    [
+                        "preflight-json",
+                        "--input-json",
+                        str(input_json),
+                        "--fastq-indices",
+                        "0",
+                        "--out",
+                        str(root / "out"),
+                    ],
+                    "output_path_invalid",
+                )
+
+        self.assertEqual(payload["path_error_code"], "cannot_write")
+        self.assertIn("denied", payload["error"])
+
+    def test_preflight_json_reports_write_probe_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+            original_unlink = Path.unlink
+
+            def fake_unlink(path, *args, **kwargs):
+                if path.name.startswith(".geo_getter_preflight_"):
+                    raise PermissionError("cleanup denied")
+                return original_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", fake_unlink):
+                payload = self.assert_cli_error(
+                    [
+                        "preflight-json",
+                        "--input-json",
+                        str(input_json),
+                        "--fastq-indices",
+                        "0",
+                        "--out",
+                        str(root / "out"),
+                    ],
+                    "output_path_invalid",
+                )
+
+        self.assertEqual(payload["path_error_code"], "cannot_write")
+        self.assertIn("cleanup denied", payload["error"])
+
+    def test_preflight_path_length_uses_structured_error(self):
+        path = Path("x" * 260)
+
+        with self.assertRaises(GeoGetterError) as context:
+            _ensure_preflight_path_lengths([path])
+
+        self.assertEqual(context.exception.code, "path_too_long")
+        self.assertEqual(context.exception.extra["path"], str(path))
 
     def test_selected_download_supplementary_out_of_range_index_emits_target_name(self):
         with tempfile.TemporaryDirectory() as temp:

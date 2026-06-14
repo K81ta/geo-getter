@@ -537,7 +537,8 @@ function New-OperationError {
         [string]$Detail,
         [string]$Message,
         [string]$Source,
-        [object]$ExitCode
+        [object]$ExitCode,
+        [object]$Data = $null
     )
     return [pscustomobject]@{
         phase = $Phase
@@ -547,6 +548,7 @@ function New-OperationError {
         message = [string]$Message
         source = $Source
         exit_code = $ExitCode
+        data = $Data
     }
 }
 
@@ -594,7 +596,7 @@ function Set-OperationErrorFromCliErrorText {
     )
     $event = Get-CliErrorEventFromText $Text
     if ($null -eq $event) { return $null }
-    $script:LastOperationError = New-OperationError $Phase ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) $Source $ExitCode
+    $script:LastOperationError = New-OperationError $Phase ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) $Source $ExitCode $event
     return $event
 }
 
@@ -611,9 +613,14 @@ function Get-JsonPropertyValue {
 
 function Apply-PreflightErrorEventState {
     param([object]$Event)
+    if ($null -eq $Event) { return }
     $existingOutputValue = Get-JsonPropertyValue $Event "existing_output_nonempty"
     if ($null -ne $existingOutputValue) {
         $script:LastExistingOutputNonEmpty = [bool]$existingOutputValue
+    }
+    $outputDirValue = Get-JsonPropertyValue $Event "output_dir"
+    if (-not [string]::IsNullOrWhiteSpace([string]$outputDirValue)) {
+        $script:LastPreflightOutputDir = [string]$outputDirValue
     }
 }
 
@@ -1575,21 +1582,6 @@ function Update-SelectionSummary {
     $selectionSummaryLabel.Text = (T "selectionSummary") -f $fastqCount, (Format-Bytes (Get-SelectedTotalBytes)), $suppSummary, $output
 }
 
-function Assert-PreflightPathLength {
-    param([string[]]$Paths)
-    foreach ($path in $Paths) {
-        try {
-            $fullPath = [System.IO.Path]::GetFullPath($path)
-        }
-        catch {
-            throw ((T "preflightPathTooLong") -f $path)
-        }
-        if ($fullPath.Length -ge 260) {
-            throw ((T "preflightPathTooLong") -f $fullPath)
-        }
-    }
-}
-
 function Confirm-ResumeExistingOutput {
     param([string]$OutputDir)
     if ($SelfTest -and $null -ne $script:ResumeExistingConfirmationForSelfTest) {
@@ -1604,6 +1596,23 @@ function Confirm-ResumeExistingOutput {
     return $result -eq [System.Windows.Forms.DialogResult]::Yes
 }
 
+function Get-PreflightPathErrorText {
+    param([object]$OperationError)
+    $data = $OperationError.data
+    $path = [string](Get-JsonPropertyValue $data "output_dir")
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        $path = [string](Get-JsonPropertyValue $data "path")
+    }
+    $errorText = [string](Get-JsonPropertyValue $data "error")
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        return [string]$OperationError.detail
+    }
+    if ([string]::IsNullOrWhiteSpace($errorText)) {
+        return $path
+    }
+    return "{0} ({1})" -f $path, $errorText
+}
+
 function Get-PreflightErrorMessage {
     param([object]$OperationError)
     if ($null -eq $OperationError) {
@@ -1611,6 +1620,21 @@ function Get-PreflightErrorMessage {
     }
     switch ([string]$OperationError.code) {
         "resume_supplementary_unsupported" { return T "resumeSupplementaryUnsupported" }
+        "path_too_long" {
+            $path = [string](Get-JsonPropertyValue $OperationError.data "path")
+            if ([string]::IsNullOrWhiteSpace($path)) { $path = [string]$OperationError.detail }
+            return ((T "preflightPathTooLong") -f $path)
+        }
+        "output_path_invalid" {
+            $pathReason = [string](Get-JsonPropertyValue $OperationError.data "path_error_code")
+            switch ($pathReason) {
+                "output_required" { return T "preflightOutputRequired" }
+                "output_is_file" { return ((T "preflightOutputIsFile") -f (Get-PreflightPathErrorText $OperationError)) }
+                "cannot_create_output" { return ((T "preflightCannotCreateOutput") -f (Get-PreflightPathErrorText $OperationError)) }
+                "cannot_write" { return ((T "preflightCannotWrite") -f (Get-PreflightPathErrorText $OperationError)) }
+                "cannot_read_output" { return ((T "preflightCannotWrite") -f (Get-PreflightPathErrorText $OperationError)) }
+            }
+        }
         default {
             if (-not [string]::IsNullOrWhiteSpace([string]$OperationError.message)) {
                 return [string]$OperationError.message
@@ -1675,37 +1699,11 @@ function Test-DownloadPreflight {
     $script:LastResumeErrorCode = ""
     $script:LastOperationError = $null
     try {
-        if (-not $outputBox -or [string]::IsNullOrWhiteSpace($outputBox.Text)) {
-            throw (T "preflightOutputRequired")
-        }
-        $runOutputDir = [System.IO.Path]::GetFullPath([string]$outputBox.Text)
-        if ([System.IO.File]::Exists($runOutputDir)) {
-            throw ((T "preflightOutputIsFile") -f $runOutputDir)
-        }
-
+        $outputDir = if ($outputBox) { [string]$outputBox.Text } else { "" }
+        $preflight = Invoke-DownloadPreflightJsonForGui (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty) $outputDir $ResumeExisting
+        $runOutputDir = [string]$preflight.output_dir
         $script:LastPreflightOutputDir = $runOutputDir
-        Assert-PreflightPathLength @($runOutputDir)
-
-        try {
-            [System.IO.Directory]::CreateDirectory($runOutputDir) | Out-Null
-        }
-        catch {
-            throw ((T "preflightCannotCreateOutput") -f ("{0} ({1})" -f $runOutputDir, $_.Exception.Message))
-        }
-
-        $probePath = Join-Path $runOutputDir (".geo_getter_preflight_" + [System.Guid]::NewGuid().ToString("N") + ".tmp")
-        try {
-            [System.IO.File]::WriteAllText($probePath, "ok", $script:Utf8NoBom)
-            Remove-Item -LiteralPath $probePath -Force -ErrorAction Stop
-        }
-        catch {
-            Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
-            throw ((T "preflightCannotWrite") -f ("{0} ({1})" -f $runOutputDir, $_.Exception.Message))
-        }
-
-        $preflight = Invoke-DownloadPreflightJsonForGui (Get-SelectedFastqIndicesOrEmpty) (Get-SelectedSuppIndicesOrEmpty) $runOutputDir $ResumeExisting
         $plannedPaths = @($preflight.planned_paths | ForEach-Object { [string]$_ })
-        Assert-PreflightPathLength $plannedPaths
 
         $existingOutputNonEmpty = [bool]$preflight.existing_output_nonempty
         $script:LastExistingOutputNonEmpty = $existingOutputNonEmpty
@@ -4247,14 +4245,16 @@ if ($SelfTest) {
     Assert-Equal $script:LastOperationError.phase "download_preflight" "preflight records operation error phase"
     Assert-Equal $script:LastOperationError.code "output_path_invalid" "preflight records operation error code"
 
+    $outputBox.Text = Join-Path $selfTestRoot ("x" * 270)
     $longPreflightMessage = ""
     try {
-        Assert-PreflightPathLength @(Join-Path $selfTestRoot ("x" * 270))
+        Test-DownloadPreflight | Out-Null
     }
     catch {
         $longPreflightMessage = $_.Exception.Message
     }
     Assert-Contains $longPreflightMessage "長すぎます" "preflight checks long paths"
+    Assert-Equal $script:LastOperationError.code "path_too_long" "preflight records long path code"
 
     $outputBox.Text = Join-Path $selfTestRoot "supp only output"
     $fastqGrid.Rows[0].Cells["selected"].Value = $false
