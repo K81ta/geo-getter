@@ -78,8 +78,12 @@ class CliDownloadPlan:
 
 def main(argv: list[str] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    args = _parse_cli_args(argv_list)
-    return args.handler(args)
+    command = _command_from_argv(argv_list)
+    try:
+        args = _parse_cli_args(argv_list)
+    except Exception as exc:
+        return _emit_bridge_error(command, exc)
+    return _run_bridge_command(args.command, args.handler, args)
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,17 @@ def _configure_bridge_command_parser(parser: argparse.ArgumentParser, command: B
     parser.set_defaults(command=command.name, handler=command.handler)
 
 
+def _run_bridge_command(
+    command: str,
+    handler: Callable[[argparse.Namespace], int],
+    args: argparse.Namespace,
+) -> int:
+    try:
+        return handler(args)
+    except Exception as exc:
+        return _emit_bridge_error(command, exc)
+
+
 def _add_resolve_json_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("input_text", nargs="?")
     parser.add_argument("--input-file")
@@ -208,13 +223,12 @@ BRIDGE_COMMAND_BY_NAME = {command.name: command for command in BRIDGE_COMMANDS}
 
 
 def run_cli(argv: list[str] | None = None) -> int:
-    argv_list = list(sys.argv[1:] if argv is None else argv)
-    command = _command_from_argv(argv_list)
-    try:
-        return main(argv_list)
-    except Exception as exc:
-        print(json.dumps(_error_payload(command, exc), ensure_ascii=False), file=sys.stderr)
-        return 1
+    return main(argv)
+
+
+def _emit_bridge_error(command: str, exc: Exception) -> int:
+    print(json.dumps(_error_payload(command, exc), ensure_ascii=False), file=sys.stderr)
+    return 1
 
 
 def _command_from_argv(argv: list[str]) -> str:
