@@ -126,6 +126,9 @@ class PlannerDownloaderTest(unittest.TestCase):
             manifest = manifest_path.read_text(encoding="utf-8-sig")
             self.assertEqual(manifest.splitlines()[0].split("\t"), list(FASTQ_MANIFEST_COLUMNS))
             self.assertIn("SRR000001.fastq.gz", manifest)
+            with manifest_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(row["local_path"], "SRR000001.fastq.gz")
             log_path = download_log_path(temp)
             self.assertTrue(log_path.exists())
             self.assertTrue(log_path.read_bytes().startswith(b"\xef\xbb\xbf"))
@@ -2079,7 +2082,64 @@ class PlannerDownloaderTest(unittest.TestCase):
             calculate_md5.assert_not_called()
             self.assertEqual(result["status_counts"], {"size_mismatch": 1})
 
-    def test_verify_fastq_manifest_falls_back_to_manifest_folder_when_absolute_path_is_stale(self):
+    def test_verify_fastq_manifest_resolves_local_path_relative_to_manifest_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            nested_dir = output_dir / "nested"
+            nested_dir.mkdir(parents=True)
+            target_data = b"target\n"
+            target_path = nested_dir / "verified.fastq.gz"
+            target_path.write_bytes(target_data)
+            sibling_path = output_dir / "wrong.fastq.gz"
+            sibling_path.write_bytes(b"wrong\n")
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        (
+                            "GSE\tSRP\tRUN1\t1\twrong.fastq.gz\thttps://example.invalid/verified\t"
+                            f"{hashlib.md5(target_data).hexdigest()}\t{len(target_data)}\tnested/verified.fastq.gz\tplanned"
+                        ),
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            result = verify_fastq_manifest(manifest)
+            with result["report_path"].open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(result["status_counts"], {"md5_verified": 1})
+            self.assertEqual(row["local_path"], str(target_path.resolve()))
+
+    def test_verify_fastq_manifest_does_not_search_file_name_when_local_path_is_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            sibling_data = b"unrelated sibling\n"
+            sibling_path = output_dir / "verified.fastq.gz"
+            sibling_path.write_bytes(sibling_data)
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        (
+                            "GSE\tSRP\tRUN1\t1\tverified.fastq.gz\thttps://example.invalid/verified\t"
+                            f"{hashlib.md5(sibling_data).hexdigest()}\t{len(sibling_data)}\tmissing/verified.fastq.gz\tplanned"
+                        ),
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            result = verify_fastq_manifest(manifest)
+            with result["report_path"].open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(result["status_counts"], {"missing": 1})
+            self.assertEqual(row["local_path"], str((output_dir / "missing" / "verified.fastq.gz").resolve()))
+
+    def test_verify_fastq_manifest_uses_legacy_absolute_local_path_name_after_folder_move(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
             output_dir.mkdir()
@@ -2105,7 +2165,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(row["exists"], "yes")
             self.assertEqual(row["status"], "md5_verified")
 
-    def test_verify_fastq_manifest_prefers_manifest_folder_when_absolute_path_still_exists(self):
+    def test_verify_fastq_manifest_prefers_legacy_absolute_local_path_name_when_absolute_still_exists(self):
         with tempfile.TemporaryDirectory() as temp:
             original_dir = Path(temp) / "original"
             copied_dir = Path(temp) / "copied"
@@ -2136,7 +2196,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(row["actual_md5"], hashlib.md5(copied_data).hexdigest())
             self.assertEqual(row["status"], "md5_mismatch")
 
-    def test_verify_fastq_manifest_falls_back_to_local_path_name_for_moved_duplicates(self):
+    def test_verify_fastq_manifest_uses_legacy_absolute_local_path_name_for_moved_duplicates(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
             output_dir.mkdir()

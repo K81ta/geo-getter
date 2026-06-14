@@ -765,7 +765,10 @@ class CliTest(unittest.TestCase):
                 fastq_manifest_rows = list(csv.DictReader(handle, delimiter="\t"))
             with supplementary_manifest_path(out_dir).open("r", encoding="utf-8-sig", newline="") as handle:
                 supp_manifest_rows = list(csv.DictReader(handle, delimiter="\t"))
-            self.assertEqual([row["local_path"] for row in fastq_manifest_rows], [item["local_path"] for item in preflight["fastq_files"]])
+            self.assertEqual(
+                [row["local_path"] for row in fastq_manifest_rows],
+                [Path(item["local_path"]).name for item in preflight["fastq_files"]],
+            )
             self.assertEqual([row["local_path"] for row in supp_manifest_rows], [item["local_path"] for item in preflight["supplementary_files"]])
             for item in preflight["supplementary_files"]:
                 self.assertEqual(Path(item["local_path"]).read_bytes(), data)
