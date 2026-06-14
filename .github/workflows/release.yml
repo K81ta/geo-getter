@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_PYTHON_VERSION: "3.14.5"
+
 jobs:
   build-release:
     runs-on: windows-2025-vs2026
@@ -21,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ env.RELEASE_PYTHON_VERSION }}
 
       - name: Validate tag version
         shell: pwsh
@@ -61,7 +64,7 @@ jobs:
 
       - name: Build release artifacts
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File .\tools\build_release.ps1 -BuildInstaller
+        run: powershell -ExecutionPolicy Bypass -File .\tools\build_release.ps1 -BuildInstaller -PythonVersion "${{ env.RELEASE_PYTHON_VERSION }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
