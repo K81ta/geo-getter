@@ -92,7 +92,7 @@ class PathSafetyTest(unittest.TestCase):
             self.assertEqual(existing_size(OSErrorPath()), 0)
             self.assertEqual(existing_size(StatOSErrorPath()), 0)
 
-    def test_download_runtime_candidate_paths_share_suffix_rules(self):
+    def test_sidecar_candidate_paths_share_suffix_rules(self):
         target = Path("sample.fastq.gz")
         part = download_part_path(target)
 
@@ -108,37 +108,19 @@ class PathSafetyTest(unittest.TestCase):
             "sample.fastq.gz.part.bad-md5-20000101T000000Z.2",
         )
         self.assertEqual(
-            [path.name for path in download_runtime_paths(target, "fastq")],
+            [path.name for path in download_runtime_paths(target)],
             [
                 "sample.fastq.gz",
                 "sample.fastq.gz.part",
-                "sample.fastq.gz.bad-md5-existing-20000101T000000Z",
-                "sample.fastq.gz.bad-md5-existing-20000101T000000Z.2",
-                "sample.fastq.gz.size-mismatch-existing-20000101T000000Z",
-                "sample.fastq.gz.size-mismatch-existing-20000101T000000Z.2",
-                "sample.fastq.gz.unverified-existing-20000101T000000Z",
-                "sample.fastq.gz.unverified-existing-20000101T000000Z.2",
-                "sample.fastq.gz.part.bad-md5-20000101T000000Z",
-                "sample.fastq.gz.part.bad-md5-20000101T000000Z.2",
-                "sample.fastq.gz.part.size-mismatch-20000101T000000Z",
-                "sample.fastq.gz.part.size-mismatch-20000101T000000Z.2",
-                "sample.fastq.gz.part.unverified-existing-20000101T000000Z",
-                "sample.fastq.gz.part.unverified-existing-20000101T000000Z.2",
             ],
         )
         self.assertEqual(
-            [path.name for path in download_runtime_paths(Path("sample.txt"), "supplementary")],
+            [path.name for path in download_runtime_paths(Path("sample.txt"))],
             [
                 "sample.txt",
                 "sample.txt.part",
-                "sample.txt.existing",
-                "sample.txt.existing.2",
             ],
         )
-
-    def test_download_runtime_paths_rejects_unknown_kind(self):
-        with self.assertRaises(ValueError):
-            download_runtime_paths(Path("sample.fastq.gz"), "unknown")
 
     def test_unique_sidecar_paths_skip_existing_candidates(self):
         with tempfile.TemporaryDirectory() as temp:

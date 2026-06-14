@@ -692,8 +692,7 @@ class CliTest(unittest.TestCase):
             self.assertIn("same.3.fastq.gz", planned_names)
             self.assertIn("same.4.fastq.gz", planned_names)
             self.assertIn("same.4.fastq.gz.part", planned_names)
-            self.assertIn("Same.fastq.gz.part.unverified-existing-20000101T000000Z", planned_names)
-            self.assertIn("Same.fastq.gz.part.unverified-existing-20000101T000000Z.2", planned_names)
+            self.assertNotIn("Same.fastq.gz.part.unverified-existing-20000101T000000Z", planned_names)
             self.assertIn("same.fastq.gz.2.part", planned_names)
             self.assertIn("same.fastq.gz.2.part.part", planned_names)
             self.assertIn("collision output_fastq_manifest.tsv", planned_names)
@@ -701,6 +700,8 @@ class CliTest(unittest.TestCase):
             self.assertIn("collision output_supplementary_manifest.tsv", planned_names)
             self.assertIn("collision output_download_log.tsv", planned_names)
             self.assertIn("collision output_download_log.2.tsv", planned_names)
+            self.assertFalse(any("20000101T000000Z" in name for name in planned_names))
+            self.assertFalse(any(name.endswith(".existing") or ".existing." in name for name in planned_names))
 
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(_selected_download_json(input_json, "0,1,2,3", "0,1,2", out_dir), 0)
