@@ -5,12 +5,15 @@ from pathlib import Path
 from geo_getter.path_safety import (
     child_path,
     download_part_path,
+    download_runtime_paths,
     existing_candidate_path,
     existing_size,
     name_collision_key,
     quarantine_candidate_path,
     reserve_unique_download_name,
     safe_file_name,
+    unique_existing_path,
+    unique_quarantine_path,
 )
 
 
@@ -104,6 +107,50 @@ class PathSafetyTest(unittest.TestCase):
             quarantine_candidate_path(part, "bad-md5", "20000101T000000Z", 2).name,
             "sample.fastq.gz.part.bad-md5-20000101T000000Z.2",
         )
+        self.assertEqual(
+            [path.name for path in download_runtime_paths(target, "fastq")],
+            [
+                "sample.fastq.gz",
+                "sample.fastq.gz.part",
+                "sample.fastq.gz.bad-md5-existing-20000101T000000Z",
+                "sample.fastq.gz.bad-md5-existing-20000101T000000Z.2",
+                "sample.fastq.gz.size-mismatch-existing-20000101T000000Z",
+                "sample.fastq.gz.size-mismatch-existing-20000101T000000Z.2",
+                "sample.fastq.gz.unverified-existing-20000101T000000Z",
+                "sample.fastq.gz.unverified-existing-20000101T000000Z.2",
+                "sample.fastq.gz.part.bad-md5-20000101T000000Z",
+                "sample.fastq.gz.part.bad-md5-20000101T000000Z.2",
+                "sample.fastq.gz.part.size-mismatch-20000101T000000Z",
+                "sample.fastq.gz.part.size-mismatch-20000101T000000Z.2",
+                "sample.fastq.gz.part.unverified-existing-20000101T000000Z",
+                "sample.fastq.gz.part.unverified-existing-20000101T000000Z.2",
+            ],
+        )
+        self.assertEqual(
+            [path.name for path in download_runtime_paths(Path("sample.txt"), "supplementary")],
+            [
+                "sample.txt",
+                "sample.txt.part",
+                "sample.txt.existing",
+                "sample.txt.existing.2",
+            ],
+        )
+
+    def test_download_runtime_paths_rejects_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            download_runtime_paths(Path("sample.fastq.gz"), "unknown")
+
+    def test_unique_sidecar_paths_skip_existing_candidates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "sample.fastq.gz"
+            target.with_name("sample.fastq.gz.existing").write_bytes(b"old")
+            target.with_name("sample.fastq.gz.bad-md5-20000101T000000Z").write_bytes(b"bad")
+
+            self.assertEqual(unique_existing_path(target).name, "sample.fastq.gz.existing.2")
+            self.assertEqual(
+                unique_quarantine_path(target, "bad-md5", "20000101T000000Z").name,
+                "sample.fastq.gz.bad-md5-20000101T000000Z.2",
+            )
 
 
 if __name__ == "__main__":

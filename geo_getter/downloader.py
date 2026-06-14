@@ -28,7 +28,7 @@ from .errors import (
 from .hashing import verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
-from .path_safety import download_part_path, existing_size, quarantine_candidate_path
+from .path_safety import download_part_path, existing_size, unique_quarantine_path
 from .planner import ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
 
 ProgressCallback = Callable[[PlannedFile, int, int], None]
@@ -715,12 +715,8 @@ def _finalize_part(part_path: Path, local_path: Path) -> None:
 
 def _quarantine_file(path: Path, reason: str) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    candidate = quarantine_candidate_path(path, reason, timestamp)
-    counter = 2
     try:
-        while candidate.exists():
-            candidate = quarantine_candidate_path(path, reason, timestamp, counter)
-            counter += 1
+        candidate = unique_quarantine_path(path, reason, timestamp)
         path.replace(candidate)
     except OSError as exc:
         raise DownloadLocalIoError(f"Could not move file aside: {path}") from exc

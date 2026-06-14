@@ -33,9 +33,9 @@ from .errors import (
 from .models import DownloadPlan, FastqFile
 from .path_safety import (
     download_part_path,
-    existing_candidate_path,
+    download_runtime_paths,
     name_collision_key,
-    quarantine_candidate_path,
+    unique_existing_path,
 )
 from .planner import (
     append_download_log,
@@ -677,14 +677,14 @@ def _preflight_planned_paths(cli_plan: CliDownloadPlan) -> list[Path]:
         planned_paths.extend(
             path
             for planned in cli_plan.fastq_plan.files
-            for path in _download_runtime_paths(planned.local_path, "fastq")
+            for path in download_runtime_paths(planned.local_path, "fastq")
         )
     if cli_plan.planned_supplementary:
         planned_paths.append(supplementary_manifest_path(cli_plan.output_dir))
         planned_paths.extend(
             path
             for _item, local_path in cli_plan.planned_supplementary
-            for path in _download_runtime_paths(local_path, "supplementary")
+            for path in download_runtime_paths(local_path, "supplementary")
         )
     planned_paths.append(download_log_path(cli_plan.output_dir))
     return planned_paths
@@ -712,7 +712,7 @@ def _download_supplementary_files(output_dir: Path, planned_supplementary: list[
         print(json.dumps({"event": "message", "message": f"supplementary_download_started: {file_name}"}, ensure_ascii=False), flush=True)
         try:
             if local_path.exists():
-                local_path.replace(_unique_existing_path(local_path))
+                local_path.replace(unique_existing_path(local_path))
         except OSError as exc:
             outcome = download_error_outcome(local_path, exc)
         else:
@@ -773,41 +773,6 @@ def _planned_supplementary_files(
         )
         planned.append((item, local_path))
     return planned
-
-
-def _download_runtime_paths(local_path: Path, kind: str) -> list[Path]:
-    paths = [local_path, download_part_path(local_path)]
-    if kind == "fastq":
-        timestamp = "20000101T000000Z"
-        part_path = download_part_path(local_path)
-        paths.extend(
-            [
-                quarantine_candidate_path(local_path, "bad-md5-existing", timestamp),
-                quarantine_candidate_path(local_path, "bad-md5-existing", timestamp, 2),
-                quarantine_candidate_path(local_path, "size-mismatch-existing", timestamp),
-                quarantine_candidate_path(local_path, "size-mismatch-existing", timestamp, 2),
-                quarantine_candidate_path(local_path, "unverified-existing", timestamp),
-                quarantine_candidate_path(local_path, "unverified-existing", timestamp, 2),
-                quarantine_candidate_path(part_path, "bad-md5", timestamp),
-                quarantine_candidate_path(part_path, "bad-md5", timestamp, 2),
-                quarantine_candidate_path(part_path, "size-mismatch", timestamp),
-                quarantine_candidate_path(part_path, "size-mismatch", timestamp, 2),
-                quarantine_candidate_path(part_path, "unverified-existing", timestamp),
-                quarantine_candidate_path(part_path, "unverified-existing", timestamp, 2),
-            ]
-        )
-    else:
-        paths.extend([existing_candidate_path(local_path), existing_candidate_path(local_path, 2)])
-    return paths
-
-
-def _unique_existing_path(path: Path) -> Path:
-    candidate = existing_candidate_path(path)
-    counter = 2
-    while candidate.exists():
-        candidate = existing_candidate_path(path, counter)
-        counter += 1
-    return candidate
 
 
 if __name__ == "__main__":

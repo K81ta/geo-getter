@@ -16,6 +16,7 @@ from geo_getter.downloader import (
     DownloadNetworkError,
     MAX_DOWNLOAD_WORKERS,
     _download_url_to_part_with_retries,
+    _quarantine_file,
     download_plan,
     download_url_to_part,
     download_url_without_md5,
@@ -633,6 +634,23 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(results[0][1], "md5_verified")
             self.assertEqual(existing.read_bytes(), data)
             self.assertTrue(list(output_dir.glob("fixture.fastq.gz.bad-md5-existing-*")))
+
+    def test_quarantine_file_uses_numbered_sidecar_on_collision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.fastq.gz.part"
+            source.write_bytes(b"new")
+            existing_quarantine = root / "fixture.fastq.gz.part.bad-md5-20000101T000000Z"
+            existing_quarantine.write_bytes(b"old")
+
+            with mock.patch("geo_getter.downloader.datetime") as datetime_mock:
+                datetime_mock.now.return_value = datetime(2000, 1, 1, tzinfo=timezone.utc)
+                quarantined = _quarantine_file(source, "bad-md5")
+
+            self.assertEqual(quarantined.name, "fixture.fastq.gz.part.bad-md5-20000101T000000Z.2")
+            self.assertEqual(existing_quarantine.read_bytes(), b"old")
+            self.assertEqual(quarantined.read_bytes(), b"new")
+            self.assertFalse(source.exists())
 
     def test_complete_part_file_is_verified_and_finalized(self):
         with tempfile.TemporaryDirectory() as temp:
