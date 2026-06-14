@@ -6,19 +6,10 @@ import io
 import tempfile
 import unittest
 import urllib.error
-from dataclasses import fields
 from pathlib import Path
 from unittest import mock
 
 from geo_getter.cli import (
-    BRIDGE_COMMANDS,
-    CliDownloadPlan,
-    _ensure_preflight_path_lengths,
-    _load_json,
-    _parse_indices,
-    _preflight_json,
-    _selected_download_json,
-    _selected_fastq_from_payload,
     main,
     run_cli,
 )
@@ -46,6 +37,12 @@ class CliTest(unittest.TestCase):
             exit_code = run_cli(argv)
         return exit_code, stdout.getvalue(), stderr.getvalue()
 
+    def run_cli_success(self, argv):
+        exit_code, stdout, stderr = self.run_cli_with_streams(argv)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        return stdout
+
     def assert_cli_error(self, argv, expected_code):
         exit_code, stdout, stderr = self.run_cli_with_streams(argv)
         self.assertEqual(exit_code, 1)
@@ -58,6 +55,35 @@ class CliTest(unittest.TestCase):
         self.assertIn("detail", payload)
         self.assertIn("message", payload)
         return payload
+
+    def run_selected_download_json(
+        self,
+        input_json,
+        fastq_indices,
+        supp_indices,
+        output_dir,
+        *,
+        resume_existing=False,
+        download_workers=None,
+    ):
+        argv = [
+            "selected-download-json",
+            "--input-json",
+            str(input_json),
+            "--fastq-indices",
+            fastq_indices,
+            "--supp-indices",
+            supp_indices,
+            "--out",
+            str(output_dir),
+        ]
+        if resume_existing:
+            argv.append("--resume-existing")
+        if download_workers is not None:
+            argv.extend(["--download-workers", str(download_workers)])
+        exit_code, stdout, stderr = self.run_cli_with_streams(argv)
+        self.assertEqual(stderr, "")
+        return exit_code, stdout
 
     def test_all_bridge_commands_emit_one_structured_error_line(self):
         cases = (
@@ -75,10 +101,21 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(payload["command"], command)
 
     def run_preflight_json(self, input_json, fastq_indices, supp_indices, output_dir, resume_existing=False):
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            self.assertEqual(_preflight_json(input_json, fastq_indices, supp_indices, output_dir, resume_existing=resume_existing), 0)
-        return json.loads(stdout.getvalue())
+        argv = [
+            "preflight-json",
+            "--input-json",
+            str(input_json),
+            "--fastq-indices",
+            fastq_indices,
+            "--supp-indices",
+            supp_indices,
+            "--out",
+            str(output_dir),
+        ]
+        if resume_existing:
+            argv.append("--resume-existing")
+        return json.loads(self.run_cli_success(argv))
+
 
     def write_single_fastq_payload(self, root: Path):
         source = root / "source.fastq.gz"
@@ -108,32 +145,6 @@ class CliTest(unittest.TestCase):
             encoding="utf-8",
         )
         return input_json
-
-    def test_cli_download_plan_keeps_execution_plan_state_only(self):
-        field_names = {field.name for field in fields(CliDownloadPlan)}
-        self.assertIn("fastq_plan", field_names)
-        self.assertIn("planned_supplementary", field_names)
-        self.assertNotIn("selected_fastq", field_names)
-        self.assertNotIn("selected_supplementary", field_names)
-        self.assertNotIn("resume_required_bytes", field_names)
-
-    def test_bridge_command_registry_contains_all_json_commands(self):
-        commands = {command.name: command for command in BRIDGE_COMMANDS}
-        self.assertEqual(
-            set(commands),
-            {
-                "resolve-json",
-                "selected-download-json",
-                "preflight-json",
-                "verify-manifest-json",
-                "limits-json",
-                "check-update-json",
-                "download-update-json",
-            },
-        )
-        for command in commands.values():
-            self.assertTrue(callable(command.configure), command.name)
-            self.assertTrue(callable(command.handler), command.name)
 
     def test_help_only_exposes_gui_bridge_commands(self):
         stdout = io.StringIO()
@@ -189,15 +200,36 @@ class CliTest(unittest.TestCase):
             },
         )
 
-    def test_load_json_accepts_utf8_bom(self):
+    def test_input_json_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "payload.json"
-            path.write_text("\ufeff{\"value\": 1}", encoding="utf-8")
-            self.assertEqual(_load_json(path), {"value": 1})
+            path.write_text(
+                "\ufeff"
+                + json.dumps(
+                    {
+                        "input_text": "GSE",
+                        "primary_accession": "GSE",
+                        "fastq_files": [],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(path),
+                    "--fastq-indices",
+                    " , ",
+                    "--out",
+                    str(Path(temp) / "out"),
+                ],
+                "selection_required",
+            )
 
-    def test_parse_indices_allows_empty_selection_for_overall_selection_check(self):
-        self.assertEqual(_parse_indices(""), [])
-        self.assertEqual(_parse_indices(" , "), [])
+        self.assertEqual(payload["command"], "preflight-json")
+        self.assertIn("Select at least one", payload["message"])
 
     def test_resolve_json_empty_input_emits_structured_stderr_error(self):
         payload = self.assert_cli_error(["resolve-json", ""], "invalid_input")
@@ -352,13 +384,24 @@ class CliTest(unittest.TestCase):
         self.assertIn("cleanup denied", payload["error"])
 
     def test_preflight_path_length_uses_structured_error(self):
-        path = Path("x" * 260)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / ("x" * 260)),
+                ],
+                "path_too_long",
+            )
 
-        with self.assertRaises(GeoGetterError) as context:
-            _ensure_preflight_path_lengths([path])
-
-        self.assertEqual(context.exception.code, "path_too_long")
-        self.assertEqual(context.exception.extra["path"], str(path))
+        self.assertEqual(payload["command"], "preflight-json")
+        self.assertIn("path", payload)
 
     def test_preflight_json_rejects_empty_overall_selection_with_structured_code(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -572,22 +615,45 @@ class CliTest(unittest.TestCase):
         self.assertIn("fixture", payload["detail"])
 
     def test_selected_fastq_rejects_negative_index(self):
-        payload = {
-            "fastq_files": [
-                {
-                    "source_accession": "GSE",
-                    "query_accession": "SRP",
-                    "run_accession": "SRR",
-                    "file_index": 1,
-                    "file_name": "a.fastq.gz",
-                    "url": "https://example.invalid/a.fastq.gz",
-                    "expected_md5": "1" * 32,
-                    "size_bytes": 1,
-                }
-            ]
-        }
-        with self.assertRaises(IndexError):
-            _selected_fastq_from_payload(payload, "-1")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE",
+                        "primary_accession": "GSE",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE",
+                                "query_accession": "SRP",
+                                "run_accession": "SRR",
+                                "file_index": 1,
+                                "file_name": "a.fastq.gz",
+                                "url": "https://example.invalid/a.fastq.gz",
+                                "expected_md5": "1" * 32,
+                                "size_bytes": 1,
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "-1",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "selection_invalid",
+            )
+
+        self.assertIn("FASTQ index is out of range: -1", payload["detail"])
 
     def test_selected_download_rejects_empty_overall_selection(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -637,12 +703,11 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
+            exit_code, stdout = self.run_selected_download_json(input_json, "", "0", out_dir)
+            self.assertEqual(exit_code, 0)
             run_dir = out_dir
             resolved_run_dir = run_dir.resolve()
-            done = json.loads(stdout.getvalue().splitlines()[-1])
+            done = json.loads(stdout.splitlines()[-1])
             self.assertEqual(done["output_dir"], str(resolved_run_dir))
             self.assertEqual(done["fastq_manifest"], "")
             self.assertEqual(done["supplementary_manifest"], str(supplementary_manifest_path(resolved_run_dir)))
@@ -784,8 +849,8 @@ class CliTest(unittest.TestCase):
             self.assertFalse(any("20000101T000000Z" in name for name in planned_names))
             self.assertFalse(any(name.endswith(".existing") or ".existing." in name for name in planned_names))
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0,1,2,3", "0,1,2", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0,1,2,3", "0,1,2", out_dir)
+            self.assertEqual(exit_code, 0)
 
             with fastq_manifest_path(out_dir).open("r", encoding="utf-8-sig", newline="") as handle:
                 fastq_manifest_rows = list(csv.DictReader(handle, delimiter="\t"))
@@ -874,8 +939,8 @@ class CliTest(unittest.TestCase):
                 encoding="utf-8",
             )
             out_dir = root / "out"
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0", "", out_dir)
+            self.assertEqual(exit_code, 0)
 
             preflight = self.run_preflight_json(input_json, "0", "", out_dir, resume_existing=True)
 
@@ -1157,12 +1222,17 @@ class CliTest(unittest.TestCase):
                 captured_workers.append(kwargs["download_workers"])
                 return [(plan.files[0], "md5_verified", "fixture")]
 
-            stdout = io.StringIO()
             with mock.patch("geo_getter.cli.download_plan", side_effect=fake_download_plan):
-                with contextlib.redirect_stdout(stdout):
-                    self.assertEqual(_selected_download_json(input_json, "0", "", root / "out", download_workers=4), 0)
+                exit_code, stdout = self.run_selected_download_json(
+                    input_json,
+                    "0",
+                    "",
+                    root / "out",
+                    download_workers=4,
+                )
 
-            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(exit_code, 0)
+            done = json.loads(stdout.splitlines()[-1])
             self.assertEqual(captured_workers, [4])
             self.assertEqual(done["download_workers"], 4)
 
@@ -1284,14 +1354,19 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0", "", out_dir)
+            self.assertEqual(exit_code, 0)
 
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir, resume_existing=True), 0)
+            exit_code, stdout = self.run_selected_download_json(
+                input_json,
+                "0",
+                "",
+                out_dir,
+                resume_existing=True,
+            )
 
-            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(exit_code, 0)
+            done = json.loads(stdout.splitlines()[-1])
             self.assertEqual(done["statuses"], ["md5_verified"])
             self.assertEqual(done["output_dir"], str(out_dir.resolve()))
             self.assertEqual(done["resume_existing"], True)
@@ -1324,8 +1399,8 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0", "", out_dir)
+            self.assertEqual(exit_code, 0)
             manifest = fastq_manifest_path(out_dir)
             with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle, delimiter="\t"))
@@ -1339,8 +1414,14 @@ class CliTest(unittest.TestCase):
                 writer.writerows(rows)
             original_manifest = manifest.read_text(encoding="utf-8-sig")
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir, resume_existing=True), 0)
+            exit_code, _stdout = self.run_selected_download_json(
+                input_json,
+                "0",
+                "",
+                out_dir,
+                resume_existing=True,
+            )
+            self.assertEqual(exit_code, 0)
 
             self.assertEqual(manifest.read_text(encoding="utf-8-sig"), original_manifest)
 
@@ -1380,15 +1461,20 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0", "0", out_dir)
+            self.assertEqual(exit_code, 0)
             self.assertIn("GEO_SUPPLEMENTARY", download_log_path(out_dir).read_text(encoding="utf-8-sig"))
 
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                self.assertEqual(_selected_download_json(input_json, "0", "", out_dir, resume_existing=True), 0)
+            exit_code, stdout = self.run_selected_download_json(
+                input_json,
+                "0",
+                "",
+                out_dir,
+                resume_existing=True,
+            )
 
-            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(exit_code, 0)
+            done = json.loads(stdout.splitlines()[-1])
             self.assertEqual(done["statuses"], ["md5_verified"])
             self.assertEqual(done["resume_existing"], True)
 
@@ -1415,8 +1501,8 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "", "0", out_dir)
+            self.assertEqual(exit_code, 0)
             saved = out_dir / "geo_supplementary_file"
             self.assertEqual(saved.read_bytes(), data)
             saved.resolve().relative_to(out_dir.resolve())
@@ -1459,8 +1545,8 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "", "0,1,2", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "", "0,1,2", out_dir)
+            self.assertEqual(exit_code, 0)
             run_dir = out_dir
             self.assertEqual((run_dir / "Same.txt").read_bytes(), b"first\n")
             self.assertEqual((run_dir / "same.2.txt").read_bytes(), b"second\n")
@@ -1504,11 +1590,10 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+            exit_code, stdout = self.run_selected_download_json(input_json, "0", "0", out_dir)
 
-            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(exit_code, 0)
+            done = json.loads(stdout.splitlines()[-1])
             self.assertEqual(done["statuses"], ["md5_verified", "download_complete"])
             self.assertEqual((out_dir / "same.fastq.gz").read_bytes(), fastq_data)
             self.assertEqual((out_dir / "same.2.fastq.gz").read_bytes(), supp_data)
@@ -1552,8 +1637,8 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0", "0", out_dir)
+            self.assertEqual(exit_code, 0)
 
             self.assertEqual((out_dir / "same.fastq.gz").read_bytes(), fastq_data)
             self.assertEqual((out_dir / "same.fastq.gz.2.part").read_bytes(), supp_data)
@@ -1583,8 +1668,8 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "", "0", out_dir)
+            self.assertEqual(exit_code, 0)
 
             self.assertEqual((out_dir / "out_download_log.2.tsv").read_bytes(), data)
             log_text = download_log_path(out_dir).read_text(encoding="utf-8-sig")
@@ -1628,8 +1713,8 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(_selected_download_json(input_json, "0", "0", out_dir), 0)
+            exit_code, _stdout = self.run_selected_download_json(input_json, "0", "0", out_dir)
+            self.assertEqual(exit_code, 0)
 
             self.assertEqual((out_dir / "out_supplementary_manifest.2.tsv").read_bytes(), fastq_data)
             self.assertTrue(supplementary_manifest_path(out_dir).exists())
@@ -1660,12 +1745,11 @@ class CliTest(unittest.TestCase):
                 local_path.with_name(local_path.name + ".part").write_bytes(b"abc")
                 raise DownloadNetworkError("fixture transfer failure")
 
-            stdout = io.StringIO()
             with mock.patch("geo_getter.downloader.download_url_to_part", side_effect=fail_with_part):
-                with contextlib.redirect_stdout(stdout):
-                    self.assertEqual(_selected_download_json(input_json, "", "0", out_dir), 1)
+                exit_code, stdout = self.run_selected_download_json(input_json, "", "0", out_dir)
 
-            done = json.loads(stdout.getvalue().splitlines()[-1])
+            self.assertEqual(exit_code, 1)
+            done = json.loads(stdout.splitlines()[-1])
             self.assertEqual(done["statuses"], ["network_failed"])
             with download_log_path(out_dir).open("r", encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle, delimiter="\t"))
@@ -1694,12 +1778,9 @@ class CliTest(unittest.TestCase):
             }
             input_json = root / "payload.json"
             input_json.write_text(json.dumps(payload), encoding="utf-8")
-            stdout = io.StringIO()
+            exit_code, stdout = self.run_selected_download_json(input_json, "0", "", root / "out")
 
-            with contextlib.redirect_stdout(stdout):
-                exit_code = _selected_download_json(input_json, "0", "", root / "out")
-
-            output = stdout.getvalue()
+            output = stdout
             self.assertEqual(exit_code, 1)
             self.assertIn('"event": "done"', output)
             self.assertNotIn('"event": "error"', output)
@@ -1735,15 +1816,13 @@ class CliTest(unittest.TestCase):
                 calls += 1
                 raise http_error(404, "https://example.invalid/missing.txt")
 
-            stdout = io.StringIO()
             with (
                 mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=fail_404),
                 mock.patch("geo_getter.downloader.time.sleep", side_effect=AssertionError("unexpected sleep")),
-                contextlib.redirect_stdout(stdout),
             ):
-                exit_code = _selected_download_json(input_json, "", "0", out_dir)
+                exit_code, stdout = self.run_selected_download_json(input_json, "", "0", out_dir)
 
-            output = stdout.getvalue()
+            output = stdout
             self.assertEqual(exit_code, 1)
             self.assertEqual(calls, 1)
             self.assertIn('"event": "done"', output)
@@ -1777,20 +1856,24 @@ class CliTest(unittest.TestCase):
             }
             input_json = root / "payload.json"
             input_json.write_text(json.dumps(payload), encoding="utf-8")
-            stdout = io.StringIO()
+            original_replace = Path.replace
 
-            with mock.patch("geo_getter.downloader._finalize_part", side_effect=OSError("fixture replace failure")):
-                with contextlib.redirect_stdout(stdout):
-                    exit_code = _selected_download_json(input_json, "0", "", root / "out")
+            def fail_part_replace(path, target):
+                if path.name.endswith(".part"):
+                    raise OSError("fixture replace failure")
+                return original_replace(path, target)
 
-            output = stdout.getvalue()
+            with mock.patch.object(Path, "replace", fail_part_replace):
+                exit_code, stdout = self.run_selected_download_json(input_json, "0", "", root / "out")
+
+            output = stdout
             self.assertEqual(exit_code, 1)
             done = json.loads(output.splitlines()[-1])
             self.assertEqual(done["statuses"], ["local_io_failed"])
             with download_log_path(root / "out").open("r", encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(rows[-1]["status"], "local_io_failed")
-            self.assertIn("fixture replace failure", rows[-1]["message"])
+            self.assertIn("Could not move partial download into place", rows[-1]["message"])
 
     def test_internal_manifest_verification_bridge_writes_json_event(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1891,11 +1974,9 @@ class CliTest(unittest.TestCase):
             input_json.write_text(json.dumps(payload), encoding="utf-8")
             out_dir = root / "out"
 
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                exit_code = _selected_download_json(input_json, "0", "", out_dir)
+            exit_code, stdout = self.run_selected_download_json(input_json, "0", "", out_dir)
 
-            output = stdout.getvalue()
+            output = stdout
             self.assertEqual(exit_code, 0)
             self.assertIn('"event": "done"', output)
             self.assertNotIn('"event": "error"', output)

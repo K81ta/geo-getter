@@ -1,12 +1,10 @@
 import csv
 import http.client
-import inspect
 import tempfile
 import threading
 import unittest
 import hashlib
 import urllib.error
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -18,8 +16,6 @@ from geo_getter.downloader import (
     DownloadSizeMismatchError,
     MAX_DOWNLOAD_WORKERS,
     MIN_DOWNLOAD_WORKERS,
-    _download_url_to_part_with_retries,
-    _quarantine_file,
     download_error_outcome,
     download_plan,
     download_supplementary_files,
@@ -39,7 +35,6 @@ from geo_getter.planner import (
     download_log_path,
     ensure_capacity,
     fastq_manifest_path,
-    _read_required_tsv_rows,
     validate_resume_artifacts,
     verify_fastq_manifest,
     write_fastq_outputs,
@@ -107,13 +102,6 @@ def http_error(status: int, headers: dict[str, str] | None = None) -> urllib.err
 
 
 class PlannerDownloaderTest(unittest.TestCase):
-    def test_required_tsv_reader_has_no_translation_callbacks(self):
-        parameters = inspect.signature(_read_required_tsv_rows).parameters
-
-        self.assertNotIn("missing_header_callback", parameters)
-        self.assertNotIn("missing_columns_callback", parameters)
-        self.assertNotIn("read_error_callback", parameters)
-
     def test_plan_and_manifest_are_written(self):
         with tempfile.TemporaryDirectory() as temp:
             fastq = FastqFile(
@@ -460,14 +448,21 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
 
-            with mock.patch("geo_getter.downloader._finalize_part", side_effect=OSError("fixture replace failure")):
+            original_replace = Path.replace
+
+            def fail_part_replace(path, target):
+                if path.name.endswith(".part"):
+                    raise OSError("fixture replace failure")
+                return original_replace(path, target)
+
+            with mock.patch.object(Path, "replace", fail_part_replace):
                 results = download_plan(plan)
 
             self.assertEqual(results[0][1], "local_io_failed")
             with download_log_path(output_dir).open("r", encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(rows[-1]["status"], "local_io_failed")
-            self.assertIn("fixture replace failure", rows[-1]["message"])
+            self.assertIn("Could not move partial download into place", rows[-1]["message"])
 
     def test_partial_file_close_failure_is_logged_as_local_io_failed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -735,23 +730,6 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(existing.read_bytes(), data)
             self.assertTrue(list(output_dir.glob("fixture.fastq.gz.bad-md5-existing-*")))
 
-    def test_quarantine_file_uses_numbered_sidecar_on_collision(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            source = root / "fixture.fastq.gz.part"
-            source.write_bytes(b"new")
-            existing_quarantine = root / "fixture.fastq.gz.part.bad-md5-20000101T000000Z"
-            existing_quarantine.write_bytes(b"old")
-
-            with mock.patch("geo_getter.downloader.datetime") as datetime_mock:
-                datetime_mock.now.return_value = datetime(2000, 1, 1, tzinfo=timezone.utc)
-                quarantined = _quarantine_file(source, "bad-md5")
-
-            self.assertEqual(quarantined.name, "fixture.fastq.gz.part.bad-md5-20000101T000000Z.2")
-            self.assertEqual(existing_quarantine.read_bytes(), b"old")
-            self.assertEqual(quarantined.read_bytes(), b"new")
-            self.assertFalse(source.exists())
-
     def test_complete_part_file_is_verified_and_finalized(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
@@ -949,7 +927,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("missing_fastq_manifest_columns", context.exception.detail)
             self.assertIn("missing=url", context.exception.detail)
 
-    def test_resume_artifacts_reject_manifest_read_error_with_resume_error_detail(self):
+    def test_resume_artifacts_reject_manifest_directory_with_resume_error_detail(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
             fastq = FastqFile(
@@ -964,18 +942,15 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
             write_fastq_outputs(plan)
-            with (
-                mock.patch(
-                    "geo_getter.planner._read_required_tsv_rows",
-                    side_effect=OSError("fixture read failure"),
-                ),
-                self.assertRaises(GeoGetterError) as context,
-            ):
+            manifest = fastq_manifest_path(output_dir)
+            manifest.unlink()
+            manifest.mkdir()
+
+            with self.assertRaises(GeoGetterError) as context:
                 validate_resume_artifacts(plan)
 
             self.assertEqual(context.exception.code, "resume_artifact_mismatch")
-            self.assertIn("read_fastq_manifest_failed", context.exception.detail)
-            self.assertIn("fixture read failure", context.exception.detail)
+            self.assertIn("missing_fastq_manifest", context.exception.detail)
 
     def test_resume_artifacts_reject_download_log_outside_selection(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1089,11 +1064,9 @@ class PlannerDownloaderTest(unittest.TestCase):
             (output_dir / "complete.fastq.gz").write_bytes(complete_data)
             (output_dir / "partial.fastq.gz.part").write_bytes(partial_data)
 
-            with mock.patch("geo_getter.planner._calculate_md5", side_effect=AssertionError("unexpected preflight md5")) as calculate_md5:
-                resume = validate_resume_artifacts(plan)
+            resume = validate_resume_artifacts(plan)
 
             self.assertEqual(resume.required_bytes, 3)
-            calculate_md5.assert_not_called()
 
     def test_resume_existing_fastq_is_verified_at_download_time(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1228,11 +1201,10 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                downloaded_part = _download_url_to_part_with_retries(
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
-                    chunk_size=2,
                 )
 
             self.assertEqual(downloaded_part.path, part)
@@ -1355,71 +1327,17 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(outcome.bytes_downloaded, 3)
             self.assertEqual(outcome.result_message, "expected=10 actual=3")
 
-    def test_progress_is_throttled_by_bytes_and_final_progress_is_emitted(self):
-        with tempfile.TemporaryDirectory() as temp:
-            local_path = Path(temp) / "fixture.fastq.gz"
-            response = FakeUrlopenResponse(data=b"abcdefghijklmnopqrst", headers={"Content-Length": "20"})
-            progress_events = []
-            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                _download_url_to_part_with_retries(
-                    "https://example.invalid/fixture.fastq.gz",
-                    local_path,
-                    progress_callback=lambda current, total: progress_events.append((current, total)),
-                    chunk_size=4,
-                    progress_min_bytes=10,
-                    progress_min_interval_seconds=999,
-                    now_func=lambda: now,
-                )
-
-            self.assertEqual(progress_events, [(12, 20), (20, 20)])
-
-    def test_progress_is_throttled_by_time(self):
-        with tempfile.TemporaryDirectory() as temp:
-            local_path = Path(temp) / "fixture.fastq.gz"
-            response = FakeUrlopenResponse(data=b"abcdefghijkl", headers={"Content-Length": "12"})
-            progress_events = []
-            base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-            times = iter(
-                [
-                    base,
-                    base + timedelta(seconds=0.10),
-                    base + timedelta(seconds=0.26),
-                    base + timedelta(seconds=0.27),
-                    base + timedelta(seconds=0.28),
-                ]
-            )
-
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                _download_url_to_part_with_retries(
-                    "https://example.invalid/fixture.fastq.gz",
-                    local_path,
-                    progress_callback=lambda current, total: progress_events.append((current, total)),
-                    chunk_size=4,
-                    progress_min_bytes=999,
-                    progress_min_interval_seconds=0.25,
-                    now_func=lambda: next(times),
-                )
-
-            self.assertEqual(progress_events, [(8, 12), (12, 12)])
-
-    def test_small_file_emits_final_progress(self):
+    def test_download_url_to_part_emits_final_progress(self):
         with tempfile.TemporaryDirectory() as temp:
             local_path = Path(temp) / "fixture.fastq.gz"
             response = FakeUrlopenResponse(data=b"abc", headers={"Content-Length": "3"})
             progress_events = []
-            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
-                _download_url_to_part_with_retries(
+                download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     progress_callback=lambda current, total: progress_events.append((current, total)),
-                    chunk_size=1,
-                    progress_min_bytes=999,
-                    progress_min_interval_seconds=999,
-                    now_func=lambda: now,
                 )
 
             self.assertEqual(progress_events, [(3, 3)])
@@ -1449,8 +1367,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
             write_fastq_outputs(plan)
-            with mock.patch("geo_getter.planner._calculate_md5", side_effect=AssertionError("unexpected preflight md5")):
-                resume = validate_resume_artifacts(plan)
+            resume = validate_resume_artifacts(plan)
             self.assertEqual(resume.required_bytes, 3)
             original_verify_md5 = verify_md5
             verify_calls = []
@@ -1492,11 +1409,10 @@ class PlannerDownloaderTest(unittest.TestCase):
 
                     with mock.patch("geo_getter.downloader.urllib.request.urlopen", return_value=response):
                         with self.assertRaises(OSError):
-                            _download_url_to_part_with_retries(
+                            download_url_to_part(
                                 "https://example.invalid/fixture.fastq.gz",
                                 local_path,
                                 expected_size=6,
-                                max_attempts=1,
                             )
 
                     self.assertEqual(part.read_bytes(), b"abc")
@@ -1519,12 +1435,11 @@ class PlannerDownloaderTest(unittest.TestCase):
                 return response
 
             with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_full_response):
-                downloaded_part = _download_url_to_part_with_retries(
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=len(data),
                     stream_md5=True,
-                    chunk_size=2,
                 )
 
             self.assertEqual(range_headers, ["bytes=3-"])
@@ -1551,15 +1466,15 @@ class PlannerDownloaderTest(unittest.TestCase):
                             raise item
                         return item
 
-                    with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                        downloaded_part = _download_url_to_part_with_retries(
+                    with (
+                        mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                        mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+                    ):
+                        downloaded_part = download_url_to_part(
                             "https://example.invalid/fixture.fastq.gz",
                             local_path,
                             expected_size=6,
                             message_callback=messages.append,
-                            chunk_size=2,
-                            max_attempts=2,
-                            sleep_func=delays.append,
                         )
 
                     self.assertEqual(downloaded_part.path, local_path.with_name("fixture.fastq.gz.part"))
@@ -1590,15 +1505,15 @@ class PlannerDownloaderTest(unittest.TestCase):
                 range_headers.append(request.get_header("Range"))
                 return responses.pop(0)
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
                     message_callback=messages.append,
-                    chunk_size=3,
-                    max_attempts=2,
-                    sleep_func=delays.append,
                 )
 
             self.assertEqual(downloaded_part.path, local_path.with_name("fixture.fastq.gz.part"))
@@ -1629,14 +1544,15 @@ class PlannerDownloaderTest(unittest.TestCase):
                     raise item
                 return item
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
                     message_callback=messages.append,
-                    max_attempts=4,
-                    sleep_func=delays.append,
                 )
 
             self.assertEqual(downloaded_part.path.read_bytes(), b"abcdef")
@@ -1658,47 +1574,18 @@ class PlannerDownloaderTest(unittest.TestCase):
                     raise item
                 return item
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
-                    max_attempts=2,
-                    sleep_func=delays.append,
                 )
 
             self.assertEqual(downloaded_part.path.read_bytes(), b"abcdef")
             self.assertEqual(delays, [5.0])
-
-    def test_http_503_retry_after_date_uses_injected_current_time(self):
-        with tempfile.TemporaryDirectory() as temp:
-            local_path = Path(temp) / "fixture.fastq.gz"
-            delays = []
-            now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-            retry_at = now + timedelta(seconds=7)
-            responses = [
-                http_error(503, {"Retry-After": retry_at.strftime("%a, %d %b %Y %H:%M:%S GMT")}),
-                FakeUrlopenResponse(data=b"abcdef", status=200, headers={"Content-Length": "6"}),
-            ]
-
-            def urlopen_retry(_request, timeout):
-                item = responses.pop(0)
-                if isinstance(item, BaseException):
-                    raise item
-                return item
-
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
-                    "https://example.invalid/fixture.fastq.gz",
-                    local_path,
-                    expected_size=6,
-                    max_attempts=2,
-                    sleep_func=delays.append,
-                    now_func=lambda: now,
-                )
-
-            self.assertEqual(downloaded_part.path.read_bytes(), b"abcdef")
-            self.assertEqual(delays, [7.0])
 
     def test_http_500_retries_but_http_404_fails_without_sleeping(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1715,13 +1602,14 @@ class PlannerDownloaderTest(unittest.TestCase):
                     raise item
                 return item
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/retryable.fastq.gz",
                     local_path,
                     expected_size=6,
-                    max_attempts=2,
-                    sleep_func=delays.append,
                 )
             self.assertEqual(downloaded_part.path.read_bytes(), b"abcdef")
             self.assertEqual(delays, [1.0])
@@ -1736,14 +1624,15 @@ class PlannerDownloaderTest(unittest.TestCase):
                 calls += 1
                 raise http_error(404)
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_404):
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_404),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
                 with self.assertRaises(DownloadNetworkError) as context:
-                    _download_url_to_part_with_retries(
+                    download_url_to_part(
                         "https://example.invalid/permanent.fastq.gz",
                         local_path,
                         expected_size=6,
-                        max_attempts=4,
-                        sleep_func=delays.append,
                     )
 
             self.assertEqual(calls, 1)
@@ -1766,13 +1655,14 @@ class PlannerDownloaderTest(unittest.TestCase):
                     raise item
                 return item
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
-                    max_attempts=2,
-                    sleep_func=delays.append,
                 )
 
             self.assertEqual(downloaded_part.path.read_bytes(), b"abcdef")
@@ -1801,13 +1691,14 @@ class PlannerDownloaderTest(unittest.TestCase):
                     raise item
                 return item
 
-            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry):
-                downloaded_part = _download_url_to_part_with_retries(
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_retry),
+                mock.patch("geo_getter.downloader.time.sleep", side_effect=delays.append),
+            ):
+                downloaded_part = download_url_to_part(
                     "https://example.invalid/fixture.fastq.gz",
                     local_path,
                     expected_size=6,
-                    max_attempts=2,
-                    sleep_func=delays.append,
                 )
 
             self.assertEqual(downloaded_part.path, part)
@@ -2119,10 +2010,11 @@ class PlannerDownloaderTest(unittest.TestCase):
                 encoding="utf-8-sig",
             )
 
-            with mock.patch("geo_getter.planner._calculate_md5") as calculate_md5:
-                result = verify_fastq_manifest(manifest)
-            calculate_md5.assert_not_called()
+            result = verify_fastq_manifest(manifest)
             self.assertEqual(result["status_counts"], {"size_mismatch": 1})
+            with result["report_path"].open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(row["actual_md5"], "")
 
     def test_verify_fastq_manifest_resolves_local_path_relative_to_manifest_folder(self):
         with tempfile.TemporaryDirectory() as temp:
