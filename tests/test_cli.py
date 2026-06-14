@@ -302,6 +302,34 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["path_error_code"], "cannot_write")
         self.assertIn("denied", payload["error"])
 
+    def test_preflight_json_reports_write_probe_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+            original_unlink = Path.unlink
+
+            def fake_unlink(path, *args, **kwargs):
+                if path.name.startswith(".geo_getter_preflight_"):
+                    raise PermissionError("cleanup denied")
+                return original_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", fake_unlink):
+                payload = self.assert_cli_error(
+                    [
+                        "preflight-json",
+                        "--input-json",
+                        str(input_json),
+                        "--fastq-indices",
+                        "0",
+                        "--out",
+                        str(root / "out"),
+                    ],
+                    "output_path_invalid",
+                )
+
+        self.assertEqual(payload["path_error_code"], "cannot_write")
+        self.assertIn("cleanup denied", payload["error"])
+
     def test_preflight_path_length_uses_structured_error(self):
         path = Path("x" * 260)
 

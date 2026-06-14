@@ -637,17 +637,25 @@ def _assert_output_dir_writable(output_dir: Path) -> None:
             probe_path = Path(handle.name)
             handle.write(b"ok")
     except OSError as exc:
-        raise GeoGetterError(
-            OUTPUT_PATH_INVALID,
-            f"reason=cannot_write path={output_dir} error={exc}",
-            extra={"path_error_code": "cannot_write", "output_dir": str(output_dir), "error": str(exc)},
-        ) from exc
-    finally:
         if probe_path is not None:
             try:
                 probe_path.unlink(missing_ok=True)
             except OSError:
                 pass
+        raise GeoGetterError(
+            OUTPUT_PATH_INVALID,
+            f"reason=cannot_write path={output_dir} error={exc}",
+            extra={"path_error_code": "cannot_write", "output_dir": str(output_dir), "error": str(exc)},
+        ) from exc
+    if probe_path is not None:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise GeoGetterError(
+                OUTPUT_PATH_INVALID,
+                f"reason=cannot_write path={output_dir} error={exc}",
+                extra={"path_error_code": "cannot_write", "output_dir": str(output_dir), "error": str(exc)},
+            ) from exc
 
 
 def _ensure_preflight_path_lengths(paths: list[Path]) -> None:
