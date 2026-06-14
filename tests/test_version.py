@@ -1,5 +1,6 @@
 import inspect
 import json
+import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -95,6 +96,22 @@ class VersionTest(unittest.TestCase):
         self.assertIn("Tag version $tagVersion does not match geo_getter.__version__ $sourceVersion", release_workflow)
         self.assertNotIn("pyproject.toml version", release_workflow)
         self.assertNotIn("Could not read version from pyproject.toml", release_workflow)
+
+    def test_release_workflow_passes_single_configured_python_runtime(self):
+        release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        build_script = (ROOT / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+
+        runtime_matches = re.findall(r'^\s+RELEASE_PYTHON_VERSION:\s*"([^"]+)"', release_workflow, re.MULTILINE)
+        self.assertEqual(1, len(runtime_matches))
+        release_runtime = runtime_matches[0]
+        self.assertEqual(1, release_workflow.count(release_runtime))
+        self.assertIn("python-version: ${{ env.RELEASE_PYTHON_VERSION }}", release_workflow)
+        self.assertIn('-PythonVersion "${{ env.RELEASE_PYTHON_VERSION }}"', release_workflow)
+        self.assertIn(f'"{release_runtime}|x64"', build_script)
+
+        default_match = re.search(r'\[string\]\$PythonVersion\s*=\s*"([^"]+)"', build_script)
+        self.assertIsNotNone(default_match)
+        self.assertIn(f'"{default_match.group(1)}|x64"', build_script)
 
     def test_runtime_version_surfaces_use_package_version(self):
         self.assertEqual(f"geo-getter/{__version__}", http_client.USER_AGENT)
