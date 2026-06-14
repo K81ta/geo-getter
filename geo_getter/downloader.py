@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 import urllib.error
 import urllib.request
 
@@ -28,7 +28,7 @@ from .errors import (
 from .hashing import verify_md5
 from .http_client import USER_AGENT
 from .models import DownloadPlan, PlannedFile
-from .path_safety import download_part_path, existing_size, unique_quarantine_path
+from .path_safety import download_part_path, existing_size, unique_existing_path, unique_quarantine_path
 from .planner import ResumeArtifacts, append_download_log, ensure_capacity, write_fastq_outputs
 
 ProgressCallback = Callable[[PlannedFile, int, int], None]
@@ -36,6 +36,9 @@ MessageCallback = Callable[[str], None]
 ByteProgressCallback = Callable[[int, int], None]
 SleepCallback = Callable[[float], None]
 NowCallback = Callable[[], datetime]
+SUPPLEMENTARY_DOWNLOAD_COMPLETE_MESSAGE = (
+    "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
+)
 DEFAULT_RETRY_DELAYS = (1.0, 3.0, 9.0)
 DEFAULT_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS = 0.250
@@ -84,6 +87,22 @@ class DownloadOutcome:
     result_message: str | None = None
 
 
+@dataclass(frozen=True)
+class _PlannedDownload:
+    kind: str
+    file_name: str
+    local_path: Path
+    run_accession: str
+    url: str = ""
+    expected_md5: str = ""
+    expected_bytes: int = 0
+    source: object | None = None
+
+
+_PlannedProgressCallback = Callable[[_PlannedDownload, int, int], None]
+_DownloadHandler = Callable[[_PlannedDownload, _PlannedProgressCallback | None, MessageCallback | None], DownloadOutcome]
+
+
 class _ProgressReporter:
     def __init__(
         self,
@@ -126,26 +145,38 @@ def download_plan(
 ) -> list[tuple[PlannedFile, str, str]]:
     ensure_capacity(plan, required_bytes=resume_artifacts.required_bytes if resume_artifacts else None)
     write_fastq_outputs(plan, resume_artifacts=resume_artifacts)
-    results: list[tuple[PlannedFile, str, str]] = []
     worker_count = normalize_download_workers(download_workers)
+    items = [_fastq_download_record(planned) for planned in plan.files]
 
-    if worker_count == 1 or len(plan.files) <= 1:
-        for planned in plan.files:
-            outcome = _download_planned_file(planned, progress_callback, message_callback)
-            _record_outcome(plan, planned, outcome, results, message_callback)
-        return results
+    def progress(item: _PlannedDownload, downloaded: int, total: int) -> None:
+        if progress_callback:
+            progress_callback(_fastq_planned_file(item), downloaded, total)
 
-    worker_count = min(worker_count, len(plan.files))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [
-            executor.submit(_download_planned_file, planned, progress_callback, message_callback)
-            for planned in plan.files
-        ]
-        for planned, future in zip(plan.files, futures):
-            outcome = future.result()
-            _record_outcome(plan, planned, outcome, results, message_callback)
+    results = _execute_planned_downloads(
+        plan.output_dir,
+        items,
+        _download_fastq_record,
+        progress_callback=progress,
+        message_callback=message_callback,
+        download_workers=worker_count,
+    )
+    return [(_fastq_planned_file(item), status, message) for item, status, message in results]
 
-    return results
+
+def download_supplementary_files(
+    output_dir: Path,
+    planned_supplementary: list[tuple[dict, Path]],
+    progress_callback: _PlannedProgressCallback | None = None,
+    message_callback: MessageCallback | None = None,
+) -> list[tuple[_PlannedDownload, str, str]]:
+    items = [_supplementary_download_record(item, local_path) for item, local_path in planned_supplementary]
+    return _execute_planned_downloads(
+        output_dir,
+        items,
+        _download_supplementary_record,
+        progress_callback=progress_callback,
+        message_callback=message_callback,
+    )
 
 
 def normalize_download_workers(value: int) -> int:
@@ -156,6 +187,103 @@ def normalize_download_workers(value: int) -> int:
     if worker_count < 1 or worker_count > MAX_DOWNLOAD_WORKERS:
         raise ValueError(f"download_workers must be from 1 to {MAX_DOWNLOAD_WORKERS}: {worker_count}")
     return worker_count
+
+
+def _execute_planned_downloads(
+    output_dir: Path,
+    items: list[_PlannedDownload],
+    download_handler: _DownloadHandler,
+    progress_callback: _PlannedProgressCallback | None = None,
+    message_callback: MessageCallback | None = None,
+    download_workers: int = 1,
+) -> list[tuple[_PlannedDownload, str, str]]:
+    results: list[tuple[_PlannedDownload, str, str]] = []
+    if not items:
+        return results
+
+    worker_count = max(1, min(download_workers, len(items)))
+    if worker_count == 1:
+        for item in items:
+            outcome = download_handler(item, progress_callback, message_callback)
+            _record_download_outcome(output_dir, item, outcome, results, message_callback)
+        return results
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(download_handler, item, progress_callback, message_callback)
+            for item in items
+        ]
+        for item, future in zip(items, futures):
+            outcome = future.result()
+            _record_download_outcome(output_dir, item, outcome, results, message_callback)
+
+    return results
+
+
+def _fastq_download_record(planned: PlannedFile) -> _PlannedDownload:
+    return _PlannedDownload(
+        kind="fastq",
+        file_name=planned.fastq.file_name,
+        local_path=planned.local_path,
+        run_accession=planned.fastq.run_accession,
+        url=planned.fastq.url,
+        expected_md5=planned.fastq.expected_md5,
+        expected_bytes=planned.fastq.size_bytes,
+        source=planned,
+    )
+
+
+def _supplementary_download_record(item: dict, local_path: Path) -> _PlannedDownload:
+    return _PlannedDownload(
+        kind="supplementary",
+        file_name=local_path.name,
+        local_path=local_path,
+        run_accession="GEO_SUPPLEMENTARY",
+        url=str(item.get("url", "")),
+    )
+
+
+def _fastq_planned_file(item: _PlannedDownload) -> PlannedFile:
+    return cast(PlannedFile, item.source)
+
+
+def _download_fastq_record(
+    item: _PlannedDownload,
+    progress_callback: _PlannedProgressCallback | None,
+    message_callback: MessageCallback | None,
+) -> DownloadOutcome:
+    planned = _fastq_planned_file(item)
+
+    def progress(_planned: PlannedFile, downloaded: int, total: int) -> None:
+        if progress_callback:
+            progress_callback(item, downloaded, total)
+
+    return _download_planned_file(planned, progress, message_callback)
+
+
+def _download_supplementary_record(
+    item: _PlannedDownload,
+    progress_callback: _PlannedProgressCallback | None,
+    message_callback: MessageCallback | None,
+) -> DownloadOutcome:
+    _emit(message_callback, f"supplementary_download_started: {item.file_name}")
+    try:
+        if item.local_path.exists():
+            item.local_path.replace(unique_existing_path(item.local_path))
+    except OSError as exc:
+        return download_error_outcome(item.local_path, exc)
+
+    def progress(current: int, total: int) -> None:
+        if progress_callback:
+            progress_callback(item, current, total)
+
+    return download_url_without_md5(
+        item.url,
+        item.local_path,
+        progress_callback=progress,
+        message_callback=message_callback,
+        success_message=SUPPLEMENTARY_DOWNLOAD_COMPLETE_MESSAGE,
+    )
 
 
 def _download_planned_file(
@@ -205,27 +333,27 @@ def _download_planned_file(
         return _planned_download_error_outcome(planned.local_path, exc)
 
 
-def _record_outcome(
-    plan: DownloadPlan,
-    planned: PlannedFile,
+def _record_download_outcome(
+    output_dir: Path,
+    item: _PlannedDownload,
     outcome: DownloadOutcome,
-    results: list[tuple[PlannedFile, str, str]],
+    results: list[tuple[_PlannedDownload, str, str]],
     message_callback: MessageCallback | None,
 ) -> None:
     append_download_log(
-        plan.output_dir,
-        planned.fastq.run_accession,
-        planned.fastq.file_name,
+        output_dir,
+        item.run_accession,
+        item.file_name,
         outcome.status,
-        planned.fastq.expected_md5,
+        item.expected_md5,
         outcome.actual_md5,
-        planned.fastq.size_bytes,
+        item.expected_bytes,
         outcome.bytes_downloaded,
         outcome.message,
     )
-    _emit(message_callback, f"{outcome.status}: {planned.fastq.file_name}")
+    _emit(message_callback, f"{outcome.status}: {item.file_name}")
     result_message = outcome.result_message if outcome.result_message is not None else outcome.message
-    results.append((planned, outcome.status, result_message))
+    results.append((item, outcome.status, result_message))
 
 
 def _downloaded_part_outcome(planned: PlannedFile, downloaded_part: DownloadedPart) -> DownloadOutcome:
