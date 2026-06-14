@@ -4,17 +4,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-RUNTIME_QUARANTINE_PREVIEW_TIMESTAMP = "20000101T000000Z"
-FASTQ_EXISTING_QUARANTINE_REASONS = (
-    "bad-md5-existing",
-    "size-mismatch-existing",
-    "unverified-existing",
-)
-FASTQ_PART_QUARANTINE_REASONS = (
-    "bad-md5",
-    "size-mismatch",
-    "unverified-existing",
-)
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -85,29 +74,8 @@ def unique_quarantine_path(path: Path, reason: str, timestamp: str) -> Path:
     )
 
 
-def download_runtime_paths(local_path: Path, kind: str) -> list[Path]:
-    paths = [local_path, download_part_path(local_path)]
-    if kind == "fastq":
-        paths.extend(fastq_quarantine_candidate_paths(local_path, RUNTIME_QUARANTINE_PREVIEW_TIMESTAMP))
-        return paths
-    if kind == "supplementary":
-        paths.extend(existing_candidate_paths(local_path, count=2))
-        return paths
-    raise ValueError(f"Unknown download runtime path kind: {kind}")
-
-
-def existing_candidate_paths(path: Path, count: int = 1) -> list[Path]:
-    return [existing_candidate_path(path, counter) for counter in range(1, count + 1)]
-
-
-def fastq_quarantine_candidate_paths(path: Path, timestamp: str) -> list[Path]:
-    part_path = download_part_path(path)
-    paths: list[Path] = []
-    for reason in FASTQ_EXISTING_QUARANTINE_REASONS:
-        paths.extend(quarantine_candidate_path(path, reason, timestamp, counter) for counter in (1, 2))
-    for reason in FASTQ_PART_QUARANTINE_REASONS:
-        paths.extend(quarantine_candidate_path(part_path, reason, timestamp, counter) for counter in (1, 2))
-    return paths
+def download_runtime_paths(local_path: Path) -> list[Path]:
+    return [local_path, download_part_path(local_path)]
 
 
 def first_available_sidecar_path(path: Path, candidate_factory: SidecarCandidateFactory) -> Path:

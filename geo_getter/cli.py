@@ -677,14 +677,14 @@ def _preflight_planned_paths(cli_plan: CliDownloadPlan) -> list[Path]:
         planned_paths.extend(
             path
             for planned in cli_plan.fastq_plan.files
-            for path in download_runtime_paths(planned.local_path, "fastq")
+            for path in download_runtime_paths(planned.local_path)
         )
     if cli_plan.planned_supplementary:
         planned_paths.append(supplementary_manifest_path(cli_plan.output_dir))
         planned_paths.extend(
             path
             for _item, local_path in cli_plan.planned_supplementary
-            for path in download_runtime_paths(local_path, "supplementary")
+            for path in download_runtime_paths(local_path)
         )
     planned_paths.append(download_log_path(cli_plan.output_dir))
     return planned_paths

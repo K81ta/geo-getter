@@ -4009,6 +4009,12 @@ if ($SelfTest) {
     Assert-Equal ($collisionNames -contains "same.fastq.gz.2.part.part") $true "preflight includes supplementary doubled part path"
     Assert-Equal ($collisionNames -contains "collision output_fastq_manifest.2.tsv") $true "preflight reserves FASTQ away from artifact name"
     Assert-Equal ($collisionNames -contains "collision output_download_log.2.tsv") $true "preflight reserves supplementary away from artifact name"
+    $fakeTimestampPaths = @($collisionNames | Where-Object { $_ -like "*20000101T000000Z*" })
+    $quarantinePaths = @($collisionNames | Where-Object { $_ -like "*bad-md5*" -or $_ -like "*size-mismatch*" -or $_ -like "*unverified-existing*" })
+    $existingSidecarPaths = @($collisionNames | Where-Object { $_ -like "*.existing*" })
+    Assert-Equal $fakeTimestampPaths.Count 0 "preflight omits fake quarantine timestamp paths"
+    Assert-Equal $quarantinePaths.Count 0 "preflight omits quarantine candidate paths"
+    Assert-Equal $existingSidecarPaths.Count 0 "preflight omits existing sidecar paths"
 
     Apply-ResolvedResult $resolvedFixture
     [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($resolvedFixture | ConvertTo-Json -Depth 10), $utf8NoBom)
