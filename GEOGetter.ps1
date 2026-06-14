@@ -201,6 +201,7 @@ $script:LastResolvedInputText = ""
 $script:SuppressFastqFilterEvents = $false
 $script:Language = $UiLanguage
 $script:GridCopyMenuItems = @()
+$script:DownloadWorkerLimits = $null
 $script:GuiTextResourcePath = Join-Path $AppRoot "resources\gui_text.json"
 
 function Get-GuiTextResourcePath {
@@ -1813,7 +1814,7 @@ function Add-SupplementaryRowsFromResolved {
 function Set-Busy {
     param([bool]$Busy)
     $fetchButton.Enabled = -not $Busy
-    $downloadButton.Enabled = -not $Busy
+    $downloadButton.Enabled = (-not $Busy -and $null -ne $script:DownloadWorkerLimits)
     $browseButton.Enabled = -not $Busy
     if ($verifyManifestMenuItem) { $verifyManifestMenuItem.Enabled = -not $Busy }
     if ($checkUpdatesMenuItem) { $checkUpdatesMenuItem.Enabled = -not $Busy }
@@ -1823,7 +1824,7 @@ function Set-Busy {
     if ($fastqLayoutFilterCombo) { $fastqLayoutFilterCombo.Enabled = -not $Busy }
     if ($fastqStrategyFilterCombo) { $fastqStrategyFilterCombo.Enabled = -not $Busy }
     if ($fastqClearFilterButton) { $fastqClearFilterButton.Enabled = -not $Busy }
-    if ($downloadWorkersUpDown) { $downloadWorkersUpDown.Enabled = -not $Busy }
+    if ($downloadWorkersUpDown) { $downloadWorkersUpDown.Enabled = (-not $Busy -and $null -ne $script:DownloadWorkerLimits) }
     if ($suppSelectAllButton) { $suppSelectAllButton.Enabled = -not $Busy }
     if ($suppClearSelectionButton) { $suppClearSelectionButton.Enabled = -not $Busy }
     Update-CancelButton
@@ -2595,7 +2596,71 @@ function Get-DownloadWorkerCount {
     if ($downloadWorkersUpDown) {
         return [int]$downloadWorkersUpDown.Value
     }
-    return 2
+    if ($script:DownloadWorkerLimits) {
+        return [int]$script:DownloadWorkerLimits.Default
+    }
+    throw "Download worker limits are not initialized."
+}
+
+function Get-LimitsPythonArguments {
+    return @("-m", "geo_getter.cli", "limits-json")
+}
+
+function Invoke-LimitsJsonForGui {
+    try {
+        $result = Invoke-PythonCli -Arguments (Get-LimitsPythonArguments)
+    }
+    catch {
+        $message = $_.Exception.Message
+        $script:LastOperationError = New-OperationError "limits" "limits-json" "process_start_failed" $message $message "process_start" $null
+        throw $message
+    }
+    return ConvertFrom-LimitsJsonResultForGui $result
+}
+
+function ConvertFrom-LimitsJsonResultForGui {
+    param([object]$Result)
+    if ($result.ExitCode -ne 0) {
+        Set-OperationErrorFromProcessOutput "limits" "limits-json" $result.ExitCode $result.Stdout $result.Stderr "limits_failed" ""
+        $message = if ($script:LastOperationError) { [string]$script:LastOperationError.message } else { Join-ProcessOutput $result }
+        throw $message
+    }
+    try {
+        $event = $result.Stdout | ConvertFrom-Json
+        $limits = Get-JsonPropertyValue $event "download_workers"
+        if ($null -eq $limits) { throw "download_workers limits are missing." }
+        $minValue = Get-JsonPropertyValue $limits "min"
+        $maxValue = Get-JsonPropertyValue $limits "max"
+        $defaultValue = Get-JsonPropertyValue $limits "default"
+        if ($null -eq $minValue -or $null -eq $maxValue -or $null -eq $defaultValue) {
+            throw "download worker min, max, and default are required."
+        }
+        $min = [int]$minValue
+        $max = [int]$maxValue
+        $default = [int]$defaultValue
+        if ($max -lt $min -or $default -lt $min -or $default -gt $max) {
+            throw "download worker limits are invalid: min=$min max=$max default=$default"
+        }
+        return [pscustomobject]@{
+            Min = $min
+            Max = $max
+            Default = $default
+        }
+    }
+    catch {
+        $detail = $_.Exception.Message
+        $script:LastOperationError = New-OperationError "limits" "limits-json" "limits_output_invalid" $detail $detail "gui_limits_output" $result.ExitCode
+        throw $detail
+    }
+}
+
+function Initialize-DownloadWorkerControl {
+    param([System.Windows.Forms.NumericUpDown]$Control)
+    $limits = Invoke-LimitsJsonForGui
+    $script:DownloadWorkerLimits = $limits
+    $Control.Minimum = $limits.Min
+    $Control.Maximum = $limits.Max
+    $Control.Value = $limits.Default
 }
 
 function Get-PreflightPythonArguments {
@@ -3339,9 +3404,6 @@ function New-MainForm {
     $script:downloadWorkersUpDown = New-Object System.Windows.Forms.NumericUpDown
     $downloadWorkersUpDown.Location = New-Object System.Drawing.Point(410, 10)
     $downloadWorkersUpDown.Size = New-Object System.Drawing.Size(45, 24)
-    $downloadWorkersUpDown.Minimum = 1
-    $downloadWorkersUpDown.Maximum = 4
-    $downloadWorkersUpDown.Value = 2
     $bottom.Controls.Add($downloadWorkersUpDown)
 
     $script:statusLabel = New-Object System.Windows.Forms.Label
@@ -3372,6 +3434,15 @@ function New-MainForm {
     $logBox.ScrollBars = "Vertical"
     $logBox.ReadOnly = $true
     $bottom.Controls.Add($logBox)
+
+    try {
+        Initialize-DownloadWorkerControl $downloadWorkersUpDown
+    }
+    catch {
+        $statusLabel.Text = T "error"
+        Set-Busy $false
+        Show-AppError $_.Exception.Message
+    }
 
     $browseButton.Add_Click({
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -3582,6 +3653,9 @@ if ($SelfTest) {
     Assert-Equal ([int]$downloadWorkersUpDown.Minimum) 1 "download worker minimum"
     Assert-Equal ([int]$downloadWorkersUpDown.Maximum) 4 "download worker maximum"
     Assert-Equal ([int]$downloadWorkersUpDown.Value) 2 "download worker default"
+    Assert-Equal $script:DownloadWorkerLimits.Min 1 "download worker minimum sourced from bridge"
+    Assert-Equal $script:DownloadWorkerLimits.Max 4 "download worker maximum sourced from bridge"
+    Assert-Equal $script:DownloadWorkerLimits.Default 2 "download worker default sourced from bridge"
     Assert-Equal $fastqGrid.Columns["run"].ReadOnly $true "FASTQ run column readonly"
     Assert-Equal $fastqGrid.Columns["url"].ReadOnly $true "FASTQ URL column readonly"
     Assert-Equal $fastqGrid.Columns["selected"].ReadOnly $false "FASTQ select column editable"
@@ -3610,6 +3684,12 @@ if ($SelfTest) {
     }
     Assert-PythonArgumentRoundTrip $argumentRoundTripValues "process argument round trip"
     Assert-PythonFallbackArgumentRoundTrip $argumentRoundTripValues "fallback process argument round trip"
+    $limitsArgs = Get-LimitsPythonArguments
+    Assert-Equal ($limitsArgs -join "|") "-m|geo_getter.cli|limits-json" "limits bridge arguments"
+    $limitsFromBridge = Invoke-LimitsJsonForGui
+    Assert-Equal $limitsFromBridge.Min 1 "limits-json minimum"
+    Assert-Equal $limitsFromBridge.Max 4 "limits-json maximum"
+    Assert-Equal $limitsFromBridge.Default 2 "limits-json default"
     $updateCheckArgs = Get-UpdateCheckPythonArguments
     Assert-Equal ($updateCheckArgs -join "|") "-m|geo_getter.cli|check-update-json" "update check bridge arguments"
     $updateDownloadArgs = Get-UpdateDownloadPythonArguments "0.1.4"
@@ -3758,6 +3838,78 @@ if ($SelfTest) {
     Assert-Equal $script:LastOperationError.code "installer_launch_failed" "installer launch failure records operation error code"
     Assert-Equal $script:ApplicationExitRequestedForSelfTest $false "installer launch failure leaves GUI open"
     $script:InstallerLauncherForSelfTest = $null
+
+    $limitsOriginalPythonExe = $PythonExe
+    $PythonExe = Join-Path ([System.IO.Path]::GetTempPath()) ("geo_getter_missing_python_" + [System.Guid]::NewGuid().ToString("N") + ".exe")
+    $threwLimitsStart = $false
+    try {
+        Invoke-LimitsJsonForGui | Out-Null
+    }
+    catch {
+        $threwLimitsStart = $true
+    }
+    finally {
+        $PythonExe = $limitsOriginalPythonExe
+    }
+    Assert-Equal $threwLimitsStart $true "limits-json start failure throws"
+    Assert-Equal $script:LastOperationError.phase "limits" "limits-json start failure records phase"
+    Assert-Equal $script:LastOperationError.command "limits-json" "limits-json start failure records command"
+    Assert-Equal $script:LastOperationError.code "process_start_failed" "limits-json start failure records code"
+
+    $script:LastOperationError = $null
+    $limitsExitFailure = [pscustomobject]@{
+        ExitCode = 1
+        Stdout = ""
+        Stderr = '{"event":"error","command":"limits-json","code":"invalid_limits","detail":"bad limits","message":"bad limits"}'
+    }
+    $threwLimitsExit = $false
+    try {
+        ConvertFrom-LimitsJsonResultForGui $limitsExitFailure | Out-Null
+    }
+    catch {
+        $threwLimitsExit = $true
+    }
+    Assert-Equal $threwLimitsExit $true "limits-json exit failure throws"
+    Assert-Equal $script:LastOperationError.phase "limits" "limits-json exit failure records phase"
+    Assert-Equal $script:LastOperationError.command "limits-json" "limits-json exit failure records command"
+    Assert-Equal $script:LastOperationError.code "invalid_limits" "limits-json exit failure records CLI code"
+
+    $script:LastOperationError = $null
+    $limitsInvalidJson = [pscustomobject]@{
+        ExitCode = 0
+        Stdout = "not json"
+        Stderr = ""
+    }
+    $threwLimitsInvalidJson = $false
+    try {
+        ConvertFrom-LimitsJsonResultForGui $limitsInvalidJson | Out-Null
+    }
+    catch {
+        $threwLimitsInvalidJson = $true
+    }
+    Assert-Equal $threwLimitsInvalidJson $true "limits-json invalid JSON throws"
+    Assert-Equal $script:LastOperationError.phase "limits" "limits-json invalid JSON records phase"
+    Assert-Equal $script:LastOperationError.command "limits-json" "limits-json invalid JSON records command"
+    Assert-Equal $script:LastOperationError.code "limits_output_invalid" "limits-json invalid JSON records code"
+
+    $script:LastOperationError = $null
+    $limitsMissingFields = [pscustomobject]@{
+        ExitCode = 0
+        Stdout = '{"event":"done","kind":"limits"}'
+        Stderr = ""
+    }
+    $threwLimitsMissingFields = $false
+    try {
+        ConvertFrom-LimitsJsonResultForGui $limitsMissingFields | Out-Null
+    }
+    catch {
+        $threwLimitsMissingFields = $true
+    }
+    Assert-Equal $threwLimitsMissingFields $true "limits-json missing fields throw"
+    Assert-Equal $script:LastOperationError.phase "limits" "limits-json missing fields records phase"
+    Assert-Equal $script:LastOperationError.command "limits-json" "limits-json missing fields records command"
+    Assert-Equal $script:LastOperationError.code "limits_output_invalid" "limits-json missing fields records code"
+
     $originalProcessOutputLimit = $script:ProcessOutputLimitChars
     $script:ProcessOutputLimitChars = 80
     (Get-OperationState "download").StdoutText = ""

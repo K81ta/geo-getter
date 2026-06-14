@@ -13,6 +13,8 @@ from pathlib import Path
 from . import __version__
 from .downloader import (
     DEFAULT_DOWNLOAD_WORKERS,
+    MAX_DOWNLOAD_WORKERS,
+    MIN_DOWNLOAD_WORKERS,
     download_plan,
     download_supplementary_files,
     normalize_download_workers,
@@ -125,6 +127,10 @@ def _handle_verify_manifest_json(args: argparse.Namespace) -> int:
     return _verify_manifest_json(Path(args.manifest))
 
 
+def _handle_limits_json(args: argparse.Namespace) -> int:
+    return _limits_json()
+
+
 def _handle_check_update_json(args: argparse.Namespace) -> int:
     return _check_update_json()
 
@@ -217,6 +223,7 @@ BRIDGE_COMMANDS = (
     BridgeCommand("selected-download-json", _add_selected_download_arguments, _handle_selected_download_json, "download selected FASTQ and GEO supplementary files"),
     BridgeCommand("preflight-json", _add_preflight_arguments, _handle_preflight_json, hidden=True),
     BridgeCommand("verify-manifest-json", _add_verify_manifest_arguments, _handle_verify_manifest_json, hidden=True),
+    BridgeCommand("limits-json", lambda parser: None, _handle_limits_json, hidden=True),
     BridgeCommand("check-update-json", lambda parser: None, _handle_check_update_json, hidden=True),
     BridgeCommand("download-update-json", _add_update_download_arguments, _handle_download_update_json, hidden=True),
 )
@@ -525,6 +532,20 @@ def _verify_manifest_json(manifest_path: Path) -> int:
     }
     print(json.dumps(payload, ensure_ascii=False), flush=True)
     return 0 if result["total"] and result["status_counts"].get(MD5_VERIFIED, 0) == result["total"] else 1
+
+
+def _limits_json() -> int:
+    payload = {
+        "event": "done",
+        "kind": "limits",
+        "download_workers": {
+            "min": MIN_DOWNLOAD_WORKERS,
+            "max": MAX_DOWNLOAD_WORKERS,
+            "default": DEFAULT_DOWNLOAD_WORKERS,
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    return 0
 
 
 def _check_update_json() -> int:

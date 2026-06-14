@@ -44,6 +44,7 @@ flowchart TD
     User["ユーザー"] --> Launcher["start_geo_getter.vbs / installer shortcut"]
     Launcher --> GUI["GEOGetter.ps1\nPowerShell WinForms"]
     GUI --> ResolveCLI["python -m geo_getter.cli resolve-json"]
+    GUI --> LimitsCLI["python -m geo_getter.cli limits-json"]
     GUI --> PreflightCLI["python -m geo_getter.cli preflight-json"]
     GUI --> DownloadCLI["python -m geo_getter.cli selected-download-json"]
     GUI --> VerifyCLI["python -m geo_getter.cli verify-manifest-json"]
@@ -181,7 +182,7 @@ python -m geo_getter.cli selected-download-json `
 
 `--resume-existing` は、既存ファイルがある実保存フォルダで FASTQ ダウンロードを再開する場合だけ GUI が付ける。通常の新規保存では付けない。
 
-`--download-workers` は FASTQ の同時ダウンロード数である。GUI の `同時FASTQ` / `FASTQ workers` から 1 から 4 の値を渡す。既定値は 2 である。supplementary / processed file は FASTQ manifest と MD5 検証の対象外であり、FASTQ 保存後に順番に保存する。
+`--download-workers` は FASTQ の同時ダウンロード数である。GUI の `同時FASTQ` / `FASTQ workers` から値を渡す。GUI の最小値、最大値、既定値は起動時に `limits-json` から読み、Python 側の `download_workers` 正規化を source of truth にする。supplementary / processed file は FASTQ manifest と MD5 検証の対象外であり、FASTQ 保存後に順番に保存する。
 
 ```text
 Downloads/GEOGetter/
@@ -228,7 +229,7 @@ GUI は検証済みインストーラーを起動し、GEOGetter を終了する
 
 ### 8. 進捗と終了
 
-`preflight-json`、`selected-download-json`、`verify-manifest-json`、`check-update-json`、`download-update-json` は stdout に JSON を出す。継続的な進捗を返すのは `selected-download-json` であり、stdout に JSON Lines を出す。GUI は stdout を 1 行ずつ読み取り、進捗バー、ログ、完了表示を更新する。
+`limits-json`、`preflight-json`、`selected-download-json`、`verify-manifest-json`、`check-update-json`、`download-update-json` は stdout に JSON を出す。継続的な進捗を返すのは `selected-download-json` であり、stdout に JSON Lines を出す。GUI は stdout を 1 行ずつ読み取り、進捗バー、ログ、完了表示を更新する。
 
 `progress`:
 
@@ -418,6 +419,24 @@ GEOGetter-Setup-v<version>.exe
 | `url` | GEO supplementary / processed file URL |
 | `origin_level` | `series`, `sample`, `unknown` のいずれか |
 | `origin_accession` | 由来の GEO accession。Sample 由来なら GSM accession |
+
+### `limits-json`
+
+`limits-json` は、GUI が起動時に使う内部 JSON bridge である。通常の CLI help には表示しない。
+
+```json
+{
+  "event": "done",
+  "kind": "limits",
+  "download_workers": {
+    "min": 1,
+    "max": 4,
+    "default": 2
+  }
+}
+```
+
+GUI はこの値で FASTQ worker control を初期化する。取得や JSON 解析に失敗した場合、GUI は stale な hard-coded 値に戻さず、bridge error として扱う。
 
 ### `preflight-json`
 

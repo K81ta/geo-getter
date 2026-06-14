@@ -65,6 +65,7 @@ class CliTest(unittest.TestCase):
             ("selected-download-json", ["selected-download-json"]),
             ("preflight-json", ["preflight-json"]),
             ("verify-manifest-json", ["verify-manifest-json"]),
+            ("limits-json", ["limits-json", "--unexpected-option"]),
             ("check-update-json", ["check-update-json", "--unexpected-option"]),
             ("download-update-json", ["download-update-json"]),
         )
@@ -125,6 +126,7 @@ class CliTest(unittest.TestCase):
                 "selected-download-json",
                 "preflight-json",
                 "verify-manifest-json",
+                "limits-json",
                 "check-update-json",
                 "download-update-json",
             },
@@ -143,6 +145,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("resolve-json", output)
         self.assertIn("selected-download-json", output)
         self.assertNotIn("verify-manifest-json", output)
+        self.assertNotIn("limits-json", output)
         self.assertNotIn("check-update-json", output)
         self.assertNotIn("download-update-json", output)
         self.assertNotIn("preflight-json", output)
@@ -154,7 +157,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("\n    download-json", output)
 
     def test_hidden_bridge_commands_accept_explicit_help(self):
-        for command in ("preflight-json", "verify-manifest-json", "check-update-json", "download-update-json"):
+        for command in ("preflight-json", "verify-manifest-json", "limits-json", "check-update-json", "download-update-json"):
             with self.subTest(command=command):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -167,6 +170,24 @@ class CliTest(unittest.TestCase):
         payload = self.assert_cli_error(["verify-manifest-json"], "invalid_input")
         self.assertEqual(payload["command"], "verify-manifest-json")
         self.assertIn("required", payload["message"])
+
+    def test_limits_json_hidden_bridge_writes_download_worker_limits(self):
+        exit_code, stdout, stderr = self.run_cli_with_streams(["limits-json"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            json.loads(stdout),
+            {
+                "event": "done",
+                "kind": "limits",
+                "download_workers": {
+                    "min": 1,
+                    "max": 4,
+                    "default": 2,
+                },
+            },
+        )
 
     def test_load_json_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as temp:
