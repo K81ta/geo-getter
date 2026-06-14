@@ -288,6 +288,17 @@ plain preamble line
         self.assertEqual(parsed.supplementary_files[2].extension, "")
         self.assertEqual(parsed.supplementary_files[2].estimated_type, "other")
 
+    def test_supplementary_name_is_not_sanitized_during_geo_parse(self):
+        parsed = parse_soft(
+            """
+^SERIES = GSE000001
+!Series_supplementary_file = ftp://example.invalid/%2e%2e%2fraw.tar
+""",
+            "GSE000001",
+        )
+
+        self.assertEqual(parsed.supplementary_files[0].name, "../raw.tar")
+
 
 if __name__ == "__main__":
     unittest.main()
