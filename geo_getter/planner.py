@@ -148,7 +148,7 @@ def write_fastq_manifest(plan: DownloadPlan) -> None:
                 planned.fastq.url,
                 planned.fastq.expected_md5,
                 planned.fastq.size_bytes,
-                str(planned.local_path),
+                _manifest_relative_local_path(path, planned.local_path),
                 "planned",
             ]
             for planned in plan.files
@@ -556,22 +556,27 @@ def _resolve_manifest_local_path(manifest_path: Path, row: dict[str, str]) -> Pa
     file_name = (row.get("file_name") or "").strip()
     if raw_local_path:
         candidate = Path(raw_local_path)
-        resolved = candidate if candidate.is_absolute() else (manifest_path.parent / candidate).resolve()
-        if not candidate.is_absolute() and resolved.is_file():
-            return resolved
-        if candidate.name:
-            local_name_sibling = _manifest_sibling_path(manifest_path, candidate.name)
-            if local_name_sibling.is_file():
-                return local_name_sibling
-        sibling = _manifest_sibling_path(manifest_path, file_name)
-        if sibling.is_file():
-            return sibling
-        if resolved.is_file() or not file_name:
-            return resolved
-        return resolved
+        if candidate.is_absolute():
+            return _resolve_legacy_absolute_manifest_local_path(manifest_path, candidate)
+        return (manifest_path.parent / candidate).resolve()
     if file_name:
         return _manifest_sibling_path(manifest_path, file_name)
     return (manifest_path.parent / "__missing_manifest_local_path__").resolve()
+
+
+def _manifest_relative_local_path(manifest_path: Path, local_path: Path) -> str:
+    try:
+        return str(local_path.resolve().relative_to(manifest_path.parent.resolve()))
+    except ValueError:
+        return str(local_path)
+
+
+def _resolve_legacy_absolute_manifest_local_path(manifest_path: Path, local_path: Path) -> Path:
+    if local_path.name:
+        sibling = _manifest_sibling_path(manifest_path, local_path.name)
+        if sibling.is_file():
+            return sibling
+    return local_path
 
 
 def _manifest_sibling_path(manifest_path: Path, file_name: str) -> Path:
