@@ -820,6 +820,22 @@ function Start-OperationFinalizationIfReady {
     return $state
 }
 
+function Complete-OperationBridgeStateIfReady {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName
+    )
+    $state = Start-OperationFinalizationIfReady $OperationName
+    if ($null -eq $state) { return $null }
+
+    $process = $state.Process
+    $state.Process = $null
+    $state.Bridge = $null
+    Update-CancelButton
+    Dispose-ProcessQuietly $process
+    return $state
+}
+
 function Dispose-ProcessQuietly {
     param([System.Diagnostics.Process]$Process)
     if ($null -eq $Process) { return }
@@ -1009,14 +1025,19 @@ function Clear-OperationRunState {
     $state.StdoutText = ""
     $state.StderrText = ""
     $state.LastDoneEvent = $null
-    $state.LastExitCode = $null
     $state.LastArguments = @()
     $state.LastStartError = ""
     $state.LastCommand = ""
-    $state.ExitObserved = $false
-    $state.StdoutClosed = $false
-    $state.StderrClosed = $false
-    $state.Finalized = $false
+    Clear-OperationCompletionState $state
+}
+
+function Clear-OperationCompletionState {
+    param([object]$State)
+    $State.LastExitCode = $null
+    $State.ExitObserved = $false
+    $State.StdoutClosed = $false
+    $State.StderrClosed = $false
+    $State.Finalized = $false
 }
 
 function Clear-ResolveRunState {
@@ -1115,13 +1136,10 @@ function Apply-ResolvedResult {
 }
 
 function Complete-ResolveIfReady {
-    $state = Start-OperationFinalizationIfReady "resolve"
+    $state = Complete-OperationBridgeStateIfReady "resolve"
     if ($null -eq $state) { return }
 
-    $process = $state.Process
     try {
-        $state.Process = $null
-        Update-CancelButton
         Remove-ResolveInputFile
         $progressBar.Style = "Continuous"
         $progressBar.Value = 0
@@ -1160,7 +1178,6 @@ function Complete-ResolveIfReady {
         }
     }
     finally {
-        Dispose-ProcessQuietly $process
         Set-Busy $false
     }
 }
@@ -2029,14 +2046,10 @@ function Get-DownloadFinalStatusKey {
 }
 
 function Complete-DownloadIfReady {
-    $state = Start-OperationFinalizationIfReady "download"
+    $state = Complete-OperationBridgeStateIfReady "download"
     if ($null -eq $state) { return }
 
-    $process = $state.Process
     Set-Busy $false
-    $state.Process = $null
-    Update-CancelButton
-    Dispose-ProcessQuietly $process
     $statusKey = Get-DownloadFinalStatusKey $state.LastDoneEvent $state.LastExitCode $state.Canceled
     $statusLabel.Text = T $statusKey
     if ($statusKey -eq "error") {
@@ -2048,15 +2061,11 @@ function Complete-DownloadIfReady {
 }
 
 function Complete-ManifestVerificationIfReady {
-    $state = Start-OperationFinalizationIfReady "verification"
+    $state = Complete-OperationBridgeStateIfReady "verification"
     if ($null -eq $state) { return }
 
-    $process = $state.Process
     $progressBar.Style = "Continuous"
     Set-Busy $false
-    $state.Process = $null
-    Update-CancelButton
-    Dispose-ProcessQuietly $process
     if ($state.Canceled) {
         $statusLabel.Text = T "canceled"
         return
@@ -2163,11 +2172,9 @@ function Confirm-UpdateDownload {
 }
 
 function Complete-UpdateIfReady {
-    $state = Start-OperationFinalizationIfReady "update"
+    $state = Complete-OperationBridgeStateIfReady "update"
     if ($null -eq $state) { return }
 
-    $process = $state.Process
-    $state.Process = $null
     $progressBar.Style = "Continuous"
     if ($null -ne $state.LastDoneEvent -and $state.LastDoneEvent.kind -eq "update_installer") {
         $progressBar.Value = 100
@@ -2176,8 +2183,6 @@ function Complete-UpdateIfReady {
         $progressBar.Value = 0
     }
     Set-Busy $false
-    Update-CancelButton
-    Dispose-ProcessQuietly $process
 
     if ($state.Canceled) {
         $statusLabel.Text = T "canceled"
@@ -3482,9 +3487,11 @@ if ($SelfTest) {
     (Get-OperationState "update").ExitObserved = $true
     (Get-OperationState "update").StdoutClosed = $true
     (Get-OperationState "update").StderrClosed = $true
+    (Get-OperationState "update").Bridge = [pscustomobject]@{ operation = "update" }
     Set-Busy $true
     Complete-UpdateIfReady
     Assert-Equal $statusLabel.Text (T "complete") "update check latest status"
+    Assert-Equal (Get-OperationState "update").Bridge $null "update finalizer clears bridge state"
 
     Clear-UpdateRunState
     (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
@@ -3977,6 +3984,7 @@ if ($SelfTest) {
     (Get-OperationState "resolve").StdoutClosed = $false
     (Get-OperationState "resolve").StderrClosed = $false
     (Get-OperationState "resolve").Finalized = $false
+    (Get-OperationState "resolve").Bridge = [pscustomobject]@{ operation = "resolve" }
     $statusLabel.Text = T "fetching"
     Set-Busy $true
     Complete-ResolveIfReady
@@ -3988,6 +3996,7 @@ if ($SelfTest) {
     Complete-ResolveIfReady
     Assert-Equal $statusLabel.Text (T "complete") "resolve finalizer applies result after stream close"
     Assert-Equal (Test-Path -LiteralPath $resolveSuccessInput) $false "resolve finalizer removes temp input"
+    Assert-Equal (Get-OperationState "resolve").Bridge $null "resolve finalizer clears bridge state"
 
     Clear-ResolvedState -DeleteResolvedJson
     (Get-OperationState "resolve").StderrText = '{"event":"error","command":"resolve-json","code":"invalid_input","detail":"late stderr","message":"late stderr"}'
@@ -4177,6 +4186,7 @@ if ($SelfTest) {
     (Get-OperationState "download").StdoutClosed = $false
     (Get-OperationState "download").StderrClosed = $false
     (Get-OperationState "download").Finalized = $false
+    (Get-OperationState "download").Bridge = [pscustomobject]@{ operation = "download" }
     $statusLabel.Text = T "downloading"
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "downloading") "download finalizer waits for stdout close after exit"
@@ -4189,6 +4199,7 @@ if ($SelfTest) {
     (Get-OperationState "download").StderrClosed = $true
     Complete-DownloadIfReady
     Assert-Equal $statusLabel.Text (T "completeUnverified") "download finalizer handles exit before done processing"
+    Assert-Equal (Get-OperationState "download").Bridge $null "download finalizer clears bridge state"
 
     (Get-OperationState "verification").LastDoneEvent = $null
     (Get-OperationState "verification").LastExitCode = 0
@@ -4197,6 +4208,7 @@ if ($SelfTest) {
     (Get-OperationState "verification").StdoutClosed = $false
     (Get-OperationState "verification").StderrClosed = $false
     (Get-OperationState "verification").Finalized = $false
+    (Get-OperationState "verification").Bridge = [pscustomobject]@{ operation = "verification" }
     $statusLabel.Text = T "verifyingManifest"
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "verifyingManifest") "verification finalizer waits for stdout close after exit"
@@ -4209,6 +4221,7 @@ if ($SelfTest) {
     (Get-OperationState "verification").StderrClosed = $true
     Complete-ManifestVerificationIfReady
     Assert-Equal $statusLabel.Text (T "complete") "verification finalizer handles exit before done processing"
+    Assert-Equal (Get-OperationState "verification").Bridge $null "verification finalizer clears bridge state"
 
     foreach ($row in $fastqGrid.Rows) {
         if (-not $row.IsNewRow) { $row.Cells["selected"].Value = $false }
