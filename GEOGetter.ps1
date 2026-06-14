@@ -574,20 +574,28 @@ function Set-OperationErrorFromProcessOutput {
         [string]$DefaultCode,
         [string]$DefaultMessage
     )
-    $event = Get-CliErrorEventFromText $Stderr
-    $source = "cli_stderr_json"
+    $event = Set-OperationErrorFromCliErrorText $Phase $Stderr $ExitCode "cli_stderr_json"
     if ($null -eq $event) {
-        $event = Get-CliErrorEventFromText $Stdout
-        $source = "cli_stdout_json"
+        $event = Set-OperationErrorFromCliErrorText $Phase $Stdout $ExitCode "cli_stdout_json"
     }
-    if ($null -ne $event) {
-        $script:LastOperationError = New-OperationError $Phase $Command ([string]$event.code) ([string]$event.detail) ([string]$event.message) $source $ExitCode
-        return
-    }
+    if ($null -ne $event) { return }
 
     $detail = (($Stdout + [Environment]::NewLine + $Stderr).Trim())
     $message = if ([string]::IsNullOrWhiteSpace($DefaultMessage)) { $detail } else { $DefaultMessage }
     $script:LastOperationError = New-OperationError $Phase $Command $DefaultCode $detail $message "process_output" $ExitCode
+}
+
+function Set-OperationErrorFromCliErrorText {
+    param(
+        [string]$Phase,
+        [string]$Text,
+        [object]$ExitCode,
+        [string]$Source
+    )
+    $event = Get-CliErrorEventFromText $Text
+    if ($null -eq $event) { return $null }
+    $script:LastOperationError = New-OperationError $Phase ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) $Source $ExitCode
+    return $event
 }
 
 function Get-JsonPropertyValue {
@@ -1918,9 +1926,8 @@ function Handle-DownloadErrorLine {
     param([string]$Line)
     if ([string]::IsNullOrWhiteSpace($Line)) { return }
     try {
-        $event = $Line | ConvertFrom-Json
-        if ($event.event -eq "error") {
-            $script:LastOperationError = New-OperationError "download" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" (Get-OperationState "download").LastExitCode
+        $event = Set-OperationErrorFromCliErrorText "download" $Line (Get-OperationState "download").LastExitCode "cli_stderr_json"
+        if ($null -ne $event) {
             if ([string]$event.code -like "resume_*") {
                 $script:LastResumeErrorCode = [string]$event.code
             }
@@ -2118,9 +2125,8 @@ function Handle-UpdateErrorLine {
     param([string]$Line)
     if ([string]::IsNullOrWhiteSpace($Line)) { return }
     try {
-        $event = $Line | ConvertFrom-Json
-        if ($event.event -eq "error") {
-            $script:LastOperationError = New-OperationError "update" ([string]$event.command) ([string]$event.code) ([string]$event.detail) ([string]$event.message) "cli_stderr_json" (Get-OperationState "update").LastExitCode
+        $event = Set-OperationErrorFromCliErrorText "update" $Line (Get-OperationState "update").LastExitCode "cli_stderr_json"
+        if ($null -ne $event) {
             Append-Log (Get-UpdateFailureReason)
             return
         }

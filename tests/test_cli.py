@@ -58,6 +58,20 @@ class CliTest(unittest.TestCase):
         self.assertIn("message", payload)
         return payload
 
+    def test_all_bridge_commands_emit_one_structured_error_line(self):
+        cases = (
+            ("resolve-json", ["resolve-json", "--unexpected-option"]),
+            ("selected-download-json", ["selected-download-json"]),
+            ("preflight-json", ["preflight-json"]),
+            ("verify-manifest-json", ["verify-manifest-json"]),
+            ("check-update-json", ["check-update-json", "--unexpected-option"]),
+            ("download-update-json", ["download-update-json"]),
+        )
+        for command, argv in cases:
+            with self.subTest(command=command):
+                payload = self.assert_cli_error(argv, "invalid_input")
+                self.assertEqual(payload["command"], command)
+
     def run_preflight_json(self, input_json, fastq_indices, supp_indices, output_dir, resume_existing=False):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
