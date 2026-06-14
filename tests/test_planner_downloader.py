@@ -14,9 +14,11 @@ from geo_getter.downloader import (
     DEFAULT_DOWNLOAD_WORKERS,
     DownloadedPart,
     DownloadNetworkError,
+    DownloadSizeMismatchError,
     MAX_DOWNLOAD_WORKERS,
     _download_url_to_part_with_retries,
     _quarantine_file,
+    download_error_outcome,
     download_plan,
     download_supplementary_files,
     download_url_to_part,
@@ -1287,8 +1289,29 @@ class PlannerDownloaderTest(unittest.TestCase):
                 outcome = download_url_without_md5("https://example.invalid/supplementary.txt", local_path)
 
             self.assertEqual(outcome.status, "network_failed")
-            self.assertEqual(outcome.message, "fixture transfer failure")
+            self.assertIn("Network transfer failed", outcome.message)
+            self.assertIn("fixture transfer failure", outcome.message)
             self.assertEqual(outcome.bytes_downloaded, 3)
+            self.assertEqual(outcome.result_message, "fixture transfer failure")
+
+    def test_download_error_outcome_uses_shared_failure_structure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            part_path = local_path.with_name(local_path.name + ".part")
+            part_path.write_bytes(b"abc")
+
+            outcome = download_error_outcome(
+                local_path,
+                DownloadSizeMismatchError("expected=10 actual=3"),
+                message_note="Quarantine path: fixture.fastq.gz.part.size-mismatch-fixture",
+            )
+
+            self.assertEqual(outcome.status, "size_mismatch")
+            self.assertIn("The downloaded file size did not match", outcome.message)
+            self.assertIn("Quarantine path: fixture.fastq.gz.part.size-mismatch-fixture", outcome.message)
+            self.assertIn("expected=10 actual=3", outcome.message)
+            self.assertEqual(outcome.bytes_downloaded, 3)
+            self.assertEqual(outcome.result_message, "expected=10 actual=3")
 
     def test_progress_is_throttled_by_bytes_and_final_progress_is_emitted(self):
         with tempfile.TemporaryDirectory() as temp:

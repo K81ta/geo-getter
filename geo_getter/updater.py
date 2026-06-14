@@ -10,6 +10,7 @@ from .downloader import (
     DownloadLocalIoError,
     DownloadNetworkError,
     DownloadSizeMismatchError,
+    download_failure_outcome,
     download_url_to_part,
     finalize_downloaded_part,
 )
@@ -109,7 +110,7 @@ def download_update_installer(
         if part_path.exists():
             part_path.unlink()
     except OSError as exc:
-        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
+        raise _update_download_error(installer_path, exc) from exc
 
     try:
         downloaded_part = download_url_to_part(
@@ -118,14 +119,16 @@ def download_update_installer(
             expected_size=expected_size,
         )
     except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError) as exc:
+        error = _update_download_error(installer_path, exc)
         _remove_if_exists(part_path)
-        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
+        raise error from exc
 
     try:
         actual_sha256 = calculate_sha256(downloaded_part.path)
     except OSError as exc:
+        error = _update_download_error(installer_path, exc)
         _remove_if_exists(part_path)
-        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
+        raise error from exc
 
     if actual_sha256.lower() != expected_sha256.lower():
         _remove_if_exists(part_path)
@@ -136,8 +139,9 @@ def download_update_installer(
             installer_path.unlink()
         finalize_downloaded_part(installer_path)
     except (DownloadLocalIoError, OSError) as exc:
+        error = _update_download_error(installer_path, exc)
         _remove_if_exists(part_path)
-        raise GeoGetterError(UPDATE_DOWNLOAD_FAILED, str(exc)) from exc
+        raise error from exc
 
     return {
         "event": "done",
@@ -197,6 +201,20 @@ def _int_or_zero(value: object) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _update_download_error(local_path: Path, error: BaseException) -> GeoGetterError:
+    outcome = download_failure_outcome(local_path, error)
+    return GeoGetterError(
+        UPDATE_DOWNLOAD_FAILED,
+        outcome.result_message,
+        extra={
+            "download_status": outcome.status,
+            "download_message": outcome.message,
+            "download_result_message": outcome.result_message,
+            "bytes_downloaded": outcome.bytes_downloaded,
+        },
+    )
 
 
 def _remove_if_exists(path: Path) -> None:

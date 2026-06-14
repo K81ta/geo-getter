@@ -188,6 +188,31 @@ class UpdaterTest(unittest.TestCase):
             self.assertFalse(list(Path(temp).glob("*.exe")))
             self.assertFalse(list(Path(temp).glob("*.part")))
 
+    def test_download_failure_carries_shared_classification_extra(self):
+        release = self.release_payload()
+        fetcher = lambda *_args, **_kwargs: release
+
+        def fail_download(_url, local_path, **_kwargs):
+            self.write_downloaded_part(local_path, b"partial")
+            raise DownloadNetworkError("temporary failure")
+
+        with tempfile.TemporaryDirectory() as temp:
+            with (
+                mock.patch("geo_getter.updater.download_url_to_part", side_effect=fail_download),
+                self.assertRaises(GeoGetterError) as context,
+            ):
+                download_update_installer("0.1.4", output_dir=temp, current_version="0.1.3", fetcher=fetcher)
+
+            error = context.exception
+            self.assertEqual(error.code, "update_download_failed")
+            self.assertEqual(error.extra["download_status"], "network_failed")
+            self.assertIn("Network transfer failed", error.extra["download_message"])
+            self.assertIn("temporary failure", error.extra["download_message"])
+            self.assertEqual(error.extra["download_result_message"], "temporary failure")
+            self.assertEqual(error.extra["bytes_downloaded"], len(b"partial"))
+            self.assertFalse(list(Path(temp).glob("*.exe")))
+            self.assertFalse(list(Path(temp).glob("*.part")))
+
     def test_local_io_failure_cleans_part_and_reports_download_failure(self):
         release = self.release_payload()
         fetcher = lambda *_args, **_kwargs: release
