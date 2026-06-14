@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 
+RUNTIME_QUARANTINE_PREVIEW_TIMESTAMP = "20000101T000000Z"
+FASTQ_EXISTING_QUARANTINE_REASONS = (
+    "bad-md5-existing",
+    "size-mismatch-existing",
+    "unverified-existing",
+)
+FASTQ_PART_QUARANTINE_REASONS = (
+    "bad-md5",
+    "size-mismatch",
+    "unverified-existing",
+)
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -11,6 +23,7 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
+SidecarCandidateFactory = Callable[[Path, int], Path]
 
 
 def safe_file_name(value: object, default: str) -> str:
@@ -59,6 +72,51 @@ def existing_candidate_path(path: Path, counter: int = 1) -> Path:
 
 def quarantine_candidate_path(path: Path, reason: str, timestamp: str, counter: int = 1) -> Path:
     return _numbered_sidecar_path(path, f".{reason}-{timestamp}", counter)
+
+
+def unique_existing_path(path: Path) -> Path:
+    return first_available_sidecar_path(path, existing_candidate_path)
+
+
+def unique_quarantine_path(path: Path, reason: str, timestamp: str) -> Path:
+    return first_available_sidecar_path(
+        path,
+        lambda candidate_path, counter: quarantine_candidate_path(candidate_path, reason, timestamp, counter),
+    )
+
+
+def download_runtime_paths(local_path: Path, kind: str) -> list[Path]:
+    paths = [local_path, download_part_path(local_path)]
+    if kind == "fastq":
+        paths.extend(fastq_quarantine_candidate_paths(local_path, RUNTIME_QUARANTINE_PREVIEW_TIMESTAMP))
+        return paths
+    if kind == "supplementary":
+        paths.extend(existing_candidate_paths(local_path, count=2))
+        return paths
+    raise ValueError(f"Unknown download runtime path kind: {kind}")
+
+
+def existing_candidate_paths(path: Path, count: int = 1) -> list[Path]:
+    return [existing_candidate_path(path, counter) for counter in range(1, count + 1)]
+
+
+def fastq_quarantine_candidate_paths(path: Path, timestamp: str) -> list[Path]:
+    part_path = download_part_path(path)
+    paths: list[Path] = []
+    for reason in FASTQ_EXISTING_QUARANTINE_REASONS:
+        paths.extend(quarantine_candidate_path(path, reason, timestamp, counter) for counter in (1, 2))
+    for reason in FASTQ_PART_QUARANTINE_REASONS:
+        paths.extend(quarantine_candidate_path(part_path, reason, timestamp, counter) for counter in (1, 2))
+    return paths
+
+
+def first_available_sidecar_path(path: Path, candidate_factory: SidecarCandidateFactory) -> Path:
+    candidate = candidate_factory(path, 1)
+    counter = 2
+    while candidate.exists():
+        candidate = candidate_factory(path, counter)
+        counter += 1
+    return candidate
 
 
 def reserve_unique_download_name(file_name: str, used_keys: set[str]) -> str:
