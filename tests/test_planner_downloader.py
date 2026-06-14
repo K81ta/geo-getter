@@ -1295,6 +1295,38 @@ class PlannerDownloaderTest(unittest.TestCase):
 
                     self.assertEqual(part.read_bytes(), b"abc")
 
+    def test_resume_restarts_when_server_ignores_range(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "fixture.fastq.gz"
+            part = Path(temp) / "fixture.fastq.gz.part"
+            part.write_bytes(b"abc")
+            data = b"abcdef"
+            response = FakeUrlopenResponse(
+                data=data,
+                status=200,
+                headers={"Content-Length": str(len(data))},
+            )
+            range_headers = []
+
+            def urlopen_full_response(request, timeout):
+                range_headers.append(request.get_header("Range"))
+                return response
+
+            with mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_full_response):
+                downloaded_part = _download_url_to_part_with_retries(
+                    "https://example.invalid/fixture.fastq.gz",
+                    local_path,
+                    expected_size=len(data),
+                    stream_md5=True,
+                    chunk_size=2,
+                )
+
+            self.assertEqual(range_headers, ["bytes=3-"])
+            self.assertFalse(downloaded_part.resumed)
+            self.assertEqual(downloaded_part.streamed_md5, hashlib.md5(data).hexdigest())
+            self.assertEqual(downloaded_part.bytes_downloaded, len(data))
+            self.assertEqual(part.read_bytes(), data)
+
     def test_transient_transfer_errors_retry_and_succeed(self):
         for error in (urllib.error.URLError("temporary failure"), OSError("temporary failure")):
             with self.subTest(error=type(error).__name__):

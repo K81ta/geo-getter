@@ -99,6 +99,21 @@ class _PlannedDownload:
     source: object | None = None
 
 
+@dataclass(frozen=True)
+class _PreparedDownloadRequest:
+    request: urllib.request.Request
+    resume_from: int
+
+
+@dataclass(frozen=True)
+class _ResponseTransferPlan:
+    resume_from: int
+    total: int
+    file_mode: str
+    streamed_digest: object | None
+    resumed: bool
+
+
 _PlannedProgressCallback = Callable[[_PlannedDownload, int, int], None]
 _DownloadHandler = Callable[[_PlannedDownload, _PlannedProgressCallback | None, MessageCallback | None], DownloadOutcome]
 
@@ -514,84 +529,169 @@ def _download_url_to_part_once(
 ) -> DownloadedPart:
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be positive: {chunk_size}")
+    now = now_func or _utc_now
+    prepared = _prepare_download_request(url, part_path, expected_size)
+    try:
+        with _open_download_response(prepared.request, now) as response:
+            transfer = _plan_response_transfer(response, prepared.resume_from, expected_size, stream_md5)
+            progress_reporter = _ProgressReporter(
+                progress_callback,
+                initial_downloaded=transfer.resume_from,
+                min_interval_seconds=progress_min_interval_seconds,
+                min_bytes=progress_min_bytes,
+                now_func=now,
+            )
+            _stream_response_to_part(
+                response,
+                part_path,
+                file_mode=transfer.file_mode,
+                chunk_size=chunk_size,
+                progress_reporter=progress_reporter,
+                progress_base=transfer.resume_from,
+                total=transfer.total,
+                streamed_digest=transfer.streamed_digest,
+            )
+    except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError):
+        raise
+    except (http.client.HTTPException, OSError, ValueError) as exc:
+        raise DownloadNetworkError(str(exc)) from exc
+
+    final_size = _validated_download_size(part_path, expected_size)
+    streamed_md5 = transfer.streamed_digest.hexdigest() if transfer.streamed_digest else None
+    return DownloadedPart(part_path, final_size, streamed_md5=streamed_md5, resumed=transfer.resumed)
+
+
+def _prepare_download_request(url: str, part_path: Path, expected_size: int) -> _PreparedDownloadRequest:
+    _ensure_part_parent(part_path)
+    resume_from = _resume_start(part_path, expected_size)
+    return _PreparedDownloadRequest(_build_download_request(url, resume_from), resume_from)
+
+
+def _ensure_part_parent(part_path: Path) -> None:
     try:
         part_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise DownloadLocalIoError(f"Could not create output folder: {part_path.parent}") from exc
+
+
+def _resume_start(part_path: Path, expected_size: int) -> int:
     resume_from = existing_size(part_path)
     if expected_size > 0 and resume_from > expected_size:
         raise DownloadSizeMismatchError(
             f"Partial file size exceeds expected size: expected={expected_size} actual={resume_from}"
         )
+    return resume_from
+
+
+def _build_download_request(url: str, resume_from: int) -> urllib.request.Request:
+    headers = _download_headers(resume_from)
+    try:
+        return urllib.request.Request(url, headers=headers)
+    except ValueError as exc:
+        raise DownloadNetworkError(str(exc), retryable=False) from exc
+
+
+def _download_headers(resume_from: int) -> dict[str, str]:
     headers = {"User-Agent": USER_AGENT}
     if resume_from > 0:
         headers["Range"] = f"bytes={resume_from}-"
+    return headers
+
+
+def _open_download_response(request: urllib.request.Request, now_func: NowCallback):
     try:
-        request = urllib.request.Request(url, headers=headers)
-    except ValueError as exc:
-        raise DownloadNetworkError(str(exc), retryable=False) from exc
-    downloaded = 0
-    streamed_digest = None
-    resumed = False
-    now = now_func or _utc_now
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            status = _status_code(response)
-            appending = resume_from > 0 and status == 206
-            if appending:
-                _validate_content_range(response, resume_from)
-                resumed = True
-            if not appending:
-                resume_from = 0
-                if stream_md5:
-                    streamed_digest = hashlib.md5()
-            total = _content_length(response)
-            if total and appending:
-                total += resume_from
-            if not total:
-                total = expected_size
-            progress_reporter = _ProgressReporter(
-                progress_callback,
-                initial_downloaded=resume_from,
-                min_interval_seconds=progress_min_interval_seconds,
-                min_bytes=progress_min_bytes,
-                now_func=now,
-            )
-            mode = "ab" if appending else "wb"
-            try:
-                handle = part_path.open(mode)
-            except OSError as exc:
-                raise DownloadLocalIoError(f"Could not open partial download file: {part_path}") from exc
-            try:
-                with handle:
-                    while True:
-                        try:
-                            chunk = response.read(chunk_size)
-                        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
-                            raise DownloadNetworkError(str(exc)) from exc
-                        if not chunk:
-                            break
-                        try:
-                            handle.write(chunk)
-                        except OSError as exc:
-                            raise DownloadLocalIoError(f"Could not write partial download file: {part_path}") from exc
-                        if streamed_digest:
-                            streamed_digest.update(chunk)
-                        downloaded += len(chunk)
-                        progress_reporter.emit(resume_from + downloaded, total)
-                    progress_reporter.emit(resume_from + downloaded, total, force=True)
-            except (DownloadNetworkError, DownloadLocalIoError):
-                raise
-            except OSError as exc:
-                raise DownloadLocalIoError(f"Could not close partial download file: {part_path}") from exc
-    except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError):
-        raise
+        return urllib.request.urlopen(request, timeout=120)
     except urllib.error.HTTPError as exc:
-        raise _http_network_error(exc, now) from exc
+        raise _http_network_error(exc, now_func) from exc
     except urllib.error.URLError as exc:
         raise _url_network_error(exc) from exc
     except (http.client.HTTPException, OSError, ValueError) as exc:
         raise DownloadNetworkError(str(exc)) from exc
+
+
+def _plan_response_transfer(
+    response: object,
+    resume_from: int,
+    expected_size: int,
+    stream_md5: bool,
+) -> _ResponseTransferPlan:
+    appending = resume_from > 0 and _status_code(response) == 206
+    if appending:
+        _validate_content_range(response, resume_from)
+    else:
+        resume_from = 0
+    total = _response_total_size(response, resume_from, appending, expected_size)
+    return _ResponseTransferPlan(
+        resume_from=resume_from,
+        total=total,
+        file_mode="ab" if appending else "wb",
+        streamed_digest=None if appending or not stream_md5 else hashlib.md5(),
+        resumed=appending,
+    )
+
+
+def _response_total_size(response: object, resume_from: int, appending: bool, expected_size: int) -> int:
+    total = _content_length(response)
+    if total and appending:
+        total += resume_from
+    if not total:
+        total = expected_size
+    return total
+
+
+def _stream_response_to_part(
+    response: object,
+    part_path: Path,
+    *,
+    file_mode: str,
+    chunk_size: int,
+    progress_reporter: _ProgressReporter,
+    progress_base: int,
+    total: int,
+    streamed_digest: object | None,
+) -> None:
+    handle = _open_part_for_transfer(part_path, file_mode)
+    downloaded = 0
+    try:
+        with handle:
+            while True:
+                chunk = _read_response_chunk(response, chunk_size)
+                if not chunk:
+                    break
+                _write_part_chunk(part_path, handle, chunk)
+                if streamed_digest:
+                    streamed_digest.update(chunk)
+                downloaded += len(chunk)
+                progress_reporter.emit(progress_base + downloaded, total)
+            progress_reporter.emit(progress_base + downloaded, total, force=True)
+    except (DownloadNetworkError, DownloadLocalIoError):
+        raise
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not close partial download file: {part_path}") from exc
+
+
+def _open_part_for_transfer(part_path: Path, file_mode: str):
+    try:
+        return part_path.open(file_mode)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not open partial download file: {part_path}") from exc
+
+
+def _read_response_chunk(response: object, chunk_size: int) -> bytes:
+    try:
+        return response.read(chunk_size)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+        raise DownloadNetworkError(str(exc)) from exc
+
+
+def _write_part_chunk(part_path: Path, handle: object, chunk: bytes) -> None:
+    try:
+        handle.write(chunk)
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not write partial download file: {part_path}") from exc
+
+
+def _validated_download_size(part_path: Path, expected_size: int) -> int:
     final_size = existing_size(part_path)
     if expected_size > 0 and final_size < expected_size:
         raise DownloadSizeMismatchError(
@@ -601,8 +701,7 @@ def _download_url_to_part_once(
         raise DownloadSizeMismatchError(
             f"Downloaded size exceeds expected size: expected={expected_size} actual={final_size}"
         )
-    streamed_md5 = streamed_digest.hexdigest() if streamed_digest else None
-    return DownloadedPart(part_path, final_size, streamed_md5=streamed_md5, resumed=resumed)
+    return final_size
 
 
 def _content_length(response: object) -> int:
