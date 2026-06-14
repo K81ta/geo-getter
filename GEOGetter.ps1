@@ -3853,10 +3853,6 @@ if ($SelfTest) {
                 url = $sourceUri
                 origin_level = "series"
                 origin_accession = "SELFTEST"
-                extension = ".txt"
-                estimated_type = "table_text"
-                size_status = "unknown"
-                verification_status = "not_applicable"
             }
         )
         fastq_files = @(

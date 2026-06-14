@@ -608,11 +608,7 @@ class CliTest(unittest.TestCase):
                         "url": source.as_uri(),
                         "origin_level": "series",
                         "origin_accession": "GSE000001",
-                        "extension": ".txt",
-                        "estimated_type": "table_text",
-                        "size_status": "unknown",
-                        "verification_status": "not_applicable",
-                        "legacy_unused_field": "ignored at CLI boundary",
+                        "unknown_extra_field": "ignored at CLI boundary",
                     }
                 ],
             }
@@ -635,8 +631,8 @@ class CliTest(unittest.TestCase):
             self.assertFalse((run_dir / "supplementary_manifest.tsv").exists())
             manifest = supplementary_manifest_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertEqual(manifest.splitlines()[0].split("\t"), list(SUPPLEMENTARY_MANIFEST_COLUMNS))
-            self.assertNotIn("estimated_type", manifest)
-            self.assertNotIn("legacy_unused_field", manifest)
+            self.assertNotIn("origin_level", manifest)
+            self.assertNotIn("unknown_extra_field", manifest)
             with supplementary_manifest_path(run_dir).open("r", encoding="utf-8-sig", newline="") as handle:
                 manifest_rows = list(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(
