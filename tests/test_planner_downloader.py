@@ -25,7 +25,7 @@ from geo_getter.downloader import (
     verify_md5,
 )
 from geo_getter.errors import GeoGetterError
-from geo_getter.models import DownloadPlan, FastqFile
+from geo_getter.models import DownloadPlan, FastqFile, PlannedSupplementaryFile, SupplementaryFile
 from geo_getter.planner import (
     DOWNLOAD_LOG_COLUMNS,
     FASTQ_MANIFEST_COLUMNS,
@@ -1099,10 +1099,19 @@ class PlannerDownloaderTest(unittest.TestCase):
             local_path = output_dir / "supplementary.txt"
             progress_events = []
             messages = []
+            planned = PlannedSupplementaryFile(
+                supplementary=SupplementaryFile(
+                    source_accession="GSE000001",
+                    scope="GEO Series supplementary/processed",
+                    name="supplementary.txt",
+                    url=source.as_uri(),
+                ),
+                local_path=local_path,
+            )
 
             results = download_supplementary_files(
                 output_dir,
-                [({"url": source.as_uri()}, local_path)],
+                [planned],
                 progress_callback=lambda item, current, total: progress_events.append(
                     (item.kind, item.file_name, current, total)
                 ),

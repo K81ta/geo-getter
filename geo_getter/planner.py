@@ -20,7 +20,7 @@ from .errors import (
     GeoGetterError,
 )
 from .hashing import calculate_md5 as _calculate_md5
-from .models import DownloadPlan, FastqFile, PlannedFile
+from .models import DownloadPlan, FastqFile, PlannedFile, PlannedSupplementaryFile
 from .path_safety import (
     child_path,
     download_part_path,
@@ -158,7 +158,7 @@ def write_fastq_manifest(plan: DownloadPlan) -> None:
 
 def write_supplementary_manifest(
     output_dir: Path,
-    planned_supplementary: list[tuple[dict, Path]],
+    planned_supplementary: list[PlannedSupplementaryFile],
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = supplementary_manifest_path(output_dir)
@@ -167,14 +167,14 @@ def write_supplementary_manifest(
         SUPPLEMENTARY_MANIFEST_COLUMNS,
         (
             [
-                item.get("source_accession", ""),
-                item.get("scope", ""),
-                item.get("name", ""),
-                item.get("url", ""),
-                str(local_path),
+                planned.supplementary.source_accession,
+                planned.supplementary.scope,
+                planned.supplementary.name,
+                planned.supplementary.url,
+                str(planned.local_path),
                 "planned",
             ]
-            for item, local_path in planned_supplementary
+            for planned in planned_supplementary
         ),
     )
     initialize_log(output_dir)

@@ -381,6 +381,44 @@ class CliTest(unittest.TestCase):
 
         self.assertIn("supplementary index is out of range", payload["detail"])
 
+    def test_preflight_json_rejects_malformed_supplementary_payload_at_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE",
+                        "primary_accession": "GSE",
+                        "fastq_files": [],
+                        "supplementary_files": [
+                            {
+                                "source_accession": "GSE",
+                                "scope": "GEO Series supplementary/processed",
+                                "name": "supplementary.txt",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--supp-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "invalid_input",
+            )
+
+        self.assertIn("missing required field", payload["message"])
+        self.assertIn("url", payload["detail"])
+
     def test_selected_download_missing_required_argument_emits_structured_stderr_error(self):
         payload = self.assert_cli_error(["selected-download-json"], "invalid_input")
         self.assertEqual(payload["command"], "selected-download-json")
@@ -565,6 +603,7 @@ class CliTest(unittest.TestCase):
                         "estimated_type": "table_text",
                         "size_status": "unknown",
                         "verification_status": "not_applicable",
+                        "legacy_unused_field": "ignored at CLI boundary",
                     }
                 ],
             }
@@ -588,6 +627,22 @@ class CliTest(unittest.TestCase):
             manifest = supplementary_manifest_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertEqual(manifest.splitlines()[0].split("\t"), list(SUPPLEMENTARY_MANIFEST_COLUMNS))
             self.assertNotIn("estimated_type", manifest)
+            self.assertNotIn("legacy_unused_field", manifest)
+            with supplementary_manifest_path(run_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                manifest_rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(
+                manifest_rows,
+                [
+                    {
+                        "source_accession": "GSE000001",
+                        "scope": "GEO Series supplementary/processed",
+                        "file_name": "supplementary.txt",
+                        "url": source.as_uri(),
+                        "local_path": str(resolved_run_dir / "supplementary.txt"),
+                        "status": "planned",
+                    }
+                ],
+            )
             log = download_log_path(run_dir).read_text(encoding="utf-8-sig")
             self.assertIn("download_complete", log)
             self.assertNotIn("not_applicable", log)
