@@ -340,29 +340,22 @@ def _download_planned_file(
         )
         return _downloaded_part_outcome(planned, downloaded_part)
     except DownloadSizeMismatchError as exc:
-        status = SIZE_MISMATCH
         part_path = download_part_path(planned.local_path)
         downloaded = existing_size(part_path)
-        message = ERROR_MESSAGES[status]
         try:
             if part_path.exists():
                 quarantined = _quarantine_file(part_path, "size-mismatch")
-                message = f"{message} Quarantine path: {quarantined}"
+                return download_error_outcome(
+                    planned.local_path,
+                    exc,
+                    bytes_downloaded=downloaded,
+                    message_note=f"Quarantine path: {quarantined}",
+                )
         except DownloadLocalIoError as io_exc:
-            status = LOCAL_IO_FAILED
-            message = f"{ERROR_MESSAGES[status]} Detail: {io_exc}"
-        return DownloadOutcome(
-            status,
-            f"{message} Detail: {exc}",
-            bytes_downloaded=downloaded,
-            result_message=str(exc),
-        )
-    except DownloadNetworkError as exc:
-        return _planned_download_error_outcome(planned.local_path, exc)
-    except DownloadLocalIoError as exc:
-        return _planned_download_error_outcome(planned.local_path, exc)
-    except OSError as exc:
-        return _planned_download_error_outcome(planned.local_path, exc)
+            return download_error_outcome(planned.local_path, io_exc, bytes_downloaded=downloaded)
+        return download_error_outcome(planned.local_path, exc, bytes_downloaded=downloaded)
+    except (DownloadNetworkError, DownloadLocalIoError, OSError) as exc:
+        return download_error_outcome(planned.local_path, exc)
 
 
 def _record_download_outcome(
@@ -934,7 +927,7 @@ def _verify_md5_candidate(path: Path, expected_md5: str, description: str) -> tu
         raise DownloadLocalIoError(f"Could not read {description} for MD5 verification: {path}") from exc
 
 
-def _download_error_status(error: BaseException) -> str:
+def classify_download_error(error: BaseException) -> str:
     if isinstance(error, DownloadSizeMismatchError):
         return SIZE_MISMATCH
     if isinstance(error, DownloadNetworkError):
@@ -942,22 +935,41 @@ def _download_error_status(error: BaseException) -> str:
     return LOCAL_IO_FAILED
 
 
-def download_error_outcome(local_path: Path, error: BaseException) -> DownloadOutcome:
+def download_failure_outcome(
+    local_path: Path,
+    error: BaseException,
+    *,
+    bytes_downloaded: int | None = None,
+    message_note: str = "",
+) -> DownloadOutcome:
+    status = classify_download_error(error)
+    detail = str(error)
+    message_parts = [ERROR_MESSAGES[status]]
+    if message_note:
+        message_parts.append(message_note)
+    message = " ".join(message_parts)
+    if detail:
+        message = f"{message} Detail: {detail}"
     return DownloadOutcome(
-        _download_error_status(error),
-        str(error),
-        bytes_downloaded=existing_size(download_part_path(local_path)),
-        result_message=str(error),
+        status,
+        message,
+        bytes_downloaded=existing_size(download_part_path(local_path)) if bytes_downloaded is None else bytes_downloaded,
+        result_message=detail,
     )
 
 
-def _planned_download_error_outcome(local_path: Path, error: BaseException) -> DownloadOutcome:
-    status = _download_error_status(error)
-    return DownloadOutcome(
-        status,
-        f"{ERROR_MESSAGES[status]} Detail: {error}",
-        bytes_downloaded=existing_size(download_part_path(local_path)),
-        result_message=str(error),
+def download_error_outcome(
+    local_path: Path,
+    error: BaseException,
+    *,
+    bytes_downloaded: int | None = None,
+    message_note: str = "",
+) -> DownloadOutcome:
+    return download_failure_outcome(
+        local_path,
+        error,
+        bytes_downloaded=bytes_downloaded,
+        message_note=message_note,
     )
 
 
