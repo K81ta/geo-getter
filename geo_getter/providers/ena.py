@@ -29,26 +29,26 @@ ENA_FIELDS = [
 ]
 
 
-class EnaProvider:
-    def get_fastq_files(self, accession: str, source_accession: str) -> list[FastqFile]:
-        rows = self.fetch_file_report(accession)
-        return parse_file_report(rows, source_accession=source_accession, query_accession=accession)
+def get_fastq_files(accession: str, source_accession: str) -> list[FastqFile]:
+    rows = fetch_file_report(accession)
+    return parse_file_report(rows, source_accession=source_accession, query_accession=accession)
 
-    def fetch_file_report(self, accession: str) -> list[dict[str, Any]]:
-        params = urllib.parse.urlencode(
-            {
-                "accession": accession,
-                "result": "read_run",
-                "fields": ",".join(ENA_FIELDS),
-                "format": "json",
-                "download": "false",
-                "limit": "0",
-            }
-        )
-        data = fetch_json(f"{ENA_FILE_REPORT_ENDPOINT}?{params}", timeout=90)
-        if not isinstance(data, list):
-            raise GeoGetterError("url_unavailable", f"Unexpected ENA API response type: {type(data).__name__}")
-        return data
+
+def fetch_file_report(accession: str) -> list[dict[str, Any]]:
+    params = urllib.parse.urlencode(
+        {
+            "accession": accession,
+            "result": "read_run",
+            "fields": ",".join(ENA_FIELDS),
+            "format": "json",
+            "download": "false",
+            "limit": "0",
+        }
+    )
+    data = fetch_json(f"{ENA_FILE_REPORT_ENDPOINT}?{params}", timeout=90)
+    if not isinstance(data, list):
+        raise GeoGetterError("url_unavailable", f"Unexpected ENA API response type: {type(data).__name__}")
+    return data
 
 
 def parse_file_report(

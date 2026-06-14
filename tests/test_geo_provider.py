@@ -1,10 +1,11 @@
 import unittest
+from unittest import mock
 
 from geo_getter.accession import ENA_QUERY_PREFIXES
 from geo_getter.errors import GeoGetterError
 from geo_getter.providers.geo import (
-    GeoProvider,
     _merge_parse_results,
+    get_related,
     iter_soft_records,
     parse_soft,
 )
@@ -35,7 +36,7 @@ SOFT = """
 """
 
 
-class GeoProviderTest(unittest.TestCase):
+class GeoFunctionsTest(unittest.TestCase):
     def test_iter_soft_records_splits_series_and_samples(self):
         records = list(iter_soft_records(SOFT))
 
@@ -214,17 +215,19 @@ plain preamble line
         self.assertEqual(parsed.dataset_metadata.status, "Public on Jan 02 2026")
 
     def test_gse_sample_soft_failure_is_reported_as_warning(self):
-        class FailingSampleGeoProvider(GeoProvider):
-            def fetch_soft(self, accession):
-                return """
+        primary_soft = """
 ^SERIES = GSE000001
 !Series_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
 """
 
-            def fetch_gsm_soft(self, accession):
-                raise GeoGetterError("network_failed", "fixture")
-
-        parsed = FailingSampleGeoProvider().get_related("GSE000001")
+        with (
+            mock.patch("geo_getter.providers.geo.fetch_soft", return_value=primary_soft),
+            mock.patch(
+                "geo_getter.providers.geo.fetch_gsm_soft",
+                side_effect=GeoGetterError("network_failed", "fixture"),
+            ),
+        ):
+            parsed = get_related("GSE000001")
         self.assertEqual(parsed.related_accessions, ["SRP000001"])
         expected_warning = (
             "GEO sample metadata retrieval failed; sample-level details may be incomplete. "
