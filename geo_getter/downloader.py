@@ -45,6 +45,13 @@ DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS = 0.250
 DEFAULT_PROGRESS_MIN_BYTES = 16 * 1024 * 1024
 DEFAULT_DOWNLOAD_WORKERS = 2
 MAX_DOWNLOAD_WORKERS = 4
+_CANDIDATE_MISSING = "missing"
+_CANDIDATE_SHORT = "short"
+_CANDIDATE_VERIFIED = "verified"
+_CANDIDATE_BAD_MD5 = "bad_md5"
+_CANDIDATE_SIZE_MISMATCH = "size_mismatch"
+_CANDIDATE_UNVERIFIED_COMPLETE = "unverified_complete"
+_CANDIDATE_UNVERIFIED_INCOMPLETE = "unverified_incomplete"
 
 
 class DownloadSizeMismatchError(Exception):
@@ -112,6 +119,15 @@ class _ResponseTransferPlan:
     file_mode: str
     streamed_digest: object | None
     resumed: bool
+
+
+@dataclass(frozen=True)
+class _CandidateInspection:
+    path: Path
+    kind: str
+    status: str
+    size: int = 0
+    actual_md5: str = ""
 
 
 _PlannedProgressCallback = Callable[[_PlannedDownload, int, int], None]
@@ -814,39 +830,30 @@ def _reuse_or_quarantine_existing(
     planned: PlannedFile,
     message_callback: MessageCallback | None = None,
 ) -> DownloadOutcome | None:
-    if not planned.local_path.exists():
+    inspection = _inspect_download_candidate(planned.local_path, planned, "final")
+    if inspection.status == _CANDIDATE_MISSING:
         return None
-    if not planned.local_path.is_file():
-        raise GeoGetterError(OUTPUT_PATH_INVALID, f"download_target_is_not_file path={planned.local_path}")
-    local_size = existing_size(planned.local_path)
-    if planned.fastq.expected_md5:
-        if _candidate_size_mismatches(local_size, planned.fastq.size_bytes):
-            quarantined = _quarantine_file(planned.local_path, "size-mismatch-existing")
-            _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
-            return None
-        ok, actual_md5 = _verify_md5_candidate(
-            planned.local_path,
-            planned.fastq.expected_md5,
-            "existing FASTQ",
+    if inspection.status in (_CANDIDATE_SHORT, _CANDIDATE_SIZE_MISMATCH):
+        quarantined = _quarantine_file(inspection.path, "size-mismatch-existing")
+        _emit(message_callback, f"existing_file_quarantined_size_mismatch: {quarantined}")
+        return None
+    if inspection.status == _CANDIDATE_VERIFIED:
+        _remove_stale_part_after_final_reuse(planned.local_path)
+        return DownloadOutcome(
+            MD5_VERIFIED,
+            "Existing file MD5 matched, so the file was reused without downloading again.",
+            inspection.actual_md5,
+            inspection.size,
         )
-        if ok:
-            stale_part = download_part_path(planned.local_path)
-            if stale_part.exists():
-                try:
-                    stale_part.unlink()
-                except OSError as exc:
-                    raise DownloadLocalIoError(f"Could not remove stale partial download: {stale_part}") from exc
-            return DownloadOutcome(
-                MD5_VERIFIED,
-                "Existing file MD5 matched, so the file was reused without downloading again.",
-                actual_md5,
-                local_size,
-            )
-        quarantined = _quarantine_file(planned.local_path, "bad-md5-existing")
+    if inspection.status == _CANDIDATE_BAD_MD5:
+        quarantined = _quarantine_file(inspection.path, "bad-md5-existing")
         _emit(message_callback, f"existing_file_quarantined_bad_md5: {quarantined}")
         return None
-
-    quarantined = _quarantine_file(planned.local_path, "unverified-existing")
+    if inspection.status == _CANDIDATE_UNVERIFIED_COMPLETE:
+        quarantined = _quarantine_file(inspection.path, "unverified-existing")
+        _emit(message_callback, f"existing_file_quarantined_unverified: {quarantined}")
+        return None
+    quarantined = _quarantine_file(inspection.path, "unverified-existing")
     _emit(message_callback, f"existing_file_quarantined_unverified: {quarantined}")
     return None
 
@@ -856,47 +863,68 @@ def _reuse_or_quarantine_complete_part(
     message_callback: MessageCallback | None = None,
 ) -> DownloadOutcome | None:
     part_path = download_part_path(planned.local_path)
-    if not part_path.exists():
+    inspection = _inspect_download_candidate(part_path, planned, "part")
+    if inspection.status in (_CANDIDATE_MISSING, _CANDIDATE_SHORT, _CANDIDATE_UNVERIFIED_INCOMPLETE):
         return None
-    if not part_path.is_file():
-        raise GeoGetterError(OUTPUT_PATH_INVALID, f"partial_download_target_is_not_file path={part_path}")
-    part_size = existing_size(part_path)
-    if _candidate_size_is_short(part_size, planned.fastq.size_bytes):
-        return None
-    if _candidate_size_exceeds(part_size, planned.fastq.size_bytes):
+    if inspection.status == _CANDIDATE_SIZE_MISMATCH:
         raise DownloadSizeMismatchError(
-            f"Partial file size exceeds expected size: expected={planned.fastq.size_bytes} actual={part_size}"
+            f"Partial file size exceeds expected size: expected={planned.fastq.size_bytes} actual={inspection.size}"
         )
-    if not planned.fastq.expected_md5:
-        if planned.fastq.size_bytes > 0 and part_size == planned.fastq.size_bytes:
-            quarantined = _quarantine_file(part_path, "unverified-existing")
-            _emit(message_callback, f"partial_file_quarantined_unverified: {quarantined}")
+    if inspection.status == _CANDIDATE_UNVERIFIED_COMPLETE:
+        quarantined = _quarantine_file(part_path, "unverified-existing")
+        _emit(message_callback, f"partial_file_quarantined_unverified: {quarantined}")
         return None
-    ok, actual_md5 = _verify_md5_candidate(part_path, planned.fastq.expected_md5, "partial FASTQ")
-    if ok:
+    if inspection.status == _CANDIDATE_VERIFIED:
         _finalize_part(part_path, planned.local_path)
         return DownloadOutcome(
             MD5_VERIFIED,
             "Previous partial file MD5 matched, so it was promoted to the final file name.",
-            actual_md5,
-            part_size,
+            inspection.actual_md5,
+            inspection.size,
         )
-    if planned.fastq.size_bytes == 0 or part_size >= planned.fastq.size_bytes:
+    if inspection.status == _CANDIDATE_BAD_MD5:
         quarantined = _quarantine_file(part_path, "bad-md5")
         _emit(message_callback, f"partial_file_quarantined_bad_md5: {quarantined}")
     return None
 
 
-def _candidate_size_mismatches(candidate_size: int, expected_size: int) -> bool:
-    return expected_size > 0 and candidate_size != expected_size
+def _inspect_download_candidate(path: Path, planned: PlannedFile, kind: str) -> _CandidateInspection:
+    if not path.exists():
+        return _CandidateInspection(path, kind, _CANDIDATE_MISSING)
+    if not path.is_file():
+        if kind == "final":
+            raise GeoGetterError(OUTPUT_PATH_INVALID, f"download_target_is_not_file path={path}")
+        raise GeoGetterError(OUTPUT_PATH_INVALID, f"partial_download_target_is_not_file path={path}")
+
+    candidate_size = existing_size(path)
+    if planned.fastq.size_bytes > 0:
+        if candidate_size < planned.fastq.size_bytes:
+            return _CandidateInspection(path, kind, _CANDIDATE_SHORT, candidate_size)
+        if candidate_size > planned.fastq.size_bytes:
+            return _CandidateInspection(path, kind, _CANDIDATE_SIZE_MISMATCH, candidate_size)
+
+    if planned.fastq.expected_md5:
+        ok, actual_md5 = _verify_md5_candidate(path, planned.fastq.expected_md5, _candidate_md5_description(kind))
+        status = _CANDIDATE_VERIFIED if ok else _CANDIDATE_BAD_MD5
+        return _CandidateInspection(path, kind, status, candidate_size, actual_md5)
+
+    if kind == "final" or (planned.fastq.size_bytes > 0 and candidate_size == planned.fastq.size_bytes):
+        return _CandidateInspection(path, kind, _CANDIDATE_UNVERIFIED_COMPLETE, candidate_size)
+    return _CandidateInspection(path, kind, _CANDIDATE_UNVERIFIED_INCOMPLETE, candidate_size)
 
 
-def _candidate_size_is_short(candidate_size: int, expected_size: int) -> bool:
-    return expected_size > 0 and candidate_size < expected_size
+def _candidate_md5_description(kind: str) -> str:
+    return "existing FASTQ" if kind == "final" else "partial FASTQ"
 
 
-def _candidate_size_exceeds(candidate_size: int, expected_size: int) -> bool:
-    return expected_size > 0 and candidate_size > expected_size
+def _remove_stale_part_after_final_reuse(local_path: Path) -> None:
+    stale_part = download_part_path(local_path)
+    if not stale_part.exists():
+        return
+    try:
+        stale_part.unlink()
+    except OSError as exc:
+        raise DownloadLocalIoError(f"Could not remove stale partial download: {stale_part}") from exc
 
 
 def _verify_md5_candidate(path: Path, expected_md5: str, description: str) -> tuple[bool, str]:
