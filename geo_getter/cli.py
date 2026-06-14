@@ -13,9 +13,8 @@ from pathlib import Path
 from . import __version__
 from .downloader import (
     DEFAULT_DOWNLOAD_WORKERS,
-    download_error_outcome,
     download_plan,
-    download_url_without_md5,
+    download_supplementary_files,
     normalize_download_workers,
 )
 from .errors import (
@@ -35,10 +34,8 @@ from .path_safety import (
     download_part_path,
     download_runtime_paths,
     name_collision_key,
-    unique_existing_path,
 )
 from .planner import (
-    append_download_log,
     build_download_plan,
     download_log_path,
     fastq_manifest_path,
@@ -53,10 +50,6 @@ from .planner import (
 )
 from .providers.resolver import resolve_metadata
 from .updater import check_for_update, download_update_installer
-
-SUPPLEMENTARY_DOWNLOAD_COMPLETE_MESSAGE = (
-    "Saved GEO supplementary/processed file. It was not verified because GEO SOFT does not provide a stable expected MD5 value."
-)
 
 
 class GeoGetterArgumentParser(argparse.ArgumentParser):
@@ -372,22 +365,19 @@ def _selected_download_json(
                 progress_by_path[str(planned.local_path)] = (downloaded, total)
                 aggregate_downloaded = sum(current for current, _total in progress_by_path.values())
                 aggregate_total = plan.total_bytes or sum(item_total for _current, item_total in progress_by_path.values())
-                _print_json_event(
-                    {
-                        "event": "progress",
-                        "kind": "fastq",
-                        "file_name": planned.fastq.file_name,
-                        "downloaded": downloaded,
-                        "total": total,
-                        "aggregate_downloaded": aggregate_downloaded,
-                        "aggregate_total": aggregate_total,
-                        "download_workers": worker_count,
-                    }
+                _print_download_progress(
+                    "fastq",
+                    planned.fastq.file_name,
+                    downloaded,
+                    total,
+                    aggregate_downloaded=aggregate_downloaded,
+                    aggregate_total=aggregate_total,
+                    download_workers=worker_count,
                 )
 
         def message(text: str) -> None:
             with progress_lock:
-                _print_json_event({"event": "message", "message": text})
+                _print_download_message(text)
 
         results = download_plan(
             plan,
@@ -402,7 +392,18 @@ def _selected_download_json(
 
     if cli_plan.planned_supplementary:
         write_supplementary_manifest(cli_plan.output_dir, cli_plan.planned_supplementary)
-        statuses.extend(_download_supplementary_files(cli_plan.output_dir, cli_plan.planned_supplementary))
+        supp_results = download_supplementary_files(
+            cli_plan.output_dir,
+            cli_plan.planned_supplementary,
+            progress_callback=lambda item, current, total: _print_download_progress(
+                item.kind,
+                item.file_name,
+                current,
+                total,
+            ),
+            message_callback=_print_download_message,
+        )
+        statuses.extend(status for _item, status, _message in supp_results)
 
     print(
         json.dumps(
@@ -550,6 +551,28 @@ def _write_or_print_json(payload: object, out_json: str | None) -> None:
 
 def _print_json_event(payload: object) -> None:
     print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def _print_download_message(text: str) -> None:
+    _print_json_event({"event": "message", "message": text})
+
+
+def _print_download_progress(
+    kind: str,
+    file_name: str,
+    downloaded: int,
+    total: int,
+    **extra: object,
+) -> None:
+    payload = {
+        "event": "progress",
+        "kind": kind,
+        "file_name": file_name,
+        "downloaded": downloaded,
+        "total": total,
+    }
+    payload.update(extra)
+    _print_json_event(payload)
 
 
 def _load_json(path: Path) -> dict:
@@ -702,59 +725,6 @@ def _directory_has_entries(path: Path) -> bool:
             f"reason=cannot_read_output path={path} error={exc}",
             extra={"path_error_code": "cannot_read_output", "output_dir": str(path), "error": str(exc)},
         ) from exc
-
-
-def _download_supplementary_files(output_dir: Path, planned_supplementary: list[tuple[dict, Path]]) -> list[str]:
-    statuses: list[str] = []
-    for item, local_path in planned_supplementary:
-        file_name = local_path.name
-        url = item.get("url", "")
-        print(json.dumps({"event": "message", "message": f"supplementary_download_started: {file_name}"}, ensure_ascii=False), flush=True)
-        try:
-            if local_path.exists():
-                local_path.replace(unique_existing_path(local_path))
-        except OSError as exc:
-            outcome = download_error_outcome(local_path, exc)
-        else:
-            def message(text: str) -> None:
-                print(json.dumps({"event": "message", "message": text}, ensure_ascii=False), flush=True)
-
-            def progress(current: int, total: int) -> None:
-                print(
-                    json.dumps(
-                        {
-                            "event": "progress",
-                            "kind": "supplementary",
-                            "file_name": file_name,
-                            "downloaded": current,
-                            "total": total,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    flush=True,
-                )
-
-            outcome = download_url_without_md5(
-                url,
-                local_path,
-                progress_callback=progress,
-                message_callback=message,
-                success_message=SUPPLEMENTARY_DOWNLOAD_COMPLETE_MESSAGE,
-            )
-        append_download_log(
-            output_dir,
-            "GEO_SUPPLEMENTARY",
-            file_name,
-            outcome.status,
-            "",
-            "",
-            0,
-            outcome.bytes_downloaded,
-            outcome.message,
-        )
-        print(json.dumps({"event": "message", "message": f"{outcome.status}: {file_name}"}, ensure_ascii=False), flush=True)
-        statuses.append(outcome.status)
-    return statuses
 
 
 def _planned_supplementary_files(

@@ -18,6 +18,7 @@ from geo_getter.downloader import (
     _download_url_to_part_with_retries,
     _quarantine_file,
     download_plan,
+    download_supplementary_files,
     download_url_to_part,
     download_url_without_md5,
     normalize_download_workers,
@@ -1087,6 +1088,41 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(outcome.bytes_downloaded, len(data))
             self.assertEqual(local_path.read_bytes(), data)
             self.assertFalse(part_path.exists())
+
+    def test_download_supplementary_files_records_shared_outcome(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.txt"
+            data = b"supplementary fixture\n"
+            source.write_bytes(data)
+            output_dir = root / "out"
+            local_path = output_dir / "supplementary.txt"
+            progress_events = []
+            messages = []
+
+            results = download_supplementary_files(
+                output_dir,
+                [({"url": source.as_uri()}, local_path)],
+                progress_callback=lambda item, current, total: progress_events.append(
+                    (item.kind, item.file_name, current, total)
+                ),
+                message_callback=messages.append,
+            )
+
+            self.assertEqual([(item.file_name, status) for item, status, _message in results], [("supplementary.txt", "download_complete")])
+            self.assertEqual(local_path.read_bytes(), data)
+            self.assertEqual(progress_events, [("supplementary", "supplementary.txt", len(data), len(data))])
+            self.assertIn("supplementary_download_started: supplementary.txt", messages)
+            self.assertIn("download_complete: supplementary.txt", messages)
+            with download_log_path(output_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["run_accession"], "GEO_SUPPLEMENTARY")
+            self.assertEqual(rows[-1]["file_name"], "supplementary.txt")
+            self.assertEqual(rows[-1]["status"], "download_complete")
+            self.assertEqual(rows[-1]["expected_md5"], "")
+            self.assertEqual(rows[-1]["actual_md5"], "")
+            self.assertEqual(rows[-1]["bytes_expected"], "0")
+            self.assertEqual(rows[-1]["bytes_downloaded"], str(len(data)))
 
     def test_download_url_without_md5_reports_failure_with_part_size(self):
         with tempfile.TemporaryDirectory() as temp:
