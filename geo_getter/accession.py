@@ -29,9 +29,9 @@ _ACCESSION_PREFIX_MATCH_ORDER = tuple(
     sorted(SUPPORTED_ACCESSION_PREFIXES, key=len, reverse=True)
 )
 ACCESSION_PATTERN = re.compile(
-    r"\b("
-    + "|".join(f"{re.escape(prefix)}\\d+" for prefix in _ACCESSION_PREFIX_MATCH_ORDER)
-    + r")\b",
+    r"\b(?P<prefix>"
+    + "|".join(re.escape(prefix) for prefix in _ACCESSION_PREFIX_MATCH_ORDER)
+    + r")(?P<number>\d+)\b",
     re.IGNORECASE,
 )
 
@@ -58,19 +58,15 @@ def extract_accession(text: str) -> AccessionInput:
     match = ACCESSION_PATTERN.search(text)
     if not match:
         raise ValueError("Could not extract a supported accession from the input.")
-    accession = match.group(1).upper()
-    prefix = _prefix_for(accession)
+    prefix = match.group("prefix").upper()
+    accession = f"{prefix}{match.group('number')}"
     return AccessionInput(raw_text=text.strip(), accession=accession, prefix=prefix)
 
 
 def find_supported_accessions(text: str) -> list[str]:
     return list(
-        dict.fromkeys(match.group(1).upper() for match in ACCESSION_PATTERN.finditer(text or ""))
+        dict.fromkeys(
+            f"{match.group('prefix').upper()}{match.group('number')}"
+            for match in ACCESSION_PATTERN.finditer(text or "")
+        )
     )
-
-
-def _prefix_for(accession: str) -> str:
-    for prefix in _ACCESSION_PREFIX_MATCH_ORDER:
-        if accession.startswith(prefix):
-            return prefix
-    return accession[:3]
