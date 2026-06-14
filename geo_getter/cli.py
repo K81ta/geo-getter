@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import sys
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -22,6 +23,8 @@ from .errors import (
     INSUFFICIENT_SPACE,
     MD5_UNAVAILABLE,
     MD5_VERIFIED,
+    OUTPUT_PATH_INVALID,
+    PATH_TOO_LONG,
     RESUME_REQUIRED,
     RESUME_SUPPLEMENTARY_UNSUPPORTED,
     GeoGetterError,
@@ -104,7 +107,7 @@ def _handle_selected_download_json(args: argparse.Namespace) -> int:
         Path(args.input_json),
         args.fastq_indices,
         args.supp_indices,
-        Path(args.out),
+        args.out,
         resume_existing=args.resume_existing,
         download_workers=args.download_workers,
     )
@@ -115,7 +118,7 @@ def _handle_preflight_json(args: argparse.Namespace) -> int:
         Path(args.input_json),
         args.fastq_indices,
         args.supp_indices,
-        Path(args.out),
+        args.out,
         resume_existing=args.resume_existing,
     )
 
@@ -286,7 +289,7 @@ def _build_cli_download_plan(
     input_json: Path,
     fastq_indices: str,
     supp_indices: str,
-    output_dir: Path,
+    output_dir: str | Path,
     resume_existing: bool = False,
     require_resume_for_nonempty: bool = False,
 ) -> CliDownloadPlan:
@@ -295,8 +298,7 @@ def _build_cli_download_plan(
     selected_supp = _selected_supplementary_from_payload(payload, supp_indices) if supp_indices.strip() else []
     _ensure_any_selected(selected_fastq, selected_supp)
 
-    run_output_dir = output_dir.expanduser().resolve()
-    run_output_dir.mkdir(parents=True, exist_ok=True)
+    run_output_dir = _prepare_download_output_dir(output_dir)
     existing_output_nonempty = _directory_has_entries(run_output_dir)
     if existing_output_nonempty and selected_supp:
         raise GeoGetterError(
@@ -329,7 +331,7 @@ def _build_cli_download_plan(
         ]
 
     planned_supplementary = _planned_supplementary_files(run_output_dir, selected_supp, reserved_output_names) if selected_supp else []
-    return CliDownloadPlan(
+    cli_plan = CliDownloadPlan(
         output_dir=run_output_dir,
         existing_output_nonempty=existing_output_nonempty,
         resume_active=resume_active,
@@ -337,6 +339,8 @@ def _build_cli_download_plan(
         resume_artifacts=resume_artifacts,
         planned_supplementary=planned_supplementary,
     )
+    _ensure_preflight_path_lengths(_preflight_planned_paths(cli_plan))
+    return cli_plan
 
 
 def _selected_download_json(
@@ -424,7 +428,7 @@ def _preflight_json(
     input_json: Path,
     fastq_indices: str,
     supp_indices: str,
-    output_dir: Path,
+    output_dir: str | Path,
     resume_existing: bool = False,
 ) -> int:
     cli_plan = _build_cli_download_plan(
@@ -440,7 +444,7 @@ def _preflight_json(
     capacity_checked = not cli_plan.existing_output_nonempty or resume_existing
     capacity_ok = True
     capacity_error_code: str | None = None
-    planned_paths: list[Path] = [cli_plan.output_dir]
+    planned_paths = _preflight_planned_paths(cli_plan)
     planned_fastq: list[dict[str, object]] = []
     planned_supp: list[dict[str, object]] = []
 
@@ -453,7 +457,6 @@ def _preflight_json(
         if capacity_checked and required_bytes > free_bytes:
             capacity_ok = False
             capacity_error_code = INSUFFICIENT_SPACE
-        planned_paths.append(fastq_manifest_path(cli_plan.output_dir))
         planned_fastq = [
             {
                 "file_name": planned.fastq.file_name,
@@ -463,10 +466,8 @@ def _preflight_json(
             }
             for planned in plan.files
         ]
-        planned_paths.extend(path for planned in plan.files for path in _download_runtime_paths(planned.local_path, "fastq"))
 
     if cli_plan.planned_supplementary:
-        planned_paths.append(supplementary_manifest_path(cli_plan.output_dir))
         planned_supp = [
             {
                 "name": item.get("name", ""),
@@ -477,9 +478,7 @@ def _preflight_json(
             }
             for item, local_path in cli_plan.planned_supplementary
         ]
-        planned_paths.extend(path for _item, local_path in cli_plan.planned_supplementary for path in _download_runtime_paths(local_path, "supplementary"))
 
-    planned_paths.append(download_log_path(cli_plan.output_dir))
     print(
         json.dumps(
             {
@@ -588,12 +587,112 @@ def _ensure_any_selected(selected_fastq: list[FastqFile], selected_supp: list[di
         raise ValueError("Select at least one FASTQ or GEO supplementary/processed file.")
 
 
+def _prepare_download_output_dir(output_dir: str | Path) -> Path:
+    raw_output_dir = str(output_dir)
+    if not raw_output_dir.strip():
+        raise GeoGetterError(
+            OUTPUT_PATH_INVALID,
+            "reason=output_required",
+            extra={"path_error_code": "output_required"},
+        )
+    try:
+        run_output_dir = Path(output_dir).expanduser().resolve()
+    except OSError as exc:
+        raise GeoGetterError(
+            OUTPUT_PATH_INVALID,
+            f"reason=resolve_failed path={raw_output_dir} error={exc}",
+            extra={"path_error_code": "resolve_failed", "path": raw_output_dir, "error": str(exc)},
+        ) from exc
+    _ensure_preflight_path_lengths([run_output_dir])
+    try:
+        if run_output_dir.exists() and not run_output_dir.is_dir():
+            raise GeoGetterError(
+                OUTPUT_PATH_INVALID,
+                f"reason=output_is_file path={run_output_dir}",
+                extra={"path_error_code": "output_is_file", "output_dir": str(run_output_dir)},
+            )
+        run_output_dir.mkdir(parents=True, exist_ok=True)
+    except GeoGetterError:
+        raise
+    except OSError as exc:
+        raise GeoGetterError(
+            OUTPUT_PATH_INVALID,
+            f"reason=cannot_create_output path={run_output_dir} error={exc}",
+            extra={"path_error_code": "cannot_create_output", "output_dir": str(run_output_dir), "error": str(exc)},
+        ) from exc
+    _assert_output_dir_writable(run_output_dir)
+    return run_output_dir
+
+
+def _assert_output_dir_writable(output_dir: Path) -> None:
+    probe_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            prefix=".geo_getter_preflight_",
+            suffix=".tmp",
+            dir=output_dir,
+            delete=False,
+        ) as handle:
+            probe_path = Path(handle.name)
+            handle.write(b"ok")
+    except OSError as exc:
+        raise GeoGetterError(
+            OUTPUT_PATH_INVALID,
+            f"reason=cannot_write path={output_dir} error={exc}",
+            extra={"path_error_code": "cannot_write", "output_dir": str(output_dir), "error": str(exc)},
+        ) from exc
+    finally:
+        if probe_path is not None:
+            try:
+                probe_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _ensure_preflight_path_lengths(paths: list[Path]) -> None:
+    for path in paths:
+        text = str(path)
+        if len(text) >= 260:
+            raise GeoGetterError(
+                PATH_TOO_LONG,
+                f"path={text}",
+                extra={"path": text},
+            )
+
+
+def _preflight_planned_paths(cli_plan: CliDownloadPlan) -> list[Path]:
+    planned_paths: list[Path] = [cli_plan.output_dir]
+    if cli_plan.fastq_plan:
+        planned_paths.append(fastq_manifest_path(cli_plan.output_dir))
+        planned_paths.extend(
+            path
+            for planned in cli_plan.fastq_plan.files
+            for path in _download_runtime_paths(planned.local_path, "fastq")
+        )
+    if cli_plan.planned_supplementary:
+        planned_paths.append(supplementary_manifest_path(cli_plan.output_dir))
+        planned_paths.extend(
+            path
+            for _item, local_path in cli_plan.planned_supplementary
+            for path in _download_runtime_paths(local_path, "supplementary")
+        )
+    planned_paths.append(download_log_path(cli_plan.output_dir))
+    return planned_paths
+
+
 def _directory_has_entries(path: Path) -> bool:
     try:
         next(path.iterdir())
         return True
     except StopIteration:
         return False
+    except OSError as exc:
+        raise GeoGetterError(
+            OUTPUT_PATH_INVALID,
+            f"reason=cannot_read_output path={path} error={exc}",
+            extra={"path_error_code": "cannot_read_output", "output_dir": str(path), "error": str(exc)},
+        ) from exc
 
 
 def _download_supplementary_files(output_dir: Path, planned_supplementary: list[tuple[dict, Path]]) -> list[str]:

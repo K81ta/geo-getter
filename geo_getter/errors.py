@@ -15,6 +15,7 @@ LOCAL_IO_FAILED = "local_io_failed"
 DOWNLOAD_COMPLETE = "download_complete"
 INVALID_MANIFEST = "invalid_manifest"
 OUTPUT_PATH_INVALID = "output_path_invalid"
+PATH_TOO_LONG = "path_too_long"
 RESUME_REQUIRED = "resume_required"
 RESUME_ARTIFACT_MISMATCH = "resume_artifact_mismatch"
 RESUME_SUPPLEMENTARY_UNSUPPORTED = "resume_supplementary_unsupported"
@@ -41,6 +42,7 @@ ERROR_MESSAGES = {
     LOCAL_IO_FAILED: "Local file operation failed. Check the output folder permissions, disk state, and available space.",
     INVALID_MANIFEST: "The FASTQ manifest is missing required columns or cannot be used for verification.",
     OUTPUT_PATH_INVALID: "The output folder contains a path that cannot be used for a downloaded file.",
+    PATH_TOO_LONG: "The output folder or planned download path is too long.",
     RESUME_REQUIRED: "The output folder already contains files. Confirm resume before writing to this folder.",
     RESUME_ARTIFACT_MISMATCH: "The existing FASTQ manifest or download log does not match the current FASTQ selection.",
     RESUME_SUPPLEMENTARY_UNSUPPORTED: "Existing output folders can resume FASTQ downloads only. Choose an empty folder for GEO supplementary/processed files.",
