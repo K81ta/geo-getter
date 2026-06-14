@@ -59,29 +59,33 @@ class _SoftParseState:
     first_sample_description_parts: list[str] = field(default_factory=list)
 
 
-class GeoProvider:
-    def fetch_soft(self, accession: str) -> str:
-        params = urllib.parse.urlencode(
-            {"acc": accession, "targ": "self", "form": "text", "view": "full"}
-        )
-        return fetch_text(f"{GEO_SOFT_ENDPOINT}?{params}", timeout=90)
+def fetch_soft(accession: str) -> str:
+    params = urllib.parse.urlencode(
+        {"acc": accession, "targ": "self", "form": "text", "view": "full"}
+    )
+    return fetch_text(f"{GEO_SOFT_ENDPOINT}?{params}", timeout=90)
 
-    def get_related(self, accession: str) -> GeoSoftParseResult:
-        primary = parse_soft(self.fetch_soft(accession), accession)
-        if not accession.startswith("GSE"):
-            return primary
-        try:
-            samples = parse_soft(self.fetch_gsm_soft(accession), accession)
-        except GeoGetterError as exc:
-            primary.warnings.append(f"GEO sample metadata retrieval failed; sample-level details may be incomplete. Detail: {exc.code}")
-            return primary
-        return _merge_parse_results(primary, samples)
 
-    def fetch_gsm_soft(self, accession: str) -> str:
-        params = urllib.parse.urlencode(
-            {"acc": accession, "targ": "gsm", "form": "text", "view": "brief"}
+def get_related(accession: str) -> GeoSoftParseResult:
+    primary = parse_soft(fetch_soft(accession), accession)
+    if not accession.startswith("GSE"):
+        return primary
+    try:
+        samples = parse_soft(fetch_gsm_soft(accession), accession)
+    except GeoGetterError as exc:
+        primary.warnings.append(
+            "GEO sample metadata retrieval failed; sample-level details may be incomplete. "
+            f"Detail: {exc.code}"
         )
-        return fetch_text(f"{GEO_SOFT_ENDPOINT}?{params}", timeout=90)
+        return primary
+    return _merge_parse_results(primary, samples)
+
+
+def fetch_gsm_soft(accession: str) -> str:
+    params = urllib.parse.urlencode(
+        {"acc": accession, "targ": "gsm", "form": "text", "view": "brief"}
+    )
+    return fetch_text(f"{GEO_SOFT_ENDPOINT}?{params}", timeout=90)
 
 
 def parse_soft(text: str, source_accession: str) -> GeoSoftParseResult:

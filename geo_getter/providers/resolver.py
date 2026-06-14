@@ -1,26 +1,27 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 from ..accession import extract_accession
 from ..errors import GeoGetterError
 from ..models import DatasetMetadata, FastqFile, ResolveResult, SupplementaryFile
-from .ena import EnaProvider
-from .geo import GeoProvider
+from .ena import get_fastq_files
+from .geo import GeoSoftParseResult, get_related
 
 
 MAX_ENA_FILE_REPORT_WORKERS = 4
+GeoRelatedLookup = Callable[[str], GeoSoftParseResult]
+EnaFastqLookup = Callable[[str, str], list[FastqFile]]
 
 
 def resolve_metadata(
     input_text: str,
     *,
-    geo_provider: GeoProvider | None = None,
-    ena_provider: EnaProvider | None = None,
+    geo_related_lookup: GeoRelatedLookup = get_related,
+    ena_fastq_lookup: EnaFastqLookup = get_fastq_files,
 ) -> ResolveResult:
-    geo = geo_provider or GeoProvider()
-    ena = ena_provider or EnaProvider()
     parsed = extract_accession(input_text)
     query_accessions: list[str] = []
     supplementary_files: list[SupplementaryFile] = []
@@ -29,7 +30,7 @@ def resolve_metadata(
     warnings: list[str] = []
 
     if parsed.is_geo:
-        geo_result = geo.get_related(parsed.accession)
+        geo_result = geo_related_lookup(parsed.accession)
         query_accessions = _deduplicate_values(geo_result.related_accessions)
         supplementary_files = geo_result.supplementary_files
         dataset_metadata = geo_result.dataset_metadata
@@ -44,7 +45,7 @@ def resolve_metadata(
 
     fastq_files: list[FastqFile] = []
     accession_file_groups, ena_warnings = _get_fastq_files_for_accessions(
-        ena, query_accessions, parsed.accession
+        ena_fastq_lookup, query_accessions, parsed.accession
     )
     warnings.extend(ena_warnings)
     for accession_files in accession_file_groups:
@@ -69,7 +70,7 @@ def resolve_metadata(
 
 
 def _get_fastq_files_for_accessions(
-    ena_provider: EnaProvider,
+    ena_fastq_lookup: EnaFastqLookup,
     query_accessions: list[str],
     source_accession: str,
 ) -> tuple[list[list[FastqFile]], list[str]]:
@@ -77,12 +78,12 @@ def _get_fastq_files_for_accessions(
         return [], []
     if len(query_accessions) == 1:
         accession = query_accessions[0]
-        return [ena_provider.get_fastq_files(accession, source_accession)], []
+        return [ena_fastq_lookup(accession, source_accession)], []
 
     worker_count = min(MAX_ENA_FILE_REPORT_WORKERS, len(query_accessions))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [
-            executor.submit(ena_provider.get_fastq_files, accession, source_accession)
+            executor.submit(ena_fastq_lookup, accession, source_accession)
             for accession in query_accessions
         ]
         results: list[list[FastqFile]] = []
