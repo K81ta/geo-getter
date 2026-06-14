@@ -72,3 +72,4 @@ jobs:
           files: |
             dist/GEOGetter-Setup-v*.exe
             dist/GEOGetter-v*-win-x64-portable.zip
+            dist/SHA256SUMS.txt

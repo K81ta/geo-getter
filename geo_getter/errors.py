@@ -13,6 +13,7 @@ INSUFFICIENT_SPACE = "insufficient_space"
 NETWORK_FAILED = "network_failed"
 LOCAL_IO_FAILED = "local_io_failed"
 DOWNLOAD_COMPLETE = "download_complete"
+INTERNAL_ERROR = "internal_error"
 INVALID_MANIFEST = "invalid_manifest"
 OUTPUT_PATH_INVALID = "output_path_invalid"
 PATH_TOO_LONG = "path_too_long"
@@ -41,6 +42,7 @@ ERROR_MESSAGES = {
     INSUFFICIENT_SPACE: "The output folder does not have enough free space. Choose another folder or select fewer FASTQ files.",
     NETWORK_FAILED: "Network transfer failed. Check the connection and try again later.",
     LOCAL_IO_FAILED: "Local file operation failed. Check the output folder permissions, disk state, and available space.",
+    INTERNAL_ERROR: "Internal error.",
     INVALID_MANIFEST: "The FASTQ manifest is missing required columns or cannot be used for verification.",
     OUTPUT_PATH_INVALID: "The output folder contains a path that cannot be used for a downloaded file.",
     PATH_TOO_LONG: "The output folder or planned download path is too long.",

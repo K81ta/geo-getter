@@ -820,7 +820,12 @@ class CliTest(unittest.TestCase):
             self.assertEqual(preflight["kind"], "download_preflight")
             self.assertEqual(preflight["output_dir"], str(out_dir.resolve()))
             self.assertEqual(preflight["existing_output_nonempty"], False)
-            self.assertEqual(preflight["required_bytes"], len(data) * 4)
+            self.assertFalse(out_dir.exists())
+            self.assertEqual(preflight["fastq_required_bytes"], len(data) * 4)
+            self.assertEqual(preflight["supplementary_required_bytes"], len(data) * 3)
+            self.assertEqual(preflight["supplementary_size_unknown_count"], 0)
+            self.assertEqual(preflight["capacity_unknown"], False)
+            self.assertEqual(preflight["required_bytes"], len(data) * 7)
             self.assertGreater(preflight["free_bytes"], 0)
             self.assertEqual(preflight["capacity_checked"], True)
             self.assertEqual(preflight["capacity_ok"], True)
@@ -831,6 +836,8 @@ class CliTest(unittest.TestCase):
             self.assertEqual(Path(preflight["fastq_files"][3]["local_path"]).name, "collision output_fastq_manifest.2.tsv")
             self.assertEqual(Path(preflight["supplementary_files"][0]["local_path"]).name, "same.4.fastq.gz")
             self.assertEqual(Path(preflight["supplementary_files"][1]["local_path"]).name, "same.fastq.gz.2.part")
+            self.assertEqual(preflight["supplementary_files"][0]["size_bytes"], len(data))
+            self.assertEqual(preflight["supplementary_files"][0]["size_status"], "known")
 
             planned_names = {Path(path).name for path in preflight["planned_paths"]}
             self.assertIn("Same.fastq.gz", planned_names)
@@ -993,6 +1000,64 @@ class CliTest(unittest.TestCase):
             self.assertEqual(preflight["capacity_checked"], True)
             self.assertEqual(preflight["capacity_ok"], False)
             self.assertEqual(preflight["capacity_error_code"], "insufficient_space")
+
+    def test_preflight_json_reports_supplementary_known_and_unknown_sizes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            out_dir = root / "supplementary out"
+            input_json = root / "payload.json"
+            input_json.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE000001",
+                        "primary_accession": "GSE000001",
+                        "fastq_files": [],
+                        "supplementary_files": [
+                            {
+                                "source_accession": "GSE000001",
+                                "scope": "GEO Series supplementary/processed",
+                                "name": "known.txt",
+                                "url": "https://example.invalid/known.txt",
+                            },
+                            {
+                                "source_accession": "GSE000001",
+                                "scope": "GEO Series supplementary/processed",
+                                "name": "unknown.txt",
+                                "url": "https://example.invalid/unknown.txt",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class HeadResponse:
+                headers = {"Content-Length": "17"}
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _traceback):
+                    return False
+
+            def fake_urlopen(request, timeout):
+                self.assertEqual(timeout, 30)
+                if request.full_url.endswith("/known.txt"):
+                    return HeadResponse()
+                raise urllib.error.URLError("no content length")
+
+            with mock.patch("geo_getter.cli.urllib.request.urlopen", side_effect=fake_urlopen):
+                preflight = self.run_preflight_json(input_json, "", "0,1", out_dir)
+
+            self.assertFalse(out_dir.exists())
+            self.assertEqual(preflight["required_bytes"], 17)
+            self.assertEqual(preflight["fastq_required_bytes"], 0)
+            self.assertEqual(preflight["supplementary_required_bytes"], 17)
+            self.assertEqual(preflight["supplementary_size_unknown_count"], 1)
+            self.assertEqual(preflight["capacity_unknown"], True)
+            self.assertEqual(preflight["supplementary_files"][0]["size_status"], "known")
+            self.assertEqual(preflight["supplementary_files"][0]["size_bytes"], 17)
+            self.assertEqual(preflight["supplementary_files"][1]["size_status"], "unknown")
 
     def test_preflight_json_rejects_supplementary_in_nonempty_output(self):
         with tempfile.TemporaryDirectory() as temp:

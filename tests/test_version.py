@@ -82,13 +82,20 @@ class VersionTest(unittest.TestCase):
         self.assertTrue(payload["ja"]["helpUsageText"])
         self.assertTrue(payload["en"]["helpUsageText"])
 
-    def test_release_does_not_publish_checksum_assets(self):
+    def test_release_publishes_sha256sums_manifest(self):
         release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         build_script = (ROOT / "tools" / "build_release.ps1").read_text(encoding="utf-8")
         self.assertNotIn("exe.sha256", release_workflow)
         self.assertNotIn("zip.sha256", release_workflow)
-        self.assertNotIn("Write-Sha256File", build_script)
-        self.assertNotIn("Created checksum", build_script)
+        self.assertIn("dist/SHA256SUMS.txt", release_workflow)
+        self.assertIn("Write-Sha256Sums", build_script)
+        self.assertIn("Created checksum manifest", build_script)
+
+    def test_release_assert_inside_checks_path_boundary(self):
+        build_script = (ROOT / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        self.assertIn("$fullBaseWithSeparator", build_script)
+        self.assertIn(".Equals($fullBase", build_script)
+        self.assertNotIn("StartsWith($fullBase,", build_script)
 
     def test_release_version_validation_uses_source_version(self):
         release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
