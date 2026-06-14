@@ -17,6 +17,7 @@ from geo_getter.downloader import (
     DownloadNetworkError,
     DownloadSizeMismatchError,
     MAX_DOWNLOAD_WORKERS,
+    MIN_DOWNLOAD_WORKERS,
     _download_url_to_part_with_retries,
     _quarantine_file,
     download_error_outcome,
@@ -179,6 +180,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertFalse((output_dir / "fixture.fastq.gz.part").exists())
 
     def test_download_worker_normalization_bounds(self):
+        self.assertEqual(MIN_DOWNLOAD_WORKERS, 1)
         self.assertEqual(DEFAULT_DOWNLOAD_WORKERS, 2)
         self.assertEqual(MAX_DOWNLOAD_WORKERS, 4)
         self.assertEqual(normalize_download_workers(1), 1)

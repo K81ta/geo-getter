@@ -43,6 +43,7 @@ DEFAULT_RETRY_DELAYS = (1.0, 3.0, 9.0)
 DEFAULT_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 DEFAULT_PROGRESS_MIN_INTERVAL_SECONDS = 0.250
 DEFAULT_PROGRESS_MIN_BYTES = 16 * 1024 * 1024
+MIN_DOWNLOAD_WORKERS = 1
 DEFAULT_DOWNLOAD_WORKERS = 2
 MAX_DOWNLOAD_WORKERS = 4
 _CANDIDATE_MISSING = "missing"
@@ -214,9 +215,9 @@ def normalize_download_workers(value: int) -> int:
     try:
         worker_count = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"download_workers must be an integer from 1 to {MAX_DOWNLOAD_WORKERS}.") from exc
-    if worker_count < 1 or worker_count > MAX_DOWNLOAD_WORKERS:
-        raise ValueError(f"download_workers must be from 1 to {MAX_DOWNLOAD_WORKERS}: {worker_count}")
+        raise ValueError(f"download_workers must be an integer from {MIN_DOWNLOAD_WORKERS} to {MAX_DOWNLOAD_WORKERS}.") from exc
+    if worker_count < MIN_DOWNLOAD_WORKERS or worker_count > MAX_DOWNLOAD_WORKERS:
+        raise ValueError(f"download_workers must be from {MIN_DOWNLOAD_WORKERS} to {MAX_DOWNLOAD_WORKERS}: {worker_count}")
     return worker_count
 
 
