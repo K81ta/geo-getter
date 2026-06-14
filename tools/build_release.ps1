@@ -14,6 +14,7 @@ $DistRoot = Join-Path $RepoRoot "dist"
 $BuildRoot = Join-Path $RepoRoot "build"
 $PythonCacheRoot = Join-Path $BuildRoot "python"
 $InstallerScript = Join-Path $RepoRoot "installer\GEOGetter.iss"
+$ChecksumPath = Join-Path $DistRoot "SHA256SUMS.txt"
 
 function Get-AppVersion {
     $init = Join-Path $RepoRoot "geo_getter\__init__.py"
@@ -29,9 +30,13 @@ function Assert-Inside {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Base
     )
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullBase = [System.IO.Path]::GetFullPath($Base)
-    if (-not $fullPath.StartsWith($fullBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $fullBase = [System.IO.Path]::GetFullPath($Base).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $fullBaseWithSeparator = $fullBase + [System.IO.Path]::DirectorySeparatorChar
+    if (
+        -not $fullPath.Equals($fullBase, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not $fullPath.StartsWith($fullBaseWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
         throw "Refusing to operate outside $fullBase`: $fullPath"
     }
 }
@@ -144,6 +149,24 @@ function Assert-FileSha256 {
     if ($actual -ne $expected) {
         throw "SHA256 mismatch for $Path. Expected $expected, got $actual."
     }
+}
+
+function Write-Sha256Sums {
+    param([Parameter(Mandatory = $true)][string[]]$Paths)
+    $lines = @()
+    foreach ($path in $Paths) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+        $name = Split-Path -Leaf $path
+        $lines += "$hash  $name"
+    }
+    if ($lines.Count -eq 0) {
+        throw "No release artifacts were available for SHA256SUMS.txt."
+    }
+    Set-Content -Encoding ASCII -Path $ChecksumPath -Value ($lines -join [Environment]::NewLine)
+    Write-Host "Created checksum manifest: $ChecksumPath"
 }
 
 function Ensure-PythonRuntime {
@@ -278,3 +301,5 @@ if ($BuildInstaller) {
     }
     Write-Host "Created installer: $installerPath"
 }
+
+Write-Sha256Sums -Paths @($installerPath, $zipPath)

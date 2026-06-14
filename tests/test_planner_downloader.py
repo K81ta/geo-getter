@@ -241,6 +241,83 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual((output_dir / "fixture1.fastq.gz").read_bytes(), data_by_name["fixture1.fastq.gz"])
             self.assertEqual((output_dir / "fixture2.fastq.gz").read_bytes(), data_by_name["fixture2.fastq.gz"])
 
+    def test_parallel_download_logs_geogetter_error_and_continues(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output_dir = root / "out"
+            data = b"@r2\nTGCA\n+\n!!!!\n"
+            source = root / "fixture2.fastq.gz"
+            source.write_bytes(data)
+            fastq1 = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN_1",
+                file_index=1,
+                file_name="fixture1.fastq.gz",
+                url="file:///definitely/not/used.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=len(data),
+            )
+            fastq2 = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN_2",
+                file_index=1,
+                file_name="fixture2.fastq.gz",
+                url=source.as_uri(),
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq1, fastq2], output_dir)
+            (output_dir / "fixture1.fastq.gz").mkdir()
+
+            results = download_plan(plan, download_workers=2)
+
+            self.assertEqual([status for _planned, status, _message in results], ["output_path_invalid", "md5_verified"])
+            log_text = download_log_path(output_dir).read_text(encoding="utf-8-sig")
+            self.assertIn("output_path_invalid", log_text)
+            self.assertIn("md5_verified", log_text)
+            self.assertEqual((output_dir / "fixture2.fastq.gz").read_bytes(), data)
+
+    def test_parallel_download_logs_unexpected_exception_and_continues(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            data_by_name = {
+                "fixture1.fastq.gz": b"@r1\nACGT\n+\n!!!!\n",
+                "fixture2.fastq.gz": b"@r2\nTGCA\n+\n!!!!\n",
+            }
+            fastq_files = [
+                FastqFile(
+                    source_accession="FIXTURE",
+                    query_accession="FIXTURE",
+                    run_accession=f"FIXTURE_RUN_{index}",
+                    file_index=1,
+                    file_name=file_name,
+                    url=f"https://example.invalid/{file_name}",
+                    expected_md5=hashlib.md5(data).hexdigest(),
+                    size_bytes=len(data),
+                )
+                for index, (file_name, data) in enumerate(data_by_name.items(), start=1)
+            ]
+            plan = build_download_plan("FIXTURE", "FIXTURE", fastq_files, output_dir)
+
+            def fake_download_one(planned, progress_callback=None, message_callback=None):
+                if planned.fastq.file_name == "fixture1.fastq.gz":
+                    raise RuntimeError("boom")
+                data = data_by_name[planned.fastq.file_name]
+                part_path = planned.local_path.with_name(planned.local_path.name + ".part")
+                part_path.write_bytes(data)
+                return DownloadedPart(part_path, len(data), streamed_md5=hashlib.md5(data).hexdigest())
+
+            with mock.patch("geo_getter.downloader.download_one", side_effect=fake_download_one):
+                results = download_plan(plan, download_workers=2)
+
+            self.assertEqual([status for _planned, status, _message in results], ["internal_error", "md5_verified"])
+            log_text = download_log_path(output_dir).read_text(encoding="utf-8-sig")
+            self.assertIn("internal_error", log_text)
+            self.assertIn("boom", log_text)
+            self.assertEqual((output_dir / "fixture2.fastq.gz").read_bytes(), data_by_name["fixture2.fastq.gz"])
+
     def test_new_download_uses_streaming_md5_without_rereading_part_file(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "source.fastq.gz"
@@ -575,7 +652,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(existing.read_bytes(), data)
             self.assertFalse(list(output_dir.glob("fixture.fastq.gz.*-existing-*")))
 
-    def test_existing_file_without_md5_is_quarantined_before_redownload(self):
+    def test_existing_file_without_md5_matching_size_is_reused(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "source.fastq.gz"
@@ -600,8 +677,8 @@ class PlannerDownloaderTest(unittest.TestCase):
             results = download_plan(plan)
 
             self.assertEqual(results[0][1], "md5_unavailable")
-            self.assertEqual(existing.read_bytes(), data)
-            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.unverified-existing-*")))
+            self.assertEqual(existing.read_bytes(), b"stale data without md5\n")
+            self.assertFalse(list(output_dir.glob("fixture.fastq.gz.unverified-existing-*")))
 
     def test_existing_file_without_md5_size_mismatch_is_quarantined_before_redownload(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -782,7 +859,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
             self.assertTrue(list(output_dir.glob("fixture.fastq.gz.part.bad-md5-*")))
 
-    def test_complete_part_file_without_md5_is_not_reused(self):
+    def test_complete_part_file_without_md5_matching_size_is_reused(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             output_dir = root / "out"
@@ -809,7 +886,7 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(results[0][1], "md5_unavailable")
             self.assertFalse(part.exists())
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
-            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.part.unverified-existing-*")))
+            self.assertFalse(list(output_dir.glob("fixture.fastq.gz.part.unverified-existing-*")))
 
     def test_complete_part_file_without_md5_size_mismatch_is_quarantined(self):
         with tempfile.TemporaryDirectory() as temp:

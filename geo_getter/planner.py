@@ -107,13 +107,16 @@ def build_download_plan(
     primary_accession: str,
     selected_files: list[FastqFile],
     output_dir: str | Path,
+    *,
+    create_output_dir: bool = True,
 ) -> DownloadPlan:
     if not selected_files:
         raise ValueError("No FASTQ files are selected.")
     out_dir = Path(output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if create_output_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
     total_bytes = sum(item.size_bytes for item in selected_files)
-    available_bytes = shutil.disk_usage(out_dir).free
+    available_bytes = shutil.disk_usage(_disk_usage_path(out_dir)).free
     planned = _planned_files(selected_files, out_dir)
     return DownloadPlan(
         app_version=__version__,
@@ -502,6 +505,15 @@ def _raise_resume_mismatch(reason: str, path: Path, detail: str = "") -> None:
     if detail:
         text += f" {detail}"
     raise GeoGetterError(RESUME_ARTIFACT_MISMATCH, text)
+
+
+def _disk_usage_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    parent = path.parent
+    if parent.exists():
+        return parent
+    return path
 
 
 def _artifact_path(output_dir: str | Path, suffix: str) -> Path:

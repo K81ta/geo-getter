@@ -1757,6 +1757,11 @@ function Test-DownloadPreflight {
         }
         $script:LastPreflightRequiredBytes = $requiredBytes
         $script:LastPreflightFreeBytes = $freeBytes
+        $suppUnknownCount = [Int64]0
+        $suppUnknownProperty = @($preflight.PSObject.Properties | Where-Object { $_.Name -eq "supplementary_size_unknown_count" } | Select-Object -First 1)
+        if ($suppUnknownProperty.Count -gt 0 -and $null -ne $suppUnknownProperty[0].Value) {
+            $suppUnknownCount = [Int64]$suppUnknownProperty[0].Value
+        }
         $capacityOk = $true
         $capacityOkProperty = @($preflight.PSObject.Properties | Where-Object { $_.Name -eq "capacity_ok" } | Select-Object -First 1)
         if ($capacityOkProperty.Count -gt 0 -and $null -ne $capacityOkProperty[0].Value) {
@@ -1775,10 +1780,20 @@ function Test-DownloadPreflight {
         }
 
         $script:LastPreflightStatus = "ok"
+        if ($capacityLabel) {
+            $freeText = if ($null -ne $freeBytes) { Format-Bytes ([Int64]$freeBytes) } else { "unknown" }
+            if ($suppUnknownCount -gt 0) {
+                $capacityLabel.Text = (T "capacityTextWithUnknown") -f (Format-Bytes $requiredBytes), $freeText, $suppUnknownCount
+            }
+            else {
+                $capacityLabel.Text = (T "preflightCapacityText") -f (Format-Bytes $requiredBytes), $freeText
+            }
+        }
         return [pscustomobject]@{
             OutputDir = $runOutputDir
             RequiredBytes = $requiredBytes
             FreeBytes = $freeBytes
+            SupplementarySizeUnknownCount = $suppUnknownCount
             ExistingOutputNonEmpty = $existingOutputNonEmpty
             PlannedPaths = $plannedPaths
             Preflight = $preflight
@@ -4664,7 +4679,8 @@ if ($SelfTest) {
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
     $suppOnlyPreflight = Test-DownloadPreflight
     Assert-Equal $script:LastPreflightStatus "ok" "preflight accepts supplementary-only selection"
-    Assert-Equal $suppOnlyPreflight.RequiredBytes ([Int64]0) "supplementary-only preflight excludes unknown size from capacity"
+    Assert-Equal $suppOnlyPreflight.RequiredBytes ([Int64](Get-Item -LiteralPath $sourcePath).Length) "supplementary-only preflight includes known size in capacity"
+    Assert-Equal $suppOnlyPreflight.SupplementarySizeUnknownCount ([Int64]0) "supplementary-only preflight reports no unknown size for file URI"
 
     $nonEmptySuppOutput = Join-Path $selfTestRoot "nonempty supp output"
     [System.IO.Directory]::CreateDirectory($nonEmptySuppOutput) | Out-Null

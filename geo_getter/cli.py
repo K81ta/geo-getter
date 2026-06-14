@@ -6,6 +6,9 @@ import shutil
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -31,6 +34,7 @@ from .errors import (
     SELECTION_REQUIRED,
     GeoGetterError,
 )
+from .http_client import USER_AGENT
 from .models import DownloadPlan, FastqFile, PlannedSupplementaryFile, SupplementaryFile
 from .path_safety import (
     download_part_path,
@@ -297,13 +301,14 @@ def _build_cli_download_plan(
     output_dir: str | Path,
     resume_existing: bool = False,
     require_resume_for_nonempty: bool = False,
+    create_output_dir: bool = True,
 ) -> CliDownloadPlan:
     payload = _load_json(input_json)
     selected_fastq = _selected_fastq_from_payload(payload, fastq_indices) if fastq_indices.strip() else []
     selected_supp = _selected_supplementary_from_payload(payload, supp_indices) if supp_indices.strip() else []
     _ensure_any_selected(selected_fastq, selected_supp)
 
-    run_output_dir = _prepare_download_output_dir(output_dir)
+    run_output_dir = _prepare_download_output_dir(output_dir, create_output_dir=create_output_dir)
     existing_output_nonempty = _directory_has_entries(run_output_dir)
     if existing_output_nonempty and selected_supp:
         raise GeoGetterError(
@@ -323,7 +328,13 @@ def _build_cli_download_plan(
     fastq_plan = None
     resume_artifacts = None
     if selected_fastq:
-        fastq_plan = build_download_plan(payload["input_text"], payload["primary_accession"], selected_fastq, run_output_dir)
+        fastq_plan = build_download_plan(
+            payload["input_text"],
+            payload["primary_accession"],
+            selected_fastq,
+            run_output_dir,
+            create_output_dir=create_output_dir,
+        )
         if resume_active:
             resume_artifacts = validate_resume_artifacts(fastq_plan)
         reserved_output_names = [
@@ -450,10 +461,13 @@ def _preflight_json(
         supp_indices,
         output_dir,
         resume_existing=resume_existing,
+        create_output_dir=False,
     )
 
-    free_bytes = shutil.disk_usage(cli_plan.output_dir).free
-    required_bytes = 0
+    free_bytes = _free_bytes_for_output(cli_plan.output_dir)
+    fastq_required_bytes = 0
+    supplementary_required_bytes = 0
+    supplementary_size_unknown_count = 0
     capacity_checked = not cli_plan.existing_output_nonempty or resume_existing
     capacity_ok = True
     capacity_error_code: str | None = None
@@ -463,13 +477,10 @@ def _preflight_json(
 
     if cli_plan.fastq_plan:
         plan = cli_plan.fastq_plan
-        required_bytes = plan.total_bytes
+        fastq_required_bytes = plan.total_bytes
         free_bytes = plan.available_bytes
         if cli_plan.resume_required_bytes is not None:
-            required_bytes = cli_plan.resume_required_bytes
-        if capacity_checked and required_bytes > free_bytes:
-            capacity_ok = False
-            capacity_error_code = INSUFFICIENT_SPACE
+            fastq_required_bytes = cli_plan.resume_required_bytes
         planned_fastq = [
             {
                 "file_name": planned.fastq.file_name,
@@ -481,16 +492,28 @@ def _preflight_json(
         ]
 
     if cli_plan.planned_supplementary:
-        planned_supp = [
-            {
+        for planned in cli_plan.planned_supplementary:
+            size_bytes, size_status = _estimate_supplementary_size(planned.supplementary.url)
+            if size_status == "known":
+                supplementary_required_bytes += size_bytes
+            else:
+                supplementary_size_unknown_count += 1
+            planned_supp.append(
+                {
                 "name": planned.supplementary.name,
                 "source_accession": planned.supplementary.source_accession,
                 "scope": planned.supplementary.scope,
                 "url": planned.supplementary.url,
                 "local_path": str(planned.local_path),
-            }
-            for planned in cli_plan.planned_supplementary
-        ]
+                    "size_bytes": size_bytes,
+                    "size_status": size_status,
+                }
+            )
+
+    required_bytes = fastq_required_bytes + supplementary_required_bytes
+    if capacity_checked and required_bytes > free_bytes:
+        capacity_ok = False
+        capacity_error_code = INSUFFICIENT_SPACE
 
     print(
         json.dumps(
@@ -500,6 +523,10 @@ def _preflight_json(
                 "output_dir": str(cli_plan.output_dir),
                 "existing_output_nonempty": cli_plan.existing_output_nonempty,
                 "required_bytes": required_bytes,
+                "fastq_required_bytes": fastq_required_bytes,
+                "supplementary_required_bytes": supplementary_required_bytes,
+                "supplementary_size_unknown_count": supplementary_size_unknown_count,
+                "capacity_unknown": supplementary_size_unknown_count > 0,
                 "free_bytes": free_bytes,
                 "capacity_checked": capacity_checked,
                 "capacity_ok": capacity_ok,
@@ -654,7 +681,7 @@ def _ensure_any_selected(selected_fastq: list[FastqFile], selected_supp: list[Su
         raise GeoGetterError(SELECTION_REQUIRED)
 
 
-def _prepare_download_output_dir(output_dir: str | Path) -> Path:
+def _prepare_download_output_dir(output_dir: str | Path, *, create_output_dir: bool = True) -> Path:
     raw_output_dir = str(output_dir)
     if not raw_output_dir.strip():
         raise GeoGetterError(
@@ -678,7 +705,8 @@ def _prepare_download_output_dir(output_dir: str | Path) -> Path:
                 f"reason=output_is_file path={run_output_dir}",
                 extra={"path_error_code": "output_is_file", "output_dir": str(run_output_dir)},
             )
-        run_output_dir.mkdir(parents=True, exist_ok=True)
+        if create_output_dir:
+            run_output_dir.mkdir(parents=True, exist_ok=True)
     except GeoGetterError:
         raise
     except OSError as exc:
@@ -687,8 +715,22 @@ def _prepare_download_output_dir(output_dir: str | Path) -> Path:
             f"reason=cannot_create_output path={run_output_dir} error={exc}",
             extra={"path_error_code": "cannot_create_output", "output_dir": str(run_output_dir), "error": str(exc)},
         ) from exc
-    _assert_output_dir_writable(run_output_dir)
+    writable_dir = _preflight_writable_dir(run_output_dir)
+    _assert_output_dir_writable(writable_dir)
     return run_output_dir
+
+
+def _preflight_writable_dir(output_dir: Path) -> Path:
+    if output_dir.exists():
+        return output_dir
+    parent = output_dir.parent
+    if parent.exists() and parent.is_dir():
+        return parent
+    raise GeoGetterError(
+        OUTPUT_PATH_INVALID,
+        f"reason=parent_missing path={output_dir}",
+        extra={"path_error_code": "parent_missing", "output_dir": str(output_dir)},
+    )
 
 
 def _assert_output_dir_writable(output_dir: Path) -> None:
@@ -736,6 +778,32 @@ def _ensure_preflight_path_lengths(paths: list[Path]) -> None:
             )
 
 
+def _free_bytes_for_output(output_dir: Path) -> int:
+    return shutil.disk_usage(_preflight_writable_dir(output_dir)).free
+
+
+def _estimate_supplementary_size(url: str) -> tuple[int, str]:
+    parsed = urllib.parse.urlparse(str(url))
+    if parsed.scheme == "file":
+        try:
+            path = Path(urllib.request.url2pathname(parsed.path))
+            if path.is_file():
+                return path.stat().st_size, "known"
+        except OSError:
+            return 0, "unknown"
+        return 0, "unknown"
+    if parsed.scheme in {"http", "https"}:
+        try:
+            request = urllib.request.Request(str(url), method="HEAD", headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                size = int(response.headers.get("Content-Length") or 0)
+        except (OSError, ValueError, urllib.error.URLError):
+            return 0, "unknown"
+        if size > 0:
+            return size, "known"
+    return 0, "unknown"
+
+
 def _preflight_planned_paths(cli_plan: CliDownloadPlan) -> list[Path]:
     planned_paths: list[Path] = [cli_plan.output_dir]
     if cli_plan.fastq_plan:
@@ -757,6 +825,8 @@ def _preflight_planned_paths(cli_plan: CliDownloadPlan) -> list[Path]:
 
 
 def _directory_has_entries(path: Path) -> bool:
+    if not path.exists():
+        return False
     try:
         next(path.iterdir())
         return True

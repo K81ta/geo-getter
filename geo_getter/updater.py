@@ -26,7 +26,7 @@ from .errors import (
     GeoGetterError,
 )
 from .hashing import calculate_sha256
-from .http_client import fetch_json
+from .http_client import fetch_json, fetch_text
 from .path_safety import download_part_path
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/K81ta/geo-getter/releases/latest"
@@ -35,6 +35,8 @@ GITHUB_API_HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 SHA256_DIGEST_RE = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
+SHA256SUMS_ASSET_NAME = "SHA256SUMS.txt"
+SHA256SUMS_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(.+)$")
 VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+)*)$")
 
 
@@ -54,12 +56,17 @@ def compare_versions(left: str, right: str) -> int:
 def check_for_update(
     current_version: str = __version__,
     fetcher: Callable[..., Any] = fetch_json,
+    text_fetcher: Callable[..., str] = fetch_text,
 ) -> dict[str, Any]:
     release = fetcher(LATEST_RELEASE_URL, timeout=60, headers=GITHUB_API_HEADERS)
-    return build_update_check_payload(release, current_version=current_version)
+    return build_update_check_payload(release, current_version=current_version, text_fetcher=text_fetcher)
 
 
-def build_update_check_payload(release: dict[str, Any], current_version: str = __version__) -> dict[str, Any]:
+def build_update_check_payload(
+    release: dict[str, Any],
+    current_version: str = __version__,
+    text_fetcher: Callable[..., str] = fetch_text,
+) -> dict[str, Any]:
     latest_version = _version_from_release(release)
     payload: dict[str, Any] = {
         "event": "done",
@@ -74,7 +81,7 @@ def build_update_check_payload(release: dict[str, Any], current_version: str = _
         return payload
 
     asset = _find_installer_asset(release, latest_version)
-    sha256 = extract_sha256_digest(asset)
+    sha256, sha256_source = _resolve_installer_sha256(release, asset, text_fetcher)
     download_url = str(asset.get("browser_download_url") or "")
     if not download_url:
         raise GeoGetterError(UPDATE_ASSET_URL_MISSING, f"asset={asset.get('name', '')}")
@@ -83,6 +90,7 @@ def build_update_check_payload(release: dict[str, Any], current_version: str = _
         "size": _int_or_zero(asset.get("size")),
         "digest": str(asset.get("digest") or ""),
         "sha256": sha256,
+        "sha256_source": sha256_source,
         "download_url": download_url,
     }
     return payload
@@ -163,16 +171,70 @@ def extract_sha256_digest(asset: dict[str, Any]) -> str:
     return match.group(1).lower()
 
 
+def _resolve_installer_sha256(
+    release: dict[str, Any],
+    installer_asset: dict[str, Any],
+    text_fetcher: Callable[..., str],
+) -> tuple[str, str]:
+    try:
+        return extract_sha256_digest(installer_asset), "asset_digest"
+    except GeoGetterError as digest_error:
+        checksum_asset = _find_checksum_asset(release)
+        if checksum_asset is None:
+            raise digest_error
+        try:
+            sha256 = _fetch_installer_sha256_from_sums(
+                checksum_asset,
+                str(installer_asset.get("name") or ""),
+                text_fetcher,
+            )
+            return sha256, SHA256SUMS_ASSET_NAME
+        except GeoGetterError:
+            raise
+        except Exception as exc:
+            raise GeoGetterError(UPDATE_DIGEST_INVALID, f"asset={SHA256SUMS_ASSET_NAME} error={exc}") from exc
+
+
 def installer_asset_name(version: str) -> str:
     return f"GEOGetter-Setup-v{version}.exe"
 
 
 def _find_installer_asset(release: dict[str, Any], version: str) -> dict[str, Any]:
     expected_name = installer_asset_name(version)
+    asset = _find_asset_by_name(release, expected_name)
+    if asset is not None:
+        return asset
+    raise GeoGetterError(UPDATE_ASSET_MISSING, f"expected_asset={expected_name}")
+
+
+def _find_checksum_asset(release: dict[str, Any]) -> dict[str, Any] | None:
+    return _find_asset_by_name(release, SHA256SUMS_ASSET_NAME)
+
+
+def _find_asset_by_name(release: dict[str, Any], expected_name: str) -> dict[str, Any] | None:
     for asset in release.get("assets") or []:
         if str(asset.get("name") or "") == expected_name:
             return dict(asset)
-    raise GeoGetterError(UPDATE_ASSET_MISSING, f"expected_asset={expected_name}")
+    return None
+
+
+def _fetch_installer_sha256_from_sums(
+    checksum_asset: dict[str, Any],
+    installer_name: str,
+    text_fetcher: Callable[..., str],
+) -> str:
+    download_url = str(checksum_asset.get("browser_download_url") or "")
+    if not download_url:
+        raise GeoGetterError(UPDATE_DIGEST_MISSING, f"asset={SHA256SUMS_ASSET_NAME}")
+    text = text_fetcher(download_url, timeout=60)
+    for line in text.splitlines():
+        match = SHA256SUMS_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        digest, file_name = match.groups()
+        if file_name.strip() == installer_name:
+            return digest.lower()
+    raise GeoGetterError(UPDATE_DIGEST_MISSING, f"asset={SHA256SUMS_ASSET_NAME} installer={installer_name}")
 
 
 def _version_from_release(release: dict[str, Any]) -> str:

@@ -17,6 +17,7 @@ from .errors import (
     DOWNLOAD_COMPLETE,
     ERROR_MESSAGES,
     GeoGetterError,
+    INTERNAL_ERROR,
     LOCAL_IO_FAILED,
     MD5_MISMATCH,
     MD5_UNAVAILABLE,
@@ -246,7 +247,10 @@ def _execute_planned_downloads(
             for item in items
         ]
         for item, future in zip(items, futures):
-            outcome = future.result()
+            try:
+                outcome = future.result()
+            except Exception as exc:
+                outcome = _download_exception_outcome(item, exc)
             _record_download_outcome(output_dir, item, outcome, results, message_callback)
 
     return results
@@ -844,9 +848,13 @@ def _reuse_or_quarantine_existing(
         _emit(message_callback, f"existing_file_quarantined_bad_md5: {quarantined}")
         return None
     if inspection.status == _CANDIDATE_UNVERIFIED_COMPLETE:
-        quarantined = _quarantine_file(inspection.path, "unverified-existing")
-        _emit(message_callback, f"existing_file_quarantined_unverified: {quarantined}")
-        return None
+        _remove_stale_part_after_final_reuse(planned.local_path)
+        return DownloadOutcome(
+            MD5_UNAVAILABLE,
+            "Existing file size matched, so the file was reused without downloading again. ENA did not provide an expected MD5 value.",
+            "",
+            inspection.size,
+        )
     quarantined = _quarantine_file(inspection.path, "unverified-existing")
     _emit(message_callback, f"existing_file_quarantined_unverified: {quarantined}")
     return None
@@ -865,9 +873,13 @@ def _reuse_or_quarantine_complete_part(
             f"Partial file size exceeds expected size: expected={planned.fastq.size_bytes} actual={inspection.size}"
         )
     if inspection.status == _CANDIDATE_UNVERIFIED_COMPLETE:
-        quarantined = _quarantine_file(part_path, "unverified-existing")
-        _emit(message_callback, f"partial_file_quarantined_unverified: {quarantined}")
-        return None
+        _finalize_part(part_path, planned.local_path)
+        return DownloadOutcome(
+            MD5_UNAVAILABLE,
+            "Previous partial file size matched, so it was promoted to the final file name. ENA did not provide an expected MD5 value.",
+            "",
+            inspection.size,
+        )
     if inspection.status == _CANDIDATE_VERIFIED:
         _finalize_part(part_path, planned.local_path)
         return DownloadOutcome(
@@ -902,7 +914,7 @@ def _inspect_download_candidate(path: Path, planned: PlannedFile, kind: str) -> 
         status = _CANDIDATE_VERIFIED if ok else _CANDIDATE_BAD_MD5
         return _CandidateInspection(path, kind, status, candidate_size, actual_md5)
 
-    if kind == "final" or (planned.fastq.size_bytes > 0 and candidate_size == planned.fastq.size_bytes):
+    if planned.fastq.size_bytes > 0 and candidate_size == planned.fastq.size_bytes:
         return _CandidateInspection(path, kind, _CANDIDATE_UNVERIFIED_COMPLETE, candidate_size)
     return _CandidateInspection(path, kind, _CANDIDATE_UNVERIFIED_INCOMPLETE, candidate_size)
 
@@ -956,6 +968,24 @@ def download_failure_outcome(
         message,
         bytes_downloaded=existing_size(download_part_path(local_path)) if bytes_downloaded is None else bytes_downloaded,
         result_message=detail,
+    )
+
+
+def _download_exception_outcome(item: _PlannedDownload, error: Exception) -> DownloadOutcome:
+    if isinstance(error, GeoGetterError):
+        message = error.user_message
+        return DownloadOutcome(
+            error.code,
+            message,
+            bytes_downloaded=existing_size(download_part_path(item.local_path)),
+            result_message=error.detail or message,
+        )
+    message = f"{ERROR_MESSAGES[INTERNAL_ERROR]} Detail: {error}"
+    return DownloadOutcome(
+        INTERNAL_ERROR,
+        message,
+        bytes_downloaded=existing_size(download_part_path(item.local_path)),
+        result_message=str(error),
     )
 
 

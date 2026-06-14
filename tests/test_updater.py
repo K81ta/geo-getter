@@ -85,6 +85,7 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(payload["latest_version"], "0.1.4")
         self.assertEqual(payload["asset"]["name"], "GEOGetter-Setup-v0.1.4.exe")
         self.assertEqual(payload["asset"]["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(payload["asset"]["sha256_source"], "asset_digest")
 
     def test_newer_release_requires_installer_asset(self):
         release = self.release_payload(asset_name="GEOGetter-v0.1.4-win-x64-portable.zip")
@@ -101,6 +102,30 @@ class UpdaterTest(unittest.TestCase):
         release = self.release_payload(digest="")
 
         self.assert_geo_error("update_digest_missing", build_update_check_payload, release, "0.1.3")
+
+    def test_sha256sums_asset_is_used_when_digest_is_missing(self):
+        data = b"fixture"
+        expected = hashlib.sha256(data).hexdigest()
+        release = self.release_payload(data=data, digest="")
+        release["assets"].append(
+            {
+                "name": "SHA256SUMS.txt",
+                "size": 100,
+                "digest": "",
+                "browser_download_url": "https://example.invalid/SHA256SUMS.txt",
+            }
+        )
+        calls = []
+
+        def fetch_checksum(url, **kwargs):
+            calls.append((url, kwargs))
+            return f"{expected}  {installer_asset_name('0.1.4')}\n"
+
+        payload = build_update_check_payload(release, "0.1.3", text_fetcher=fetch_checksum)
+
+        self.assertEqual(payload["asset"]["sha256"], expected)
+        self.assertEqual(payload["asset"]["sha256_source"], "SHA256SUMS.txt")
+        self.assertEqual(calls, [("https://example.invalid/SHA256SUMS.txt", {"timeout": 60})])
 
     def test_digest_must_be_sha256_hex(self):
         self.assert_geo_error("update_digest_invalid", extract_sha256_digest, {"name": "fixture.exe", "digest": "md5:" + "0" * 32})
