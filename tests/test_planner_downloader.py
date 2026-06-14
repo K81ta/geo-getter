@@ -1,5 +1,6 @@
 import csv
 import http.client
+import inspect
 import tempfile
 import threading
 import unittest
@@ -37,6 +38,7 @@ from geo_getter.planner import (
     download_log_path,
     ensure_capacity,
     fastq_manifest_path,
+    _read_required_tsv_rows,
     validate_resume_artifacts,
     verify_fastq_manifest,
     write_fastq_outputs,
@@ -104,6 +106,13 @@ def http_error(status: int, headers: dict[str, str] | None = None) -> urllib.err
 
 
 class PlannerDownloaderTest(unittest.TestCase):
+    def test_required_tsv_reader_has_no_translation_callbacks(self):
+        parameters = inspect.signature(_read_required_tsv_rows).parameters
+
+        self.assertNotIn("missing_header_callback", parameters)
+        self.assertNotIn("missing_columns_callback", parameters)
+        self.assertNotIn("read_error_callback", parameters)
+
     def test_plan_and_manifest_are_written(self):
         with tempfile.TemporaryDirectory() as temp:
             fastq = FastqFile(
@@ -937,6 +946,39 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(context.exception.code, "resume_artifact_mismatch")
             self.assertIn("missing_fastq_manifest_columns", context.exception.detail)
             self.assertIn("missing=url", context.exception.detail)
+
+    def test_resume_artifacts_reject_manifest_read_error_with_resume_error_detail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            manifest = fastq_manifest_path(output_dir)
+            original_open = Path.open
+
+            def fail_manifest_open(path, *args, **kwargs):
+                if path == manifest:
+                    raise OSError("fixture read failure")
+                return original_open(path, *args, **kwargs)
+
+            with (
+                mock.patch("pathlib.Path.open", fail_manifest_open),
+                self.assertRaises(GeoGetterError) as context,
+            ):
+                validate_resume_artifacts(plan)
+
+            self.assertEqual(context.exception.code, "resume_artifact_mismatch")
+            self.assertIn("read_fastq_manifest_failed", context.exception.detail)
+            self.assertIn("fixture read failure", context.exception.detail)
 
     def test_resume_artifacts_reject_download_log_outside_selection(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2238,6 +2280,17 @@ class PlannerDownloaderTest(unittest.TestCase):
                 "missing_columns=source_accession,query_accession,run_accession,file_index,url",
                 context.exception.detail,
             )
+
+    def test_verify_fastq_manifest_read_error_is_invalid_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "sample_fastq_manifest.tsv"
+            manifest.mkdir()
+
+            with self.assertRaises(GeoGetterError) as context:
+                verify_fastq_manifest(manifest)
+
+            self.assertEqual(context.exception.code, "invalid_manifest")
+            self.assertIn("read_failed", context.exception.detail)
 
     def test_verify_fastq_manifest_rejects_report_path_overwriting_manifest(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -498,6 +498,15 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(payload["command"], "verify-manifest-json")
 
+    def test_verify_manifest_missing_file_emits_invalid_manifest_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "missing_fastq_manifest.tsv"
+
+            payload = self.assert_cli_error(["verify-manifest-json", "--manifest", str(manifest)], "invalid_manifest")
+
+        self.assertEqual(payload["command"], "verify-manifest-json")
+        self.assertIn("read_failed", payload["detail"])
+
     def test_check_update_hidden_bridge_writes_json_event(self):
         event = {
             "event": "done",
