@@ -23,10 +23,6 @@ class SupplementaryFile:
     url: str
     origin_level: str = "unknown"
     origin_accession: str = ""
-    extension: str = ""
-    estimated_type: str = "other"
-    size_status: str = "unknown"
-    verification_status: str = "not_applicable"
 
 
 @dataclass(frozen=True)

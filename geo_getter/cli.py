@@ -613,7 +613,7 @@ def _supplementary_file_from_payload(item: object) -> SupplementaryFile:
     if missing_fields:
         raise ValueError(f"supplementary item is missing required field(s): {', '.join(missing_fields)}")
 
-    # Filter at the bridge boundary so legacy or future JSON fields do not leak into the plan model.
+    # Filter at the bridge boundary so unused JSON fields do not leak into the plan model.
     payload = {name: item[name] for name in _SUPPLEMENTARY_PAYLOAD_FIELDS if name in item}
     return SupplementaryFile(**payload)
 

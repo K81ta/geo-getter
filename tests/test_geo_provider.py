@@ -72,17 +72,16 @@ plain preamble line
         self.assertEqual(parsed.related_accessions, ["SRP007461", "SRX082565", "SAMN01103824"])
         self.assertEqual(len(parsed.supplementary_files), 2)
         self.assertEqual(parsed.supplementary_files[0].name, "GSE30567_RAW.tar")
+        self.assertEqual(
+            parsed.supplementary_files[0].url,
+            "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE30nnn/GSE30567/suppl/GSE30567_RAW.tar",
+        )
+        self.assertEqual(parsed.supplementary_files[0].scope, "GEO Series supplementary/processed")
         self.assertEqual(parsed.supplementary_files[0].origin_level, "series")
         self.assertEqual(parsed.supplementary_files[0].origin_accession, "GSE30567")
-        self.assertEqual(parsed.supplementary_files[0].extension, ".tar")
-        self.assertEqual(parsed.supplementary_files[0].estimated_type, "geo_raw_archive")
-        self.assertEqual(parsed.supplementary_files[0].size_status, "unknown")
-        self.assertEqual(parsed.supplementary_files[0].verification_status, "not_applicable")
         self.assertIn("supplementary", parsed.supplementary_files[1].scope)
         self.assertEqual(parsed.supplementary_files[1].origin_level, "sample")
         self.assertEqual(parsed.supplementary_files[1].origin_accession, "GSM758559")
-        self.assertEqual(parsed.supplementary_files[1].extension, ".bigwig")
-        self.assertEqual(parsed.supplementary_files[1].estimated_type, "genome_track")
         metadata = parsed.sample_metadata_by_accession["SRX082565"]
         self.assertEqual(metadata.geo_sample_accession, "GSM758559")
         self.assertEqual(metadata.geo_sample_title, "adipose sample 1")
@@ -269,7 +268,7 @@ plain preamble line
 
         self.assertEqual(merged.related_accessions, ["SRP000001", "SRX000001"])
 
-    def test_supplementary_display_metadata_handles_common_names(self):
+    def test_supplementary_names_are_decoded_from_common_urls(self):
         parsed = parse_soft(
             """
 ^SERIES = GSE000001
@@ -281,12 +280,8 @@ plain preamble line
         )
 
         self.assertEqual(parsed.supplementary_files[0].name, "GSE000001_count matrix.tsv.gz")
-        self.assertEqual(parsed.supplementary_files[0].extension, ".tsv.gz")
-        self.assertEqual(parsed.supplementary_files[0].estimated_type, "count_matrix")
-        self.assertEqual(parsed.supplementary_files[1].extension, ".fastq.gz")
-        self.assertEqual(parsed.supplementary_files[1].estimated_type, "fastq_like_supplementary")
-        self.assertEqual(parsed.supplementary_files[2].extension, "")
-        self.assertEqual(parsed.supplementary_files[2].estimated_type, "other")
+        self.assertEqual(parsed.supplementary_files[1].name, "reads.fastq.gz")
+        self.assertEqual(parsed.supplementary_files[2].name, "no_extension")
 
     def test_supplementary_name_is_not_sanitized_during_geo_parse(self):
         parsed = parse_soft(

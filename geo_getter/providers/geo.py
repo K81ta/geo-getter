@@ -217,8 +217,6 @@ def _append_supplementary_file(
             url=normalized_url,
             origin_level=origin_level,
             origin_accession=_origin_accession(origin_level, source_accession, sample_accession),
-            extension=_extension_from_name(name),
-            estimated_type=_estimated_supplementary_type(name),
         )
     )
     state.seen_supplementary.add(normalized_url)
@@ -318,47 +316,6 @@ def _origin_accession(origin_level: str, source_accession: str, current_sample: 
     if origin_level == "series":
         return source_accession
     return source_accession
-
-
-COMPOUND_EXTENSIONS = (
-    ".fastq.gz",
-    ".fq.gz",
-    ".tar.gz",
-    ".tsv.gz",
-    ".csv.gz",
-    ".txt.gz",
-    ".bed.gz",
-    ".bedgraph.gz",
-)
-
-
-def _extension_from_name(name: str) -> str:
-    lowered = name.lower()
-    for extension in COMPOUND_EXTENSIONS:
-        if lowered.endswith(extension):
-            return extension
-    match = re.search(r"(?<!^)(\.[A-Za-z0-9][A-Za-z0-9_-]*)$", name)
-    if not match:
-        return ""
-    return match.group(1).lower()
-
-
-def _estimated_supplementary_type(name: str) -> str:
-    lowered = name.lower()
-    extension = _extension_from_name(name)
-    if re.search(r"(^|[_.-])raw([_.-]|$)", lowered) and extension in {".tar", ".tar.gz", ".tgz", ".gz"}:
-        return "geo_raw_archive"
-    if extension in {".fastq", ".fastq.gz", ".fq", ".fq.gz"}:
-        return "fastq_like_supplementary"
-    if "count" in lowered or "matrix" in lowered:
-        return "count_matrix"
-    if extension in {".bigwig", ".bw", ".bedgraph", ".bedgraph.gz", ".bed", ".bed.gz", ".wig"}:
-        return "genome_track"
-    if extension in {".txt", ".txt.gz", ".csv", ".csv.gz", ".tsv", ".tsv.gz", ".xls", ".xlsx"}:
-        return "table_text"
-    if extension in {".tar", ".tar.gz", ".tgz", ".zip", ".gz", ".bz2", ".xz", ".7z"}:
-        return "archive"
-    return "other"
 
 
 def _join_soft_text(parts: list[str]) -> str:
