@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-import posixpath
 import re
 import urllib.parse
 from dataclasses import dataclass, field
@@ -10,6 +9,7 @@ from ..accession import ENA_QUERY_PREFIXES, find_supported_accessions
 from ..errors import GeoGetterError
 from ..http_client import fetch_text
 from ..models import DatasetMetadata, SupplementaryFile
+from .download_urls import filename_from_url
 
 
 GEO_SOFT_ENDPOINT = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi"
@@ -207,7 +207,7 @@ def _append_supplementary_file(
     normalized_url = value.strip()
     if normalized_url in state.seen_supplementary:
         return
-    name = _name_from_url(normalized_url)
+    name = filename_from_url(normalized_url, default=normalized_url)
     origin_level = _origin_level_from_soft_key(key)
     state.supplementary.append(
         SupplementaryFile(
@@ -318,12 +318,6 @@ def _origin_accession(origin_level: str, source_accession: str, current_sample: 
     if origin_level == "series":
         return source_accession
     return source_accession
-
-
-def _name_from_url(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    basename = posixpath.basename(parsed.path)
-    return urllib.parse.unquote(basename or url)
 
 
 COMPOUND_EXTENSIONS = (

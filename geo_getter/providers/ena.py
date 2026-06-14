@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import posixpath
 import urllib.parse
 from typing import Any
 
 from ..errors import GeoGetterError
 from ..http_client import fetch_json
 from ..models import FastqFile
-from ..path_safety import safe_file_name
+from .download_urls import filename_from_url, normalize_download_url
 
 
 ENA_FILE_REPORT_ENDPOINT = "https://www.ebi.ac.uk/ena/portal/api/filereport"
@@ -61,7 +60,7 @@ def parse_file_report(
         for file_index, raw_url in enumerate(_split_positional_values(row.get("fastq_ftp", ""))):
             if not raw_url:
                 continue
-            download_url = _download_url(raw_url)
+            download_url = normalize_download_url(raw_url)
             if not download_url:
                 continue
             expected_md5 = md5s[file_index] if file_index < len(md5s) else ""
@@ -72,7 +71,11 @@ def parse_file_report(
                     query_accession=query_accession,
                     run_accession=_clean_metadata_value(row.get("run_accession", "")),
                     file_index=file_index + 1,
-                    file_name=_file_name_from_url(raw_url),
+                    file_name=filename_from_url(
+                        download_url,
+                        default="download.fastq.gz",
+                        sanitize=True,
+                    ),
                     url=download_url,
                     expected_md5=expected_md5,
                     size_bytes=_int_or_zero(size_value),
@@ -107,21 +110,3 @@ def _int_or_zero(value: str) -> int:
         return int(value)
     except ValueError:
         return 0
-
-
-def _download_url(raw_url: str) -> str:
-    if raw_url.startswith("http://") or raw_url.startswith("https://"):
-        return raw_url
-    if raw_url.startswith("ftp://ftp.sra.ebi.ac.uk/"):
-        return "https://ftp.sra.ebi.ac.uk/" + raw_url.removeprefix("ftp://ftp.sra.ebi.ac.uk/")
-    if raw_url.startswith("ftp.sra.ebi.ac.uk/"):
-        return "https://" + raw_url
-    if raw_url.startswith("fasp.sra.ebi.ac.uk/"):
-        return ""
-    return raw_url
-
-
-def _file_name_from_url(url: str) -> str:
-    parsed = urllib.parse.urlparse(_download_url(url))
-    basename = posixpath.basename(parsed.path)
-    return safe_file_name(urllib.parse.unquote(basename or "download.fastq.gz"), "download.fastq.gz")
