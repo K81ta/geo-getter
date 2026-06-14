@@ -2637,23 +2637,83 @@ function New-PythonProcessStartInfo {
     $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     Set-ProcessEnvironment $psi "PYTHONPATH" $env:PYTHONPATH
     Set-ProcessEnvironment $psi "PYTHONIOENCODING" "utf-8"
-    $psi.Arguments = ($Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join " "
+    Set-PythonProcessStartInfoArguments $psi $Arguments
     return $psi
+}
+
+function Set-PythonProcessStartInfoArguments {
+    param(
+        [System.Diagnostics.ProcessStartInfo]$ProcessStartInfo,
+        [string[]]$Arguments
+    )
+    $normalized = @($Arguments | ForEach-Object {
+        if ($null -eq $_) { "" } else { [string]$_ }
+    })
+    if (Test-ProcessStartInfoArgumentListSupported $ProcessStartInfo) {
+        $ProcessStartInfo.ArgumentList.Clear()
+        foreach ($argument in $normalized) {
+            [void]$ProcessStartInfo.ArgumentList.Add($argument)
+        }
+        return
+    }
+    $ProcessStartInfo.Arguments = ($normalized | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join " "
+}
+
+function Set-PythonProcessStartInfoFallbackArguments {
+    param(
+        [System.Diagnostics.ProcessStartInfo]$ProcessStartInfo,
+        [string[]]$Arguments
+    )
+    $normalized = @($Arguments | ForEach-Object {
+        if ($null -eq $_) { "" } else { [string]$_ }
+    })
+    $ProcessStartInfo.Arguments = ($normalized | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join " "
+}
+
+function New-PythonProcessStartInfoWithFallbackArgumentsForSelfTest {
+    param([string[]]$Arguments)
+    $psi = New-PythonProcessStartInfo -Arguments @()
+    if (Test-ProcessStartInfoArgumentListSupported $psi) {
+        $psi.ArgumentList.Clear()
+    }
+    Set-PythonProcessStartInfoFallbackArguments $psi $Arguments
+    return $psi
+}
+
+function Test-ProcessStartInfoArgumentListSupported {
+    param([System.Diagnostics.ProcessStartInfo]$ProcessStartInfo)
+    $property = $ProcessStartInfo.GetType().GetProperty("ArgumentList")
+    if ($null -eq $property) { return $false }
+    try {
+        return ($null -ne $ProcessStartInfo.ArgumentList)
+    }
+    catch {
+        return $false
+    }
 }
 
 function Invoke-PythonCli {
     param([string[]]$Arguments)
-    $psi = New-PythonProcessStartInfo -Arguments $Arguments
+    return Invoke-PythonProcessStartInfo (New-PythonProcessStartInfo -Arguments $Arguments)
+}
+
+function Invoke-PythonProcessStartInfo {
+    param([System.Diagnostics.ProcessStartInfo]$StartInfo)
     $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $psi
-    [void]$process.Start()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        Stdout = $stdout
-        Stderr = $stderr
+    try {
+        $process.StartInfo = $StartInfo
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = $stdout
+            Stderr = $stderr
+        }
+    }
+    finally {
+        Dispose-ProcessQuietly $process
     }
 }
 
@@ -2688,34 +2748,12 @@ function Invoke-SelectedDownloadJsonForSelfTest {
         [string]$SuppIndices,
         [bool]$ResumeExisting = $false
     )
-    $psi = New-DownloadProcessStartInfo $FastqIndices $SuppIndices $ResumeExisting
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $psi
-    [void]$process.Start()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        Stdout = $stdout
-        Stderr = $stderr
-    }
+    return Invoke-PythonProcessStartInfo (New-DownloadProcessStartInfo $FastqIndices $SuppIndices $ResumeExisting)
 }
 
 function Invoke-VerifyManifestJsonForSelfTest {
     param([string]$ManifestPath)
-    $psi = New-VerifyManifestProcessStartInfo $ManifestPath
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $psi
-    [void]$process.Start()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        Stdout = $stdout
-        Stderr = $stderr
-    }
+    return Invoke-PythonProcessStartInfo (New-VerifyManifestProcessStartInfo $ManifestPath)
 }
 
 function ConvertTo-ProcessArgument {
@@ -2792,6 +2830,20 @@ function Assert-PythonArgumentRoundTrip {
         [string]$Name
     )
     $result = Invoke-PythonCli -Arguments (@("-c", "import json, sys; print(json.dumps(sys.argv[1:], ensure_ascii=False))") + $Values)
+    Assert-Equal $result.ExitCode 0 "$Name exit code"
+    $parsed = ConvertFrom-Json -InputObject $result.Stdout.Trim()
+    $actual = foreach ($item in $parsed) { [string]$item }
+    $actual = @($actual)
+    Assert-SequenceEqual $actual $Values $Name
+}
+
+function Assert-PythonFallbackArgumentRoundTrip {
+    param(
+        [string[]]$Values,
+        [string]$Name
+    )
+    $psi = New-PythonProcessStartInfoWithFallbackArgumentsForSelfTest -Arguments (@("-c", "import json, sys; print(json.dumps(sys.argv[1:], ensure_ascii=False))") + $Values)
+    $result = Invoke-PythonProcessStartInfo $psi
     Assert-Equal $result.ExitCode 0 "$Name exit code"
     $parsed = ConvertFrom-Json -InputObject $result.Stdout.Trim()
     $actual = foreach ($item in $parsed) { [string]$item }
@@ -3544,7 +3596,20 @@ if ($SelfTest) {
     Assert-Equal (Get-DefaultOutputFolderForAccession "   ") ([System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) "geo_getter_download"))) "accession output folder treats whitespace as fallback"
     Assert-Equal (Get-DefaultOutputFolderForAccession " con ") ([System.IO.Path]::GetFullPath((Join-Path (Get-DefaultOutputFolder) "CON"))) "accession output folder does not apply generic Windows reserved-name rules"
     Assert-Equal (ConvertTo-ProcessArgument "") '""' "empty process argument"
-    Assert-PythonArgumentRoundTrip @("", 'C:\tmp\geo getter\a.txt', 'C:\tmp\日本語 path\manifest.tsv', 'C:\tmp\space path\', 'quote"name', 'C:\tmp\backslash\"quote') "process argument round trip"
+    $argumentRoundTripValues = @("", 'C:\tmp\geo getter\a.txt', 'C:\tmp\日本語 path\manifest.tsv', 'C:\tmp\space path\', 'C:\tmp\plain-trailing\', 'quote"name', 'C:\tmp\backslash\"quote')
+    $argumentProbe = New-PythonProcessStartInfo -Arguments (@("-c", "pass") + $argumentRoundTripValues)
+    if (Test-ProcessStartInfoArgumentListSupported $argumentProbe) {
+        $actualArgumentList = @($argumentProbe.ArgumentList)
+        Assert-SequenceEqual $actualArgumentList (@("-c", "pass") + $argumentRoundTripValues) "process ArgumentList values"
+        Assert-Equal $argumentProbe.Arguments "" "ArgumentList path leaves Arguments unset"
+    }
+    else {
+        Assert-Contains $argumentProbe.Arguments '""' "fallback process arguments include empty argument"
+        Assert-Contains $argumentProbe.Arguments '"C:\tmp\geo getter\a.txt"' "fallback process arguments quote spaces"
+        Assert-Contains $argumentProbe.Arguments 'quote\"name' "fallback process arguments escape quotes"
+    }
+    Assert-PythonArgumentRoundTrip $argumentRoundTripValues "process argument round trip"
+    Assert-PythonFallbackArgumentRoundTrip $argumentRoundTripValues "fallback process argument round trip"
     $updateCheckArgs = Get-UpdateCheckPythonArguments
     Assert-Equal ($updateCheckArgs -join "|") "-m|geo_getter.cli|check-update-json" "update check bridge arguments"
     $updateDownloadArgs = Get-UpdateDownloadPythonArguments "0.1.4"
