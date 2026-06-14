@@ -1882,48 +1882,150 @@ function Stop-RunningGuiProcessesForShutdown {
     Update-CancelButton
 }
 
-function Handle-DownloadLine {
-    param([string]$Line)
+function Get-JsonEventInt64Property {
+    param(
+        [object]$Event,
+        [string]$Name
+    )
+    $value = Get-JsonPropertyValue $Event $Name
+    if ($null -eq $value) { return $null }
+    return [Int64]$value
+}
+
+function Invoke-JsonEventLine {
+    param(
+        [string]$Line,
+        [hashtable]$Handlers
+    )
     if ([string]::IsNullOrWhiteSpace($Line)) { return }
     try {
         $event = $Line | ConvertFrom-Json
-        if ($event.event -eq "progress") {
-            $total = [Int64]$event.total
-            $downloaded = [Int64]$event.downloaded
-            $aggregateTotalProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "aggregate_total" } | Select-Object -First 1)
-            $aggregateDownloadedProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "aggregate_downloaded" } | Select-Object -First 1)
-            if ($aggregateTotalProperty.Count -gt 0 -and $null -ne $aggregateTotalProperty[0].Value -and $aggregateDownloadedProperty.Count -gt 0 -and $null -ne $aggregateDownloadedProperty[0].Value) {
-                $total = [Int64]$aggregateTotalProperty[0].Value
-                $downloaded = [Int64]$aggregateDownloadedProperty[0].Value
-            }
-            $progressBar.Value = if ($total -gt 0) { [Math]::Min(100, [int](($downloaded / $total) * 100)) } else { 0 }
-            $statusLabel.Text = T "downloading"
+        $eventName = [string](Get-JsonPropertyValue $event "event")
+        if (-not [string]::IsNullOrWhiteSpace($eventName) -and $null -ne $Handlers -and $Handlers.ContainsKey($eventName)) {
+            & $Handlers[$eventName] $event $Line
+            return
         }
-        elseif ($event.event -eq "message") {
-            $messageText = [string]$event.message
-            Append-Log $messageText
-            if ($messageText -like "network_retry:*") {
-                $statusLabel.Text = T "downloadRetryWaiting"
-            }
-        }
-        elseif ($event.event -eq "done") {
-            (Get-OperationState "download").LastDoneEvent = $event
-            $resumeBytesProperty = @($event.PSObject.Properties | Where-Object { $_.Name -eq "resume_required_bytes" } | Select-Object -First 1)
-            if ($resumeBytesProperty.Count -gt 0 -and $null -ne $resumeBytesProperty[0].Value) {
-                $script:LastResumeRequiredBytes = [Int64]$resumeBytesProperty[0].Value
-            }
-            $progressBar.Value = 100
-            if ($event.fastq_manifest) { Append-Log ((T "fastqManifestLog") -f $event.fastq_manifest) }
-            if ($event.supplementary_manifest) { Append-Log ((T "supplementaryManifestLog") -f $event.supplementary_manifest) }
-            Append-Log ((T "downloadLogLog") -f $event.download_log)
-            Complete-DownloadIfReady
-        }
-        else {
-            Append-Log $Line
-        }
+        Append-Log $Line
     }
     catch {
         Append-Log $Line
+    }
+}
+
+function Set-ProgressBarFromByteCounts {
+    param(
+        [object]$DownloadedBytes,
+        [object]$TotalBytes
+    )
+    $downloaded = [Int64]$DownloadedBytes
+    $total = [Int64]$TotalBytes
+    $progressBar.Value = if ($total -gt 0) { [Math]::Min(100, [int](($downloaded / $total) * 100)) } else { 0 }
+}
+
+function Set-ProgressBarFromJsonEvent {
+    param(
+        [object]$Event,
+        [string]$Line
+    )
+    $total = Get-JsonEventInt64Property $Event "total"
+    $downloaded = Get-JsonEventInt64Property $Event "downloaded"
+    if ($null -eq $total -or $null -eq $downloaded) {
+        Append-Log $Line
+        return $false
+    }
+    $aggregateTotal = Get-JsonEventInt64Property $Event "aggregate_total"
+    $aggregateDownloaded = Get-JsonEventInt64Property $Event "aggregate_downloaded"
+    if ($null -ne $aggregateTotal -and $null -ne $aggregateDownloaded) {
+        $total = $aggregateTotal
+        $downloaded = $aggregateDownloaded
+    }
+    Set-ProgressBarFromByteCounts $downloaded $total
+    return $true
+}
+
+function Append-JsonEventMessage {
+    param(
+        [object]$Event,
+        [string]$Line
+    )
+    $messageValue = Get-JsonPropertyValue $Event "message"
+    if ($null -eq $messageValue) {
+        Append-Log $Line
+        return $null
+    }
+    $messageText = [string]$messageValue
+    Append-Log $messageText
+    return $messageText
+}
+
+function Set-OperationDoneEvent {
+    param(
+        [ValidateSet("resolve", "download", "verification", "update")]
+        [string]$OperationName,
+        [object]$Event
+    )
+    (Get-OperationState $OperationName).LastDoneEvent = $Event
+}
+
+function Set-DownloadProgressFromEvent {
+    param(
+        [object]$Event,
+        [string]$Line
+    )
+    if (-not (Set-ProgressBarFromJsonEvent $Event $Line)) { return }
+    $statusLabel.Text = T "downloading"
+}
+
+function Append-DownloadMessageFromEvent {
+    param(
+        [object]$Event,
+        [string]$Line
+    )
+    $messageText = Append-JsonEventMessage $Event $Line
+    if ($null -eq $messageText) { return }
+    if ($messageText -like "network_retry:*") {
+        $statusLabel.Text = T "downloadRetryWaiting"
+    }
+}
+
+function Complete-DownloadDoneEvent {
+    param([object]$Event)
+    Set-OperationDoneEvent "download" $Event
+    $resumeRequiredBytes = Get-JsonEventInt64Property $Event "resume_required_bytes"
+    if ($null -ne $resumeRequiredBytes) {
+        $script:LastResumeRequiredBytes = $resumeRequiredBytes
+    }
+    $progressBar.Value = 100
+    if ($Event.fastq_manifest) { Append-Log ((T "fastqManifestLog") -f $Event.fastq_manifest) }
+    if ($Event.supplementary_manifest) { Append-Log ((T "supplementaryManifestLog") -f $Event.supplementary_manifest) }
+    Append-Log ((T "downloadLogLog") -f $Event.download_log)
+    Complete-DownloadIfReady
+}
+
+function Complete-UpdateDoneEvent {
+    param(
+        [object]$Event,
+        [string]$Line
+    )
+    $kind = [string](Get-JsonPropertyValue $Event "kind")
+    if ($kind -ne "update_check" -and $kind -ne "update_installer") {
+        Append-Log $Line
+        return
+    }
+    Set-OperationDoneEvent "update" $Event
+    if ($kind -eq "update_installer") {
+        $progressBar.Style = "Continuous"
+        $progressBar.Value = 100
+    }
+    Complete-UpdateIfReady
+}
+
+function Handle-DownloadLine {
+    param([string]$Line)
+    Invoke-JsonEventLine $Line @{
+        progress = { param($event, $line) Set-DownloadProgressFromEvent $event $line }
+        message = { param($event, $line) Append-DownloadMessageFromEvent $event $line }
+        done = { param($event, $line) Complete-DownloadDoneEvent $event }
     }
 }
 
@@ -2095,26 +2197,9 @@ function Complete-ManifestVerificationIfReady {
 
 function Handle-UpdateLine {
     param([string]$Line)
-    if ([string]::IsNullOrWhiteSpace($Line)) { return }
-    try {
-        $event = $Line | ConvertFrom-Json
-        if ($event.event -eq "done" -and ($event.kind -eq "update_check" -or $event.kind -eq "update_installer")) {
-            (Get-OperationState "update").LastDoneEvent = $event
-            if ($event.kind -eq "update_installer") {
-                $progressBar.Style = "Continuous"
-                $progressBar.Value = 100
-            }
-            Complete-UpdateIfReady
-        }
-        elseif ($event.event -eq "message") {
-            Append-Log ([string]$event.message)
-        }
-        else {
-            Append-Log $Line
-        }
-    }
-    catch {
-        Append-Log $Line
+    Invoke-JsonEventLine $Line @{
+        done = { param($event, $line) Complete-UpdateDoneEvent $event $line }
+        message = { param($event, $line) Append-JsonEventMessage $event $line | Out-Null }
     }
 }
 
@@ -3474,6 +3559,19 @@ if ($SelfTest) {
     Assert-Equal ($preflightArgs -join "|") "-m|geo_getter.cli|preflight-json|--input-json|C:\tmp\geo getter\resolved.json|--fastq-indices|0,1|--supp-indices|2|--out|C:\tmp\geo getter\out|--resume-existing" "preflight bridge arguments"
     $script:ResolvedJsonPath = $selfTestResolvedJsonPath
     Clear-UpdateRunState
+    $logBox.Clear()
+    Handle-UpdateLine '{"event":"message","message":"checking update fixture"}'
+    Assert-Contains $logBox.Text "checking update fixture" "update message event is logged"
+    $logBox.Clear()
+    Handle-UpdateLine '{"event":"message"}'
+    Assert-Contains $logBox.Text '"event":"message"' "update message without text is logged raw"
+    $logBox.Clear()
+    Handle-UpdateLine '{"event":"done","kind":"unsupported_update_kind"}'
+    Assert-Contains $logBox.Text '"unsupported_update_kind"' "update unsupported done event is logged raw"
+    Handle-UpdateLine '{"event":"done","kind":"update_check","current_version":"0.1.3","latest_version":"0.1.3","update_available":false,"release_url":"https://example.invalid/release","asset":null}'
+    Assert-Equal ([string](Get-OperationState "update").LastDoneEvent.kind) "update_check" "update done dispatcher records supported done event"
+
+    Clear-UpdateRunState
     (Get-OperationState "update").LastDoneEvent = [pscustomobject]@{
         event = "done"
         kind = "update_check"
@@ -4151,6 +4249,18 @@ if ($SelfTest) {
     Assert-Equal $statusLabel.Text (T "downloading") "progress label remains process state"
     Handle-DownloadLine '{"event":"progress","file_name":"large2.fastq.gz","downloaded":1,"total":10,"aggregate_downloaded":5,"aggregate_total":20}'
     Assert-Equal $progressBar.Value 25 "progress bar uses aggregate FASTQ progress when present"
+    $logBox.Clear()
+    Handle-DownloadLine '{"event":"unknown","message":"keep raw line"}'
+    Assert-Contains $logBox.Text '"event":"unknown"' "download unknown event is logged raw"
+    $logBox.Clear()
+    Handle-DownloadLine '{"event":"progress","downloaded":"not-number","total":20}'
+    Assert-Contains $logBox.Text '"not-number"' "download invalid progress event is logged raw"
+    $logBox.Clear()
+    Handle-DownloadLine '{"event":"progress","downloaded":1}'
+    Assert-Contains $logBox.Text '"downloaded":1' "download progress missing total is logged raw"
+    $logBox.Clear()
+    Handle-DownloadLine '{"event":"message"}'
+    Assert-Contains $logBox.Text '"event":"message"' "download message without text is logged raw"
     Handle-DownloadLine '{"event":"message","message":"download_started: large1.fastq.gz"}'
     Assert-Equal $statusLabel.Text (T "downloading") "normal download message does not change status"
     Handle-DownloadLine '{"event":"message","message":"network_retry: waiting 5s before retry (2/4) after temporary failure"}'
@@ -4161,8 +4271,10 @@ if ($SelfTest) {
     (Get-OperationState "download").StdoutClosed = $false
     (Get-OperationState "download").Finalized = $false
     $statusLabel.Text = T "downloading"
-    Handle-DownloadLine '{"event":"done","statuses":["md5_unavailable"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv"}'
+    $script:LastResumeRequiredBytes = $null
+    Handle-DownloadLine '{"event":"done","statuses":["md5_unavailable"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv","resume_required_bytes":123}'
     Assert-Equal $statusLabel.Text (T "downloading") "done event does not finalize status before exit and stdout close"
+    Assert-Equal $script:LastResumeRequiredBytes ([Int64]123) "download done event records resume required bytes"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified", "download_complete") }) 0 $false) "complete" "final state all ok"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_unavailable") }) 0 $false) "completeUnverified" "final state md5 unavailable"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("network_failed") }) 1 $false) "completePartial" "final state network failed"
