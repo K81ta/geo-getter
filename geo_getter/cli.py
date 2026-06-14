@@ -27,6 +27,7 @@ from .errors import (
     PATH_TOO_LONG,
     RESUME_REQUIRED,
     RESUME_SUPPLEMENTARY_UNSUPPORTED,
+    SELECTION_REQUIRED,
     GeoGetterError,
 )
 from .models import DownloadPlan, FastqFile
@@ -584,7 +585,7 @@ def _selected_items_from_payload(payload: dict, key: str, indices_text: str, lab
 
 def _ensure_any_selected(selected_fastq: list[FastqFile], selected_supp: list[dict]) -> None:
     if not selected_fastq and not selected_supp:
-        raise ValueError("Select at least one FASTQ or GEO supplementary/processed file.")
+        raise GeoGetterError(SELECTION_REQUIRED)
 
 
 def _prepare_download_output_dir(output_dir: str | Path) -> Path:

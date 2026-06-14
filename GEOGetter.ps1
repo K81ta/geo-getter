@@ -624,16 +624,6 @@ function Apply-PreflightErrorEventState {
     }
 }
 
-function Get-PreflightErrorCode {
-    param([string]$Message)
-    if ($Message -match "空き容量|free space") { return "insufficient_space" }
-    if ($Message -match "保存先|output folder") { return "output_path_invalid" }
-    if ($Message -match "長すぎます|too long") { return "path_too_long" }
-    if ($Message -match "FASTQまたは|Select at least one") { return "selection_required" }
-    if ($Message -match "検索結果|入力内容|search result|input has changed|Search files again") { return "resolved_state_invalid" }
-    return "preflight_failed"
-}
-
 function Set-DownloadPreflightError {
     param(
         [string]$Message,
@@ -647,7 +637,7 @@ function Set-DownloadPreflightError {
         $script:LastPreflightRequiredBytes = $null
         $script:LastPreflightFreeBytes = $null
     }
-    $code = if ([string]::IsNullOrWhiteSpace($Code)) { Get-PreflightErrorCode $script:LastPreflightError } else { $Code }
+    $code = if ([string]::IsNullOrWhiteSpace($Code)) { "preflight_failed" } else { $Code }
     if ($code -like "resume_*") {
         $script:LastResumeErrorCode = $code
     }
@@ -2412,10 +2402,16 @@ function Start-DownloadProcess {
     $script:LastOperationError = $null
     try {
         Assert-ResolvedMatchesCurrentInput
+    }
+    catch {
+        Set-DownloadPreflightError $_.Exception.Message $true "resolved_state_invalid"
+        throw
+    }
+    try {
         Assert-AnySelection
     }
     catch {
-        Set-DownloadPreflightError $_.Exception.Message $true
+        Set-DownloadPreflightError $_.Exception.Message $true "selection_required"
         throw
     }
     $preflight = Test-DownloadPreflight
@@ -4219,6 +4215,8 @@ if ($SelfTest) {
     }
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $true
+    $preflightCodeCommandName = "Get-Preflight" + "ErrorCode"
+    Assert-Equal ((Get-Command $preflightCodeCommandName -ErrorAction SilentlyContinue) -eq $null) $true "preflight code is not inferred from localized messages"
 
     $fileOutputPath = Join-Path $selfTestRoot "output path is file"
     [System.IO.File]::WriteAllText($fileOutputPath, "not a directory", $utf8NoBom)
@@ -4255,6 +4253,21 @@ if ($SelfTest) {
     }
     Assert-Contains $longPreflightMessage "長すぎます" "preflight checks long paths"
     Assert-Equal $script:LastOperationError.code "path_too_long" "preflight records long path code"
+
+    Set-GridSelection $fastqGrid "selected" $false
+    Set-GridSelection $suppGrid "supp_selected" $false
+    $outputBox.Text = Join-Path $selfTestRoot "no selection output"
+    (Get-OperationState "download").Process = $null
+    $noSelectionMessage = ""
+    try {
+        Start-DownloadProcess
+    }
+    catch {
+        $noSelectionMessage = $_.Exception.Message
+    }
+    Assert-Equal $noSelectionMessage (T "noFilesSelected") "download start validation reports missing selection"
+    Assert-Equal (Get-OperationState "download").Process $null "download process is not created without selection"
+    Assert-Equal $script:LastOperationError.code "selection_required" "download start validation records selection code"
 
     $outputBox.Text = Join-Path $selfTestRoot "supp only output"
     $fastqGrid.Rows[0].Cells["selected"].Value = $false

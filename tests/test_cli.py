@@ -339,6 +339,24 @@ class CliTest(unittest.TestCase):
         self.assertEqual(context.exception.code, "path_too_long")
         self.assertEqual(context.exception.extra["path"], str(path))
 
+    def test_preflight_json_rejects_empty_overall_selection_with_structured_code(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--out",
+                    str(root / "out"),
+                ],
+                "selection_required",
+            )
+
+        self.assertIn("Select at least one", payload["message"])
+
     def test_selected_download_supplementary_out_of_range_index_emits_target_name(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -520,7 +538,7 @@ class CliTest(unittest.TestCase):
                     "--out",
                     str(root / "out"),
                 ],
-                "invalid_input",
+                "selection_required",
             )
 
         self.assertIn("Select at least one", payload["message"])
