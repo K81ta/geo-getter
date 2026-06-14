@@ -132,7 +132,11 @@ def ensure_capacity(plan: DownloadPlan, required_bytes: int | None = None) -> No
     if needed > plan.available_bytes:
         raise GeoGetterError(
             "insufficient_space",
-            f"required={format_bytes(needed)} available={format_bytes(plan.available_bytes)}",
+            f"required_bytes={needed} available_bytes={plan.available_bytes}",
+            extra={
+                "required_bytes": needed,
+                "available_bytes": plan.available_bytes,
+            },
         )
 
 
@@ -244,20 +248,6 @@ def _append_tsv_row(path: Path, row: Sequence[object]) -> None:
 
 def _tsv_writer(handle):
     return csv.writer(handle, delimiter="\t")
-
-
-def format_bytes(value: int) -> str:
-    if value < 0:
-        value = 0
-    units = ["B", "KB", "MB", "GB", "TB"]
-    size = float(value)
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.2f} {unit}"
-        size /= 1024
-    return f"{value} B"
 
 
 def fastq_manifest_path(output_dir: str | Path) -> Path:

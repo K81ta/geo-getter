@@ -923,6 +923,8 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(preflight["required_bytes"], len(data))
             self.assertEqual(preflight["free_bytes"], len(data) - 1)
+            self.assertIsInstance(preflight["required_bytes"], int)
+            self.assertIsInstance(preflight["free_bytes"], int)
             self.assertEqual(preflight["capacity_checked"], True)
             self.assertEqual(preflight["capacity_ok"], False)
             self.assertEqual(preflight["capacity_error_code"], "insufficient_space")
@@ -1113,7 +1115,12 @@ class CliTest(unittest.TestCase):
                     "insufficient_space",
                 )
 
-            self.assertIn("required=", payload["detail"])
+            self.assertEqual(payload["detail"], f"required_bytes={len(data)} available_bytes={len(data) - 1}")
+            self.assertEqual(payload["required_bytes"], len(data))
+            self.assertEqual(payload["available_bytes"], len(data) - 1)
+            self.assertIn("The output folder does not have enough free space", payload["message"])
+            self.assertNotIn(" B", payload["detail"])
+            self.assertNotIn(" B", payload["message"])
 
     def test_selected_download_passes_download_workers_to_fastq_plan(self):
         with tempfile.TemporaryDirectory() as temp:
