@@ -512,6 +512,33 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("reused without downloading again", log_text)
             self.assertEqual(existing.read_bytes(), data)
 
+    def test_existing_matching_file_removes_stale_part(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            data = b"already downloaded\n"
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(data)
+            stale_part = output_dir / "fixture.fastq.gz.part"
+            stale_part.write_bytes(b"stale partial")
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="file:///definitely/not/used.fastq.gz",
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "md5_verified")
+            self.assertEqual(existing.read_bytes(), data)
+            self.assertFalse(stale_part.exists())
+
     def test_existing_file_with_unknown_size_reuses_matching_md5(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
@@ -536,6 +563,62 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual(results[0][1], "md5_verified")
             self.assertEqual(existing.read_bytes(), data)
             self.assertFalse(list(output_dir.glob("fixture.fastq.gz.*-existing-*")))
+
+    def test_existing_file_without_md5_is_quarantined_before_redownload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"fresh data without md5\n"
+            source.write_bytes(data)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(b"stale data without md5\n")
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url=source.as_uri(),
+                expected_md5="",
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "md5_unavailable")
+            self.assertEqual(existing.read_bytes(), data)
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.unverified-existing-*")))
+
+    def test_existing_file_without_md5_size_mismatch_is_quarantined_before_redownload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"fresh data without md5\n"
+            source.write_bytes(data)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            existing = output_dir / "fixture.fastq.gz"
+            existing.write_bytes(b"wrong-size")
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url=source.as_uri(),
+                expected_md5="",
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "md5_unavailable")
+            self.assertEqual(existing.read_bytes(), data)
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.size-mismatch-existing-*")))
 
     def test_existing_file_requires_matching_size_before_reuse(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -676,6 +759,35 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertFalse(part.exists())
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
 
+    def test_complete_part_file_with_bad_md5_is_quarantined_before_redownload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            data = b"fresh data\n"
+            source = root / "source.fastq.gz"
+            source.write_bytes(data)
+            part = output_dir / "fixture.fastq.gz.part"
+            part.write_bytes(b"wrong data\n")
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url=source.as_uri(),
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "md5_verified")
+            self.assertFalse(part.exists())
+            self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.part.bad-md5-*")))
+
     def test_complete_part_file_without_md5_is_not_reused(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -704,6 +816,35 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertFalse(part.exists())
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), data)
             self.assertTrue(list(output_dir.glob("fixture.fastq.gz.part.unverified-existing-*")))
+
+    def test_complete_part_file_without_md5_size_mismatch_is_quarantined(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            data = b"complete unverified part\n"
+            part = output_dir / "fixture.fastq.gz.part"
+            part.write_bytes(data + b"x")
+            source = root / "source.fastq.gz"
+            source.write_bytes(data)
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url=source.as_uri(),
+                expected_md5="",
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "size_mismatch")
+            self.assertFalse(part.exists())
+            self.assertFalse((output_dir / "fixture.fastq.gz").exists())
+            self.assertTrue(list(output_dir.glob("fixture.fastq.gz.part.size-mismatch-*")))
 
     def test_resume_artifacts_match_existing_manifest_and_log(self):
         with tempfile.TemporaryDirectory() as temp:
