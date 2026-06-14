@@ -962,16 +962,11 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
             write_fastq_outputs(plan)
-            manifest = fastq_manifest_path(output_dir)
-            original_open = Path.open
-
-            def fail_manifest_open(path, *args, **kwargs):
-                if path == manifest:
-                    raise OSError("fixture read failure")
-                return original_open(path, *args, **kwargs)
-
             with (
-                mock.patch("pathlib.Path.open", fail_manifest_open),
+                mock.patch(
+                    "geo_getter.planner._read_required_tsv_rows",
+                    side_effect=OSError("fixture read failure"),
+                ),
                 self.assertRaises(GeoGetterError) as context,
             ):
                 validate_resume_artifacts(plan)
