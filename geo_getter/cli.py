@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -77,34 +78,62 @@ class CliDownloadPlan:
 
 def main(argv: list[str] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    parser = _build_parser()
-    args = parser.parse_args(argv_list)
-    if args.command == "resolve-json":
-        return _resolve_json(args.input_text, args.input_file, args.out_json)
-    if args.command == "selected-download-json":
-        return _selected_download_json(
-            Path(args.input_json),
-            args.fastq_indices,
-            args.supp_indices,
-            Path(args.out),
-            resume_existing=args.resume_existing,
-            download_workers=args.download_workers,
-        )
-    if args.command == "preflight-json":
-        return _preflight_json(
-            Path(args.input_json),
-            args.fastq_indices,
-            args.supp_indices,
-            Path(args.out),
-            resume_existing=args.resume_existing,
-        )
-    if args.command == "verify-manifest-json":
-        return _verify_manifest_json(Path(args.manifest))
-    if args.command == "check-update-json":
-        return _check_update_json()
-    if args.command == "download-update-json":
-        return _download_update_json(args.version, args.out_dir)
-    return 2
+    args = _parse_cli_args(argv_list)
+    return args.handler(args)
+
+
+@dataclass(frozen=True)
+class BridgeCommand:
+    name: str
+    configure: Callable[[argparse.ArgumentParser], None]
+    handler: Callable[[argparse.Namespace], int]
+    help: str = ""
+    hidden: bool = False
+
+
+def _handle_resolve_json(args: argparse.Namespace) -> int:
+    return _resolve_json(args.input_text, args.input_file, args.out_json)
+
+
+def _handle_selected_download_json(args: argparse.Namespace) -> int:
+    return _selected_download_json(
+        Path(args.input_json),
+        args.fastq_indices,
+        args.supp_indices,
+        Path(args.out),
+        resume_existing=args.resume_existing,
+        download_workers=args.download_workers,
+    )
+
+
+def _handle_preflight_json(args: argparse.Namespace) -> int:
+    return _preflight_json(
+        Path(args.input_json),
+        args.fastq_indices,
+        args.supp_indices,
+        Path(args.out),
+        resume_existing=args.resume_existing,
+    )
+
+
+def _handle_verify_manifest_json(args: argparse.Namespace) -> int:
+    return _verify_manifest_json(Path(args.manifest))
+
+
+def _handle_check_update_json(args: argparse.Namespace) -> int:
+    return _check_update_json()
+
+
+def _handle_download_update_json(args: argparse.Namespace) -> int:
+    return _download_update_json(args.version, args.out_dir)
+
+
+def _parse_cli_args(argv_list: list[str]) -> argparse.Namespace:
+    if argv_list and not argv_list[0].startswith("-"):
+        command = BRIDGE_COMMAND_BY_NAME.get(argv_list[0])
+        if command and command.hidden:
+            return _build_single_command_parser(command).parse_args(argv_list[1:])
+    return _build_parser().parse_args(argv_list)
 
 
 def _build_parser() -> GeoGetterArgumentParser:
@@ -115,33 +144,24 @@ def _build_parser() -> GeoGetterArgumentParser:
         metavar="{resolve-json,selected-download-json}",
     )
 
-    resolve_json_parser = subparsers.add_parser("resolve-json", help="write resolved metadata as JSON")
-    _add_resolve_json_arguments(resolve_json_parser)
-
-    selected_download_parser = subparsers.add_parser("selected-download-json", help="download selected FASTQ and GEO supplementary files")
-    _add_selected_download_arguments(selected_download_parser)
-
-    preflight_parser = _add_hidden_bridge_parser(subparsers, "preflight-json")
-    _add_preflight_arguments(preflight_parser)
-
-    verify_manifest_parser = _add_hidden_bridge_parser(subparsers, "verify-manifest-json")
-    _add_verify_manifest_arguments(verify_manifest_parser)
-
-    _add_hidden_bridge_parser(subparsers, "check-update-json")
-
-    download_update_parser = _add_hidden_bridge_parser(subparsers, "download-update-json")
-    _add_update_download_arguments(download_update_parser)
+    for command in BRIDGE_COMMANDS:
+        if command.hidden:
+            continue
+        command_parser = subparsers.add_parser(command.name, help=command.help)
+        _configure_bridge_command_parser(command_parser, command)
 
     return parser
 
 
-def _add_hidden_bridge_parser(subparsers: argparse._SubParsersAction, command: str) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(command, help=argparse.SUPPRESS)
-    # Subparsers print "==SUPPRESS==" unless the generated help row is removed.
-    subparsers._choices_actions = [
-        action for action in subparsers._choices_actions if action.dest != command
-    ]
+def _build_single_command_parser(command: BridgeCommand) -> GeoGetterArgumentParser:
+    parser = GeoGetterArgumentParser(prog=f"GEOGetter {command.name}", description="GEOGetter internal GUI bridge")
+    _configure_bridge_command_parser(parser, command)
     return parser
+
+
+def _configure_bridge_command_parser(parser: argparse.ArgumentParser, command: BridgeCommand) -> None:
+    command.configure(parser)
+    parser.set_defaults(command=command.name, handler=command.handler)
 
 
 def _add_resolve_json_arguments(parser: argparse.ArgumentParser) -> None:
@@ -174,6 +194,17 @@ def _add_verify_manifest_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_update_download_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--out-dir")
+
+
+BRIDGE_COMMANDS = (
+    BridgeCommand("resolve-json", _add_resolve_json_arguments, _handle_resolve_json, "write resolved metadata as JSON"),
+    BridgeCommand("selected-download-json", _add_selected_download_arguments, _handle_selected_download_json, "download selected FASTQ and GEO supplementary files"),
+    BridgeCommand("preflight-json", _add_preflight_arguments, _handle_preflight_json, hidden=True),
+    BridgeCommand("verify-manifest-json", _add_verify_manifest_arguments, _handle_verify_manifest_json, hidden=True),
+    BridgeCommand("check-update-json", lambda parser: None, _handle_check_update_json, hidden=True),
+    BridgeCommand("download-update-json", _add_update_download_arguments, _handle_download_update_json, hidden=True),
+)
+BRIDGE_COMMAND_BY_NAME = {command.name: command for command in BRIDGE_COMMANDS}
 
 
 def run_cli(argv: list[str] | None = None) -> int:

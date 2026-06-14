@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from geo_getter.cli import (
+    BRIDGE_COMMANDS,
     CliDownloadPlan,
     _load_json,
     _parse_indices,
@@ -71,6 +72,23 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("selected_supplementary", field_names)
         self.assertNotIn("resume_required_bytes", field_names)
 
+    def test_bridge_command_registry_contains_all_json_commands(self):
+        commands = {command.name: command for command in BRIDGE_COMMANDS}
+        self.assertEqual(
+            set(commands),
+            {
+                "resolve-json",
+                "selected-download-json",
+                "preflight-json",
+                "verify-manifest-json",
+                "check-update-json",
+                "download-update-json",
+            },
+        )
+        for command in commands.values():
+            self.assertTrue(callable(command.configure), command.name)
+            self.assertTrue(callable(command.handler), command.name)
+
     def test_help_only_exposes_gui_bridge_commands(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -84,6 +102,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("check-update-json", output)
         self.assertNotIn("download-update-json", output)
         self.assertNotIn("preflight-json", output)
+        self.assertNotIn("==SUPPRESS==", output)
         self.assertNotIn("verify-fastq-manifest", output)
         self.assertNotIn("plan-json", output)
         self.assertNotIn("verify-fixture", output)
