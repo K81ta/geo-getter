@@ -1,8 +1,10 @@
-# GEOGetter
+# GEO Getter
 
 [Japanese](README.md) | [English](README.en.md)
 
-GEOGetter is a Windows desktop app for saving raw FASTQ files and GEO supplementary / processed files from public GEO and ENA data.
+User guide and maintainer docs are available on the [GEO Getter site](https://k81ta.github.io/geo-getter/).
+
+GEO Getter is a Windows desktop app for saving raw FASTQ files and GEO supplementary / processed files from public GEO and ENA data.
 
 Enter a GEO accession, GEO page URL, SRA / ENA accession, BioProject accession, or BioSample accession, then choose the files to save from the displayed list. FASTQ files are checked during download when ENA provides expected MD5 values.
 
@@ -21,9 +23,9 @@ Download the latest version from [GitHub Releases](https://github.com/K81ta/geo-
 - Installer: `GEOGetter-Setup-v*.exe` in the latest release assets
 - Portable zip: `GEOGetter-v*-win-x64-portable.zip` in the latest release assets
 
-The installer is recommended for normal use. After installation, start `GEOGetter` from the Start menu.
+The installer is recommended for normal use. After installation, start GEO Getter from the Start menu.
 
-To use GEOGetter without installation, extract the portable zip and run `start_geo_getter.vbs`.
+To use GEO Getter without installation, extract the portable zip and run `start_geo_getter.vbs`.
 
 Python is included in the distributed package.
 
@@ -39,7 +41,7 @@ Supported accessions start with `GSE`, `GSM`, `SRP`, `SRX`, `SRR`, `SRS`, `ERP`,
 
 ### Steps
 
-1. Start `GEOGetter`.
+1. Start GEO Getter.
 2. Enter an accession or GEO page URL.
 3. Press `Find files`.
 4. Select the raw FASTQ or GEO supplementary / processed files to save.
@@ -69,10 +71,10 @@ Downloads/GEOGetter/
 
 Choose the same save folder to resume an interrupted FASTQ download.
 
-If the previous FASTQ manifest and download log do not match the current selection, GEOGetter will not resume in that folder.
+If the previous FASTQ manifest and download log do not match the current selection, GEO Getter will not resume in that folder.
 
 Partially saved files remain as `.part` files.
 
 ## License
 
-GEOGetter is released under the MIT License. See [LICENSE](LICENSE) for the full text.
+GEO Getter is released under the MIT License. See [LICENSE](LICENSE) for the full text.

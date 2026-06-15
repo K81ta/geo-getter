@@ -1,0 +1,4 @@
+title: GEO Getter
+description: Download raw FASTQ files linked to public GEO / ENA records, plus GEO supplementary and processed files.
+theme: jekyll-theme-minimal
+markdown: kramdown

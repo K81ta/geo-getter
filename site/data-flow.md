@@ -1,3 +1,10 @@
+---
+layout: default
+title: データの流れ
+description: GEO Getter が入力 accession からファイル候補、保存前検査、保存結果まで扱う流れ。
+permalink: /data-flow/
+---
+
 # データの流れ
 
 GEOGetter は、入力された accession または GEO URL からファイル候補を作り、選択された raw FASTQ と GEO supplementary / processed file を保存する。

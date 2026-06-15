@@ -49,6 +49,21 @@ class VersionTest(unittest.TestCase):
         self.assertNotIn(matrix_key, text)
         self.assertNotIn(codex_branch_pattern, text)
 
+    def test_pages_workflow_uses_jekyll_theme(self):
+        workflow = ROOT / ".github" / "workflows" / "pages.yml"
+        workflow_text = workflow.read_text(encoding="utf-8")
+        config_text = (ROOT / "site" / "_config.yml").read_text(encoding="utf-8")
+
+        self.assertIn("actions/jekyll-build-pages@v1", workflow_text)
+        self.assertIn("source: ./site", workflow_text)
+        self.assertIn("destination: ./_site", workflow_text)
+        self.assertNotIn("actions/setup-python", workflow_text)
+        self.assertNotIn("tools/build_site.py", workflow_text)
+        self.assertIn("theme: jekyll-theme-minimal", config_text)
+        self.assertFalse((ROOT / "tools" / "build_site.py").exists())
+        self.assertFalse((ROOT / "site" / "_layouts" / "default.html").exists())
+        self.assertFalse((ROOT / "site" / "assets" / "styles.css").exists())
+
     def test_installer_requires_release_macros(self):
         installer = ROOT / "installer" / "GEOGetter.iss"
         text = installer.read_text(encoding="utf-8")
@@ -72,6 +87,8 @@ class VersionTest(unittest.TestCase):
         build_script = ROOT / "tools" / "build_release.ps1"
         text = build_script.read_text(encoding="utf-8")
         self.assertIn('"resources"', text)
+        self.assertIn('"site"', text)
+        self.assertNotIn('"docs"', text)
 
     def test_gui_text_resource_has_matching_languages(self):
         resource = ROOT / "resources" / "gui_text.json"

@@ -1,8 +1,10 @@
-# GEOGetter
+# GEO Getter
 
 [Japanese](README.md) | [English](README.en.md)
 
-GEOGetter は、GEO・ENA の公開データから raw FASTQ と GEO supplementary / processed file を保存する Windows デスクトップアプリです。
+利用者向けガイドと保守者向け docs は [GEO Getter site](https://k81ta.github.io/geo-getter/) にあります。
+
+GEO Getter は、GEO・ENA の公開データから raw FASTQ と GEO supplementary / processed file を保存する Windows デスクトップアプリです。
 
 GEO accession、GEO ページ URL、SRA / ENA accession、BioProject accession、BioSample accession を入力し、表示されたリストから保存するファイルを選びます。FASTQ は ENA から MD5 が得られる場合に保存時に照合します。
 
@@ -21,7 +23,7 @@ GEO accession、GEO ページ URL、SRA / ENA accession、BioProject accession�
 - インストーラー: 最新 release assets の `GEOGetter-Setup-v*.exe`
 - portable zip: 最新 release assets の `GEOGetter-v*-win-x64-portable.zip`
 
-通常はインストーラーを使います。インストール後は、スタートメニューの `GEOGetter` から起動できます。
+通常はインストーラーを使います。インストール後は、スタートメニューから GEO Getter を起動できます。
 
 インストールせずに使う場合は、portable zip を展開し、`start_geo_getter.vbs` を実行します。
 
@@ -39,7 +41,7 @@ Python は配布物に含まれています。
 
 ### 操作
 
-1. `GEOGetter` を起動します。
+1. GEO Getter を起動します。
 2. accession または GEO ページ URL を入力します。
 3. `ファイルを検索` を押します。
 4. 保存する raw FASTQ または GEO supplementary / processed file を選びます。
@@ -69,7 +71,7 @@ Downloads/GEOGetter/
 
 同じ保存フォルダを選ぶと、中断した FASTQ ダウンロードを再開できます。
 
-前回の FASTQ manifest とダウンロード記録が今回の選択と一致しない場合、GEOGetter はそのフォルダで再開しません。
+前回の FASTQ manifest とダウンロード記録が今回の選択と一致しない場合、GEO Getter はそのフォルダで再開しません。
 
 途中まで保存されたファイルは `.part` として残ります。
 

@@ -1,3 +1,10 @@
+---
+layout: default
+title: アーキテクチャ
+description: GEO Getter の内部構成、GUI bridge、保存処理、更新確認、内部データ形式。
+permalink: /architecture/
+---
+
 # アーキテクチャ
 
 ## 位置づけ
