@@ -156,3 +156,5 @@ flowchart TD
 GEO record に raw sequencing data への relation がない場合、または ENA Portal API から direct FASTQ が返らない場合、raw FASTQ 表は空になる。
 
 この場合でも、GEO supplementary / processed file が SOFT text に載っていれば、supplementary 表には表示される。
+
+{% include mermaid.html %}

@@ -654,3 +654,5 @@ Python 側の status / error code は英語で統一する。GUI の主要ラベ
 | `update_download_failed` | installer の取得または保存に失敗した |
 | `update_sha256_mismatch` | 取得した installer の SHA256 が release asset digest と一致しない |
 | `update_version_invalid` | release tag または version 文字列を比較できない |
+
+{% include mermaid.html %}

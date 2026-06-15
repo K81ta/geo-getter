@@ -64,6 +64,18 @@ class VersionTest(unittest.TestCase):
         self.assertFalse((ROOT / "site" / "_layouts" / "default.html").exists())
         self.assertFalse((ROOT / "site" / "assets" / "styles.css").exists())
 
+    def test_mermaid_pages_load_renderer(self):
+        include = ROOT / "site" / "_includes" / "mermaid.html"
+        include_text = include.read_text(encoding="utf-8")
+        self.assertIn("mermaid@11", include_text)
+        self.assertIn("code.language-mermaid", include_text)
+        self.assertIn("mermaid.run", include_text)
+
+        for relative_path in ("site/architecture.md", "site/data-flow.md"):
+            text = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("```mermaid", text)
+            self.assertIn("{% include mermaid.html %}", text)
+
     def test_installer_requires_release_macros(self):
         installer = ROOT / "installer" / "GEOGetter.iss"
         text = installer.read_text(encoding="utf-8")
