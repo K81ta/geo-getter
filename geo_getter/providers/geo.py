@@ -25,7 +25,7 @@ class GeoSampleMetadata:
 class GeoSoftParseResult:
     related_accessions: list[str]
     supplementary_files: list[SupplementaryFile]
-    sample_metadata_by_accession: dict[str, GeoSampleMetadata]
+    sample_metadata_by_accession: dict[str, GeoSampleMetadata | None]
     dataset_metadata: DatasetMetadata
     warnings: list[str] = field(default_factory=list)
 
@@ -42,7 +42,7 @@ class _SoftParseState:
     series_related: list[str] = field(default_factory=list)
     sample_related: list[str] = field(default_factory=list)
     supplementary: list[SupplementaryFile] = field(default_factory=list)
-    sample_metadata_by_accession: dict[str, GeoSampleMetadata] = field(
+    sample_metadata_by_accession: dict[str, GeoSampleMetadata | None] = field(
         default_factory=dict
     )
     seen_series_related: set[str] = field(default_factory=set)
@@ -171,7 +171,20 @@ def _parse_sample_record(record: SoftRecord, source_accession: str, state: _Soft
         geo_sample_title=sample_title,
     )
     for accession in sample_relations:
-        state.sample_metadata_by_accession.setdefault(accession, metadata)
+        _record_sample_metadata_for_accession(state, accession, metadata)
+
+
+def _record_sample_metadata_for_accession(
+    state: _SoftParseState,
+    accession: str,
+    metadata: GeoSampleMetadata,
+) -> None:
+    if accession not in state.sample_metadata_by_accession:
+        state.sample_metadata_by_accession[accession] = metadata
+        return
+    existing = state.sample_metadata_by_accession[accession]
+    if existing is not None and existing != metadata:
+        state.sample_metadata_by_accession[accession] = None
 
 
 def _parse_other_record(record: SoftRecord, source_accession: str, state: _SoftParseState) -> None:

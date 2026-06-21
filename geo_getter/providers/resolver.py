@@ -8,10 +8,11 @@ from ..accession import extract_accession
 from ..errors import GeoGetterError
 from ..models import DatasetMetadata, FastqFile, ResolveResult, SupplementaryFile
 from .ena import get_fastq_files
-from .geo import GeoSoftParseResult, get_related
+from .geo import GeoSampleMetadata, GeoSoftParseResult, get_related
 
 
 MAX_ENA_FILE_REPORT_WORKERS = 4
+_PRIMARY_ENA_QUERY_PREFIXES = ("SRP", "ERP", "DRP", "PRJNA", "PRJEB", "PRJDB")
 GeoRelatedLookup = Callable[[str], GeoSoftParseResult]
 EnaFastqLookup = Callable[[str, str], list[FastqFile]]
 
@@ -80,6 +81,53 @@ def _get_fastq_files_for_accessions(
         accession = query_accessions[0]
         return [ena_fastq_lookup(accession, source_accession)], []
 
+    results: list[list[FastqFile]] = []
+    warnings: list[str] = []
+    first_error: GeoGetterError | None = None
+    covered_accessions: set[str] = set()
+    for batch in _prioritized_query_batches(query_accessions):
+        pending = [accession for accession in batch if accession not in covered_accessions]
+        if not pending:
+            continue
+        batch_results, batch_warnings, batch_error = _lookup_fastq_file_groups(
+            ena_fastq_lookup,
+            pending,
+            source_accession,
+            allow_partial=True,
+        )
+        results.extend(batch_results)
+        warnings.extend(batch_warnings)
+        if first_error is None and batch_error is not None:
+            first_error = batch_error
+        for files in batch_results:
+            covered_accessions.update(_covered_accessions(files))
+    if not results and first_error is not None:
+        raise first_error
+    return results, warnings
+
+
+def _prioritized_query_batches(query_accessions: list[str]) -> list[list[str]]:
+    primary = [accession for accession in query_accessions if accession.startswith(_PRIMARY_ENA_QUERY_PREFIXES)]
+    secondary = [accession for accession in query_accessions if not accession.startswith(_PRIMARY_ENA_QUERY_PREFIXES)]
+    return [batch for batch in (primary, secondary) if batch]
+
+
+def _lookup_fastq_file_groups(
+    ena_fastq_lookup: EnaFastqLookup,
+    query_accessions: list[str],
+    source_accession: str,
+    *,
+    allow_partial: bool,
+) -> tuple[list[list[FastqFile]], list[str], GeoGetterError | None]:
+    if len(query_accessions) == 1:
+        accession = query_accessions[0]
+        try:
+            return [ena_fastq_lookup(accession, source_accession)], [], None
+        except GeoGetterError as exc:
+            if not allow_partial:
+                raise
+            return [], [_ena_lookup_warning(accession, exc)], exc
+
     worker_count = min(MAX_ENA_FILE_REPORT_WORKERS, len(query_accessions))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [
@@ -95,13 +143,32 @@ def _get_fastq_files_for_accessions(
             except GeoGetterError as exc:
                 if first_error is None:
                     first_error = exc
-                warnings.append(
-                    f"ENA FASTQ lookup failed for {accession}; "
-                    f"continuing with other accessions. Detail: {exc.code}"
-                )
-        if not results and first_error is not None:
-            raise first_error
-        return results, warnings
+                warnings.append(_ena_lookup_warning(accession, exc))
+        return results, warnings, first_error
+
+
+def _ena_lookup_warning(accession: str, exc: GeoGetterError) -> str:
+    return (
+        f"ENA FASTQ lookup failed for {accession}; "
+        f"continuing with other accessions. Detail: {exc.code}"
+    )
+
+
+def _covered_accessions(files: list[FastqFile]) -> set[str]:
+    covered: set[str] = set()
+    for item in files:
+        for accession in (
+            item.query_accession,
+            item.run_accession,
+            item.experiment_accession,
+            item.sample_accession,
+            item.secondary_sample_accession,
+            item.study_accession,
+            item.secondary_study_accession,
+        ):
+            if accession:
+                covered.add(accession)
+    return covered
 
 
 def _deduplicate_fastq(files: list[FastqFile]) -> list[FastqFile]:
@@ -120,14 +187,11 @@ def _deduplicate_values(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _with_geo_sample_metadata(item: FastqFile, sample_metadata_by_accession: dict) -> FastqFile:
-    metadata = (
-        sample_metadata_by_accession.get(item.query_accession)
-        or sample_metadata_by_accession.get(item.experiment_accession)
-        or sample_metadata_by_accession.get(item.run_accession)
-        or sample_metadata_by_accession.get(item.sample_accession)
-        or sample_metadata_by_accession.get(item.secondary_sample_accession)
-    )
+def _with_geo_sample_metadata(
+    item: FastqFile,
+    sample_metadata_by_accession: dict[str, GeoSampleMetadata | None],
+) -> FastqFile:
+    metadata = _geo_sample_metadata_for_fastq(item, sample_metadata_by_accession)
     if not metadata:
         return item
     return replace(
@@ -135,3 +199,24 @@ def _with_geo_sample_metadata(item: FastqFile, sample_metadata_by_accession: dic
         geo_sample_accession=metadata.geo_sample_accession,
         geo_sample_title=metadata.geo_sample_title,
     )
+
+
+def _geo_sample_metadata_for_fastq(
+    item: FastqFile,
+    sample_metadata_by_accession: dict[str, GeoSampleMetadata | None],
+) -> GeoSampleMetadata | None:
+    for accession in (
+        item.run_accession,
+        item.experiment_accession,
+        item.sample_accession,
+        item.secondary_sample_accession,
+        item.study_accession,
+        item.secondary_study_accession,
+        item.query_accession,
+    ):
+        if not accession:
+            continue
+        metadata = sample_metadata_by_accession.get(accession)
+        if metadata:
+            return metadata
+    return None

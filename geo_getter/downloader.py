@@ -118,9 +118,17 @@ class _PreparedDownloadRequest:
 class _ResponseTransferPlan:
     resume_from: int
     total: int
+    expected_response_bytes: int
     file_mode: str
     streamed_digest: object | None
     resumed: bool
+
+
+@dataclass(frozen=True)
+class _ContentRange:
+    start: int
+    end: int
+    total: int | None
 
 
 @dataclass(frozen=True)
@@ -237,7 +245,10 @@ def _execute_planned_downloads(
     worker_count = max(1, min(download_workers, len(items)))
     if worker_count == 1:
         for item in items:
-            outcome = download_handler(item, progress_callback, message_callback)
+            try:
+                outcome = download_handler(item, progress_callback, message_callback)
+            except Exception as exc:
+                outcome = _download_exception_outcome(item, exc)
             _record_download_outcome(output_dir, item, outcome, results, message_callback)
         return results
 
@@ -563,6 +574,7 @@ def _download_url_to_part_once(
                 progress_reporter=progress_reporter,
                 progress_base=transfer.resume_from,
                 total=transfer.total,
+                expected_response_bytes=transfer.expected_response_bytes,
                 streamed_digest=transfer.streamed_digest,
             )
     except (DownloadSizeMismatchError, DownloadNetworkError, DownloadLocalIoError):
@@ -630,27 +642,27 @@ def _plan_response_transfer(
     stream_md5: bool,
 ) -> _ResponseTransferPlan:
     appending = resume_from > 0 and _status_code(response) == 206
+    content_length = _content_length(response)
+    expected_response_bytes = content_length
     if appending:
-        _validate_content_range(response, resume_from)
+        content_range = _validate_content_range(response, resume_from, expected_size, content_length)
+        expected_response_bytes = content_range.end - content_range.start + 1
+        total = content_range.total or expected_size
     else:
         resume_from = 0
-    total = _response_total_size(response, resume_from, appending, expected_size)
+        total = _response_total_size(content_length, expected_size)
     return _ResponseTransferPlan(
         resume_from=resume_from,
         total=total,
+        expected_response_bytes=expected_response_bytes,
         file_mode="ab" if appending else "wb",
         streamed_digest=None if appending or not stream_md5 else hashlib.md5(),
         resumed=appending,
     )
 
 
-def _response_total_size(response: object, resume_from: int, appending: bool, expected_size: int) -> int:
-    total = _content_length(response)
-    if total and appending:
-        total += resume_from
-    if not total:
-        total = expected_size
-    return total
+def _response_total_size(content_length: int, expected_size: int) -> int:
+    return content_length or expected_size
 
 
 def _stream_response_to_part(
@@ -662,6 +674,7 @@ def _stream_response_to_part(
     progress_reporter: _ProgressReporter,
     progress_base: int,
     total: int,
+    expected_response_bytes: int,
     streamed_digest: object | None,
 ) -> None:
     handle = _open_part_for_transfer(part_path, file_mode)
@@ -678,6 +691,7 @@ def _stream_response_to_part(
                 downloaded += len(chunk)
                 progress_reporter.emit(progress_base + downloaded, total)
             progress_reporter.emit(progress_base + downloaded, total, force=True)
+        _validate_response_body_size(downloaded, expected_response_bytes)
     except (DownloadNetworkError, DownloadLocalIoError):
         raise
     except OSError as exc:
@@ -721,29 +735,72 @@ def _validated_download_size(part_path: Path, expected_size: int) -> int:
 def _content_length(response: object) -> int:
     headers = getattr(response, "headers", {})
     try:
-        return int(headers.get("Content-Length") or 0)
+        value = int(headers.get("Content-Length") or 0)
     except (TypeError, ValueError):
         return 0
+    return value if value > 0 else 0
 
 
-def _validate_content_range(response: object, expected_start: int) -> None:
+def _validate_response_body_size(downloaded: int, expected_response_bytes: int) -> None:
+    if expected_response_bytes > 0 and downloaded != expected_response_bytes:
+        raise DownloadNetworkError(
+            f"Response ended before the declared body length: expected={expected_response_bytes} actual={downloaded}"
+        )
+
+
+def _validate_content_range(
+    response: object,
+    expected_start: int,
+    expected_size: int,
+    content_length: int,
+) -> _ContentRange:
     headers = getattr(response, "headers", {})
     content_range = headers.get("Content-Range") if headers is not None else None
-    start = _content_range_start(content_range)
-    if start != expected_start:
+    parsed = _parse_content_range(content_range)
+    if parsed is None or parsed.start != expected_start:
         raise DownloadNetworkError(
             f"Invalid Content-Range for resume: expected_start={expected_start} content_range={content_range!r}",
             retryable=False,
         )
+    response_bytes = parsed.end - parsed.start + 1
+    if content_length > 0 and content_length != response_bytes:
+        raise DownloadNetworkError(
+            f"Invalid Content-Range length for resume: content_length={content_length} content_range={content_range!r}",
+            retryable=False,
+        )
+    total = parsed.total or expected_size
+    if total <= 0:
+        raise DownloadNetworkError(
+            f"Content-Range total size is required for resume when expected size is unknown: content_range={content_range!r}",
+            retryable=False,
+        )
+    if expected_size > 0 and total != expected_size:
+        raise DownloadNetworkError(
+            f"Content-Range total size does not match expected size: expected={expected_size} content_range={content_range!r}",
+            retryable=False,
+        )
+    if parsed.end + 1 != total:
+        raise DownloadNetworkError(
+            f"Content-Range does not cover the remaining response body: total={total} content_range={content_range!r}",
+            retryable=False,
+        )
+    return parsed
 
 
-def _content_range_start(value: object) -> int | None:
+def _parse_content_range(value: object) -> _ContentRange | None:
     if not value:
         return None
-    match = re.match(r"^bytes\s+(\d+)-\d+/(?:\d+|\*)$", str(value).strip(), re.IGNORECASE)
+    match = re.match(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", str(value).strip(), re.IGNORECASE)
     if not match:
         return None
-    return int(match.group(1))
+    start = int(match.group(1))
+    end = int(match.group(2))
+    if end < start:
+        return None
+    total = None if match.group(3) == "*" else int(match.group(3))
+    if total is not None and total <= end:
+        return None
+    return _ContentRange(start=start, end=end, total=total)
 
 
 def _status_code(response: object) -> int:

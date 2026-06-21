@@ -292,6 +292,73 @@ class ResolverTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, URL_UNAVAILABLE)
         self.assertEqual(raised.exception.detail, "SRP000001")
 
+    def test_geo_sample_metadata_prefers_row_specific_accessions_and_skips_covered_queries(self):
+        sample_one = GeoSampleMetadata("GSM000001", "sample one")
+        sample_two = GeoSampleMetadata("GSM000002", "sample two")
+
+        def geo_related(accession):
+            return GeoSoftParseResult(
+                related_accessions=["SRP000001", "SRX000001", "SRX000002"],
+                supplementary_files=[],
+                sample_metadata_by_accession={
+                    "SRP000001": None,
+                    "SRX000001": sample_one,
+                    "SRX000002": sample_two,
+                },
+                dataset_metadata=DatasetMetadata(accession=accession),
+            )
+
+        calls = []
+
+        def ena_fastq(accession, source_accession):
+            calls.append(accession)
+            if accession != "SRP000001":
+                raise AssertionError(f"covered accession should not be queried again: {accession}")
+            return [
+                FastqFile(
+                    source_accession=source_accession,
+                    query_accession=accession,
+                    run_accession="SRR000001",
+                    file_index=1,
+                    file_name="one.fastq.gz",
+                    url="https://example.invalid/one.fastq.gz",
+                    expected_md5="1" * 32,
+                    size_bytes=10,
+                    experiment_accession="SRX000001",
+                ),
+                FastqFile(
+                    source_accession=source_accession,
+                    query_accession=accession,
+                    run_accession="SRR000002",
+                    file_index=1,
+                    file_name="two.fastq.gz",
+                    url="https://example.invalid/two.fastq.gz",
+                    expected_md5="2" * 32,
+                    size_bytes=10,
+                    experiment_accession="SRX000002",
+                ),
+            ]
+
+        result = resolve_metadata("GSE000007", geo_related_lookup=geo_related, ena_fastq_lookup=ena_fastq)
+
+        self.assertEqual(calls, ["SRP000001"])
+        self.assertEqual([item.geo_sample_accession for item in result.fastq_files], ["GSM000001", "GSM000002"])
+        self.assertEqual([item.geo_sample_title for item in result.fastq_files], ["sample one", "sample two"])
+
+    def test_ambiguous_query_accession_metadata_is_not_assigned_without_row_specific_match(self):
+        def geo_related(accession):
+            return GeoSoftParseResult(
+                related_accessions=["SRP000001"],
+                supplementary_files=[],
+                sample_metadata_by_accession={"SRP000001": None},
+                dataset_metadata=DatasetMetadata(accession=accession),
+            )
+
+        result = resolve_metadata("GSE000008", geo_related_lookup=geo_related, ena_fastq_lookup=fake_ena_fastq)
+
+        self.assertEqual(result.fastq_files[0].geo_sample_accession, "")
+        self.assertEqual(result.fastq_files[0].geo_sample_title, "")
+
     def test_parallel_fastq_dedup_keeps_first_query_order(self):
         result = resolve_metadata(
             "GSE000006",

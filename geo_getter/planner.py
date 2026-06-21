@@ -304,17 +304,28 @@ def _estimate_resume_required_bytes(plan: DownloadPlan) -> int:
         expected_size = max(0, int(planned.fastq.size_bytes))
         if expected_size <= 0:
             continue
-        if planned.local_path.is_file() and existing_size(planned.local_path) == expected_size:
+        if _is_reusable_resume_candidate(planned.local_path, expected_size, planned.fastq.expected_md5):
             continue
         part_path = download_part_path(planned.local_path)
         part_size = existing_size(part_path)
         if 0 < part_size < expected_size:
             required += expected_size - part_size
             continue
-        if part_path.is_file() and part_size == expected_size:
+        if _is_reusable_resume_candidate(part_path, expected_size, planned.fastq.expected_md5):
             continue
         required += expected_size
     return required
+
+
+def _is_reusable_resume_candidate(path: Path, expected_size: int, expected_md5: str) -> bool:
+    if not path.is_file() or existing_size(path) != expected_size:
+        return False
+    if not expected_md5:
+        return True
+    try:
+        return _calculate_md5(path).lower() == expected_md5.lower()
+    except OSError:
+        return False
 
 
 def verify_fastq_manifest(manifest_path: str | Path, report_path: str | Path | None = None) -> dict:
@@ -508,12 +519,14 @@ def _raise_resume_mismatch(reason: str, path: Path, detail: str = "") -> None:
 
 
 def _disk_usage_path(path: Path) -> Path:
-    if path.exists():
-        return path
-    parent = path.parent
-    if parent.exists():
-        return parent
-    return path
+    current = path
+    while True:
+        if current.exists():
+            return current if current.is_dir() else current.parent
+        parent = current.parent
+        if parent == current:
+            return current
+        current = parent
 
 
 def _artifact_path(output_dir: str | Path, suffix: str) -> Path:
@@ -553,10 +566,20 @@ def _resolve_manifest_local_path(manifest_path: Path, row: dict[str, str]) -> Pa
         candidate = Path(raw_local_path)
         if candidate.is_absolute():
             return _resolve_legacy_absolute_manifest_local_path(manifest_path, candidate)
-        return (manifest_path.parent / candidate).resolve()
+        return _resolve_relative_manifest_local_path(manifest_path, candidate, raw_local_path)
     if file_name:
         return _manifest_sibling_path(manifest_path, file_name)
     return (manifest_path.parent / "__missing_manifest_local_path__").resolve()
+
+
+def _resolve_relative_manifest_local_path(manifest_path: Path, local_path: Path, raw_local_path: str) -> Path:
+    manifest_dir = manifest_path.parent.resolve()
+    candidate = (manifest_dir / local_path).resolve()
+    try:
+        candidate.relative_to(manifest_dir)
+    except ValueError as exc:
+        raise GeoGetterError(INVALID_MANIFEST, f"local_path_escapes_manifest_dir path={raw_local_path}") from exc
+    return candidate
 
 
 def _manifest_relative_local_path(manifest_path: Path, local_path: Path) -> str:
