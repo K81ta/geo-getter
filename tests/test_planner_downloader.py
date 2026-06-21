@@ -751,11 +751,13 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
 
-            with self.assertRaises(GeoGetterError) as context:
-                download_plan(plan)
+            results = download_plan(plan)
 
-            self.assertEqual(context.exception.code, "output_path_invalid")
+            self.assertEqual(results[0][1], "output_path_invalid")
             self.assertTrue(target.is_dir())
+            with download_log_path(output_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "output_path_invalid")
 
     def test_existing_directory_at_part_path_is_rejected_without_moving_it(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -775,11 +777,13 @@ class PlannerDownloaderTest(unittest.TestCase):
             )
             plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
 
-            with self.assertRaises(GeoGetterError) as context:
-                download_plan(plan)
+            results = download_plan(plan)
 
-            self.assertEqual(context.exception.code, "output_path_invalid")
+            self.assertEqual(results[0][1], "output_path_invalid")
             self.assertTrue(part_target.is_dir())
+            with download_log_path(output_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "output_path_invalid")
 
     def test_existing_mismatched_file_is_quarantined_before_redownload(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1145,6 +1149,28 @@ class PlannerDownloaderTest(unittest.TestCase):
 
             self.assertEqual(resume.required_bytes, 3)
 
+    def test_resume_required_bytes_rechecks_same_size_existing_md5(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            expected_data = b"good"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5=hashlib.md5(expected_data).hexdigest(),
+                size_bytes=len(expected_data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            write_fastq_outputs(plan)
+            plan.files[0].local_path.write_bytes(b"bad!")
+
+            resume = validate_resume_artifacts(plan)
+
+            self.assertEqual(resume.required_bytes, len(expected_data))
+
     def test_resume_existing_fastq_is_verified_at_download_time(self):
         with tempfile.TemporaryDirectory() as temp:
             output_dir = Path(temp) / "out"
@@ -1299,6 +1325,48 @@ class PlannerDownloaderTest(unittest.TestCase):
                 download_url_to_part("https://example.invalid/fixture.fastq.gz", local_path)
 
             self.assertEqual(response.read_sizes[0], DEFAULT_DOWNLOAD_CHUNK_SIZE)
+
+    def test_download_rejects_short_content_length_without_expected_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "supplementary.txt"
+            responses = [
+                FakeUrlopenResponse(data=b"abc", headers={"Content-Length": "10"})
+                for _index in range(4)
+            ]
+
+            def urlopen_short_body(_request, timeout):
+                return responses.pop(0)
+
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_short_body),
+                mock.patch("geo_getter.downloader.time.sleep", return_value=None),
+            ):
+                with self.assertRaises(DownloadNetworkError):
+                    download_url_to_part("https://example.invalid/supplementary.txt", local_path)
+
+            self.assertFalse(local_path.exists())
+            self.assertEqual(local_path.with_name("supplementary.txt.part").read_bytes(), b"abc")
+
+    def test_download_url_without_md5_rejects_short_content_length(self):
+        with tempfile.TemporaryDirectory() as temp:
+            local_path = Path(temp) / "supplementary.txt"
+            responses = [
+                FakeUrlopenResponse(data=b"abc", headers={"Content-Length": "10"})
+                for _index in range(4)
+            ]
+
+            def urlopen_short_body(_request, timeout):
+                return responses.pop(0)
+
+            with (
+                mock.patch("geo_getter.downloader.urllib.request.urlopen", side_effect=urlopen_short_body),
+                mock.patch("geo_getter.downloader.time.sleep", return_value=None),
+            ):
+                outcome = download_url_without_md5("https://example.invalid/supplementary.txt", local_path)
+
+            self.assertEqual(outcome.status, "network_failed")
+            self.assertFalse(local_path.exists())
+            self.assertEqual(local_path.with_name("supplementary.txt.part").read_bytes(), b"abc")
 
     def test_download_url_without_md5_finalizes_part_as_download_complete(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1473,13 +1541,20 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual((output_dir / "fixture.fastq.gz").read_bytes(), source_data)
 
     def test_resume_rejects_missing_or_mismatched_content_range(self):
-        for content_range in ("", "bytes 0-2/6"):
-            with self.subTest(content_range=content_range):
+        cases = (
+            ("", "3"),
+            ("bytes 0-2/6", "3"),
+            ("bytes 3-4/6", "2"),
+            ("bytes 3-5/7", "3"),
+            ("bytes 3-5/6", "4"),
+        )
+        for content_range, content_length in cases:
+            with self.subTest(content_range=content_range, content_length=content_length):
                 with tempfile.TemporaryDirectory() as temp:
                     local_path = Path(temp) / "fixture.fastq.gz"
                     part = Path(temp) / "fixture.fastq.gz.part"
                     part.write_bytes(b"abc")
-                    headers = {"Content-Length": "3"}
+                    headers = {"Content-Length": content_length}
                     if content_range:
                         headers["Content-Range"] = content_range
                     response = FakeUrlopenResponse(data=b"def", status=206, headers=headers)
@@ -1813,6 +1888,30 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertIn("network_failed", log_text)
             self.assertIn("IncompleteRead", log_text)
 
+    def test_single_worker_exception_is_recorded_as_file_outcome(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url="https://example.invalid/fixture.fastq.gz",
+                expected_md5="1" * 32,
+                size_bytes=10,
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+            plan.files[0].local_path.mkdir()
+
+            results = download_plan(plan, download_workers=1)
+
+            self.assertEqual(results[0][1], "output_path_invalid")
+            with download_log_path(output_dir).open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(rows[-1]["status"], "output_path_invalid")
+            self.assertEqual(rows[-1]["file_name"], "fixture.fastq.gz")
+
     def test_capacity_shortage_raises_numeric_error_contract(self):
         plan = DownloadPlan(
             app_version="test",
@@ -2122,6 +2221,29 @@ class PlannerDownloaderTest(unittest.TestCase):
                 row = next(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(result["status_counts"], {"md5_verified": 1})
             self.assertEqual(row["local_path"], str(target_path.resolve()))
+
+    def test_verify_fastq_manifest_rejects_relative_local_path_escape(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "out"
+            output_dir.mkdir()
+            outside = Path(temp) / "outside.fastq.gz"
+            outside.write_bytes(b"outside")
+            manifest = output_dir / "sample_fastq_manifest.tsv"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "source_accession\tquery_accession\trun_accession\tfile_index\tfile_name\turl\texpected_md5\tsize_bytes\tlocal_path\tstatus",
+                        f"GSE\tSRP\tSRR\t1\toutside.fastq.gz\thttps://example.invalid/outside.fastq.gz\t\t{outside.stat().st_size}\t../outside.fastq.gz\tplanned",
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            with self.assertRaises(GeoGetterError) as context:
+                verify_fastq_manifest(manifest)
+
+            self.assertEqual(context.exception.code, "invalid_manifest")
+            self.assertIn("local_path_escapes_manifest_dir", context.exception.detail)
 
     def test_verify_fastq_manifest_does_not_search_file_name_when_local_path_is_present(self):
         with tempfile.TemporaryDirectory() as temp:

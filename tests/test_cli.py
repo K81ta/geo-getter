@@ -403,6 +403,38 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["command"], "preflight-json")
         self.assertIn("path", payload)
 
+    def test_preflight_path_length_counts_utf16_code_units(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(input_json),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / ("\U0001f600" * 120)),
+                ],
+                "path_too_long",
+            )
+
+        self.assertEqual(payload["command"], "preflight-json")
+        self.assertIn("path", payload)
+
+    def test_preflight_json_accepts_nested_output_when_existing_ancestor_is_writable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_json = self.write_single_fastq_payload(root)
+            out_dir = root / "missing" / "nested" / "out"
+
+            preflight = self.run_preflight_json(input_json, "0", "", out_dir)
+
+        self.assertEqual(preflight["event"], "done")
+        self.assertEqual(preflight["output_dir"], str(out_dir.resolve()))
+        self.assertFalse(out_dir.exists())
+
     def test_preflight_json_rejects_empty_overall_selection_with_structured_code(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

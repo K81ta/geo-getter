@@ -721,11 +721,20 @@ def _prepare_download_output_dir(output_dir: str | Path, *, create_output_dir: b
 
 
 def _preflight_writable_dir(output_dir: Path) -> Path:
-    if output_dir.exists():
-        return output_dir
-    parent = output_dir.parent
-    if parent.exists() and parent.is_dir():
-        return parent
+    current = output_dir if output_dir.exists() else output_dir.parent
+    while True:
+        if current.exists():
+            if current.is_dir():
+                return current
+            raise GeoGetterError(
+                OUTPUT_PATH_INVALID,
+                f"reason=cannot_create_output path={output_dir} blocked_by={current}",
+                extra={"path_error_code": "cannot_create_output", "output_dir": str(output_dir), "path": str(current)},
+            )
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
     raise GeoGetterError(
         OUTPUT_PATH_INVALID,
         f"reason=parent_missing path={output_dir}",
@@ -770,12 +779,28 @@ def _assert_output_dir_writable(output_dir: Path) -> None:
 def _ensure_preflight_path_lengths(paths: list[Path]) -> None:
     for path in paths:
         text = str(path)
-        if len(text) >= 260:
+        if _windows_utf16_code_units(text) >= 260:
             raise GeoGetterError(
                 PATH_TOO_LONG,
                 f"path={text}",
                 extra={"path": text},
             )
+        for part in _path_name_parts(path):
+            if _windows_utf16_code_units(part) > 255:
+                raise GeoGetterError(
+                    PATH_TOO_LONG,
+                    f"path={text} component={part}",
+                    extra={"path": text},
+                )
+
+
+def _windows_utf16_code_units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _path_name_parts(path: Path) -> list[str]:
+    anchor = path.anchor
+    return [part for part in path.parts if part and part != anchor]
 
 
 def _free_bytes_for_output(output_dir: Path) -> int:

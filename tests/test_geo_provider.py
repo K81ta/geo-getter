@@ -109,6 +109,26 @@ plain preamble line
         self.assertEqual(metadata.geo_sample_accession, "GSM000001")
         self.assertEqual(metadata.geo_sample_title, "sample title")
 
+    def test_parse_marks_shared_sample_relation_metadata_ambiguous(self):
+        parsed = parse_soft(
+            """
+^SERIES = GSE000001
+^SAMPLE = GSM000001
+!Sample_title = sample one
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000001
+^SAMPLE = GSM000002
+!Sample_title = sample two
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRP000001
+!Sample_relation = SRA: https://www.ncbi.nlm.nih.gov/sra?term=SRX000002
+""",
+            "GSE000001",
+        )
+
+        self.assertIsNone(parsed.sample_metadata_by_accession["SRP000001"])
+        self.assertEqual(parsed.sample_metadata_by_accession["SRX000001"].geo_sample_accession, "GSM000001")
+        self.assertEqual(parsed.sample_metadata_by_accession["SRX000002"].geo_sample_accession, "GSM000002")
+
     def test_parse_appends_sample_related_after_series_related_without_duplicates(self):
         parsed = parse_soft(
             """

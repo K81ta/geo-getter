@@ -56,6 +56,8 @@ class PathSafetyTest(unittest.TestCase):
         self.assertEqual(safe_file_name("CON.txt", "download.txt"), "_CON.txt")
         self.assertEqual(safe_file_name("../escape:bad?.fastq.gz", "download.fastq.gz"), "_escape_bad_.fastq.gz")
         self.assertEqual(safe_file_name(" . ", "download.fastq.gz"), "download.fastq.gz")
+        self.assertEqual(safe_file_name("sample\x00line\ncol\t.txt", "download.txt"), "sample_line_col_.txt")
+        self.assertEqual(safe_file_name("sample\x7f.txt", "download.txt"), "sample_.txt")
 
     def test_child_path_rejects_path_traversal(self):
         with tempfile.TemporaryDirectory() as temp:
