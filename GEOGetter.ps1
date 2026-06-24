@@ -2033,6 +2033,26 @@ function Append-DownloadMessageFromEvent {
     }
 }
 
+function Format-DownloadFailureDetailLog {
+    param([object]$Failure)
+    $status = [string](Get-JsonPropertyValue $Failure "status")
+    $fileName = [string](Get-JsonPropertyValue $Failure "file_name")
+    $message = [string](Get-JsonPropertyValue $Failure "message")
+    $parts = @($status, $fileName, $message) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    return ($parts -join ": ")
+}
+
+function Append-DownloadFailureDetailsFromDoneEvent {
+    param([object]$Event)
+    if (-not ($Event.PSObject.Properties.Name -contains "failure_details")) { return }
+    foreach ($failure in @($Event.failure_details)) {
+        $line = Format-DownloadFailureDetailLog $failure
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            Append-Log $line
+        }
+    }
+}
+
 function Complete-DownloadDoneEvent {
     param([object]$Event)
     Set-OperationDoneEvent "download" $Event
@@ -2043,6 +2063,7 @@ function Complete-DownloadDoneEvent {
     $progressBar.Value = 100
     if ($Event.fastq_manifest) { Append-Log ((T "fastqManifestLog") -f $Event.fastq_manifest) }
     if ($Event.supplementary_manifest) { Append-Log ((T "supplementaryManifestLog") -f $Event.supplementary_manifest) }
+    Append-DownloadFailureDetailsFromDoneEvent $Event
     Append-Log ((T "downloadLogLog") -f $Event.download_log)
     Complete-DownloadIfReady
 }
@@ -4561,6 +4582,10 @@ if ($SelfTest) {
     Handle-DownloadLine '{"event":"done","statuses":["md5_unavailable"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv","resume_required_bytes":123}'
     Assert-Equal $statusLabel.Text (T "downloading") "done event does not finalize status before exit and stdout close"
     Assert-Equal $script:LastResumeRequiredBytes ([Int64]123) "download done event records resume required bytes"
+    $logBox.Clear()
+    Handle-DownloadLine '{"event":"done","statuses":["local_io_failed"],"output_dir":"C:\\tmp\\SELFTEST","fastq_manifest":"","supplementary_manifest":"","download_log":"C:\\tmp\\SELFTEST\\SELFTEST_download_log.tsv","failure_details":[{"kind":"fastq","file_name":"large1.fastq.gz","status":"local_io_failed","message":"Could not append download log in C:\\tmp\\SELFTEST: log locked"}]}'
+    Assert-Contains $logBox.Text "Could not append download log" "download done event logs failure detail message"
+    Assert-Contains $logBox.Text "large1.fastq.gz" "download done event logs failure detail file name"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_verified", "download_complete") }) 0 $false) "complete" "final state all ok"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("md5_unavailable") }) 0 $false) "completeUnverified" "final state md5 unavailable"
     Assert-Equal (Get-DownloadFinalStatusKey ([pscustomobject]@{ statuses = @("network_failed") }) 1 $false) "completePartial" "final state network failed"

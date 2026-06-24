@@ -2027,6 +2027,44 @@ class CliTest(unittest.TestCase):
             self.assertEqual(rows[-1]["status"], "local_io_failed")
             self.assertIn("Could not move partial download into place", rows[-1]["message"])
 
+    def test_selected_download_reports_log_write_failure_detail_in_done_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000005",
+                "primary_accession": "GSE000005",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000005",
+                        "query_accession": "SRP000005",
+                        "run_accession": "SRR000005",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+
+            with mock.patch("geo_getter.downloader.append_download_log", side_effect=OSError("log locked")):
+                exit_code, stdout = self.run_selected_download_json(input_json, "0", "", root / "out")
+
+            self.assertEqual(exit_code, 1)
+            done = json.loads(stdout.splitlines()[-1])
+            self.assertEqual(done["statuses"], ["local_io_failed"])
+            self.assertEqual(done["failure_details"][0]["kind"], "fastq")
+            self.assertEqual(done["failure_details"][0]["file_name"], "source.fastq.gz")
+            self.assertEqual(done["failure_details"][0]["status"], "local_io_failed")
+            self.assertIn("Could not append download log", done["failure_details"][0]["message"])
+            self.assertIn("log locked", done["failure_details"][0]["message"])
+
     def test_internal_manifest_verification_bridge_writes_json_event(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

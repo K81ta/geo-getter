@@ -93,6 +93,8 @@ _FASTQ_REQUIRED_FIELDS = (
 _SUPPLEMENTARY_PAYLOAD_FIELDS = {field.name for field in fields(SupplementaryFile)}
 _SUPPLEMENTARY_REQUIRED_FIELDS = ("source_accession", "scope", "name", "url")
 _DOWNLOAD_PAYLOAD_REQUIRED_FIELDS = ("input_text", "primary_accession")
+_DOWNLOAD_OK_STATUSES = {MD5_VERIFIED, MD5_UNAVAILABLE, DOWNLOAD_COMPLETE}
+DownloadResultPayload = dict[str, str]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -388,14 +390,15 @@ def _selected_download_json(
         require_resume_for_nonempty=True,
     )
     worker_count = normalize_download_workers(download_workers)
-    statuses: list[str] = []
-    statuses.extend(_download_fastq_selection(cli_plan, worker_count))
-    statuses.extend(_download_supplementary_selection(cli_plan))
-    _print_json_event(_download_done_payload(cli_plan, statuses, worker_count))
+    results: list[DownloadResultPayload] = []
+    results.extend(_download_fastq_selection(cli_plan, worker_count))
+    results.extend(_download_supplementary_selection(cli_plan))
+    statuses = [result["status"] for result in results]
+    _print_json_event(_download_done_payload(cli_plan, statuses, worker_count, results))
     return _download_exit_code(statuses)
 
 
-def _download_fastq_selection(cli_plan: CliDownloadPlan, worker_count: int) -> list[str]:
+def _download_fastq_selection(cli_plan: CliDownloadPlan, worker_count: int) -> list[DownloadResultPayload]:
     if not cli_plan.fastq_plan:
         initialize_log(cli_plan.output_dir)
         return []
@@ -430,10 +433,13 @@ def _download_fastq_selection(cli_plan: CliDownloadPlan, worker_count: int) -> l
         resume_artifacts=cli_plan.resume_artifacts,
         download_workers=worker_count,
     )
-    return [status for _planned, status, _message in results]
+    return [
+        _download_result_payload("fastq", planned.fastq.file_name, status, message)
+        for planned, status, message in results
+    ]
 
 
-def _download_supplementary_selection(cli_plan: CliDownloadPlan) -> list[str]:
+def _download_supplementary_selection(cli_plan: CliDownloadPlan) -> list[DownloadResultPayload]:
     if not cli_plan.planned_supplementary:
         return []
 
@@ -449,15 +455,28 @@ def _download_supplementary_selection(cli_plan: CliDownloadPlan) -> list[str]:
         ),
         message_callback=_print_download_message,
     )
-    return [status for _item, status, _message in results]
+    return [
+        _download_result_payload(item.kind, item.file_name, status, message)
+        for item, status, message in results
+    ]
+
+
+def _download_result_payload(kind: str, file_name: str, status: str, message: str) -> DownloadResultPayload:
+    return {
+        "kind": kind,
+        "file_name": file_name,
+        "status": status,
+        "message": message,
+    }
 
 
 def _download_done_payload(
     cli_plan: CliDownloadPlan,
     statuses: list[str],
     worker_count: int,
+    results: list[DownloadResultPayload],
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "event": "done",
         "statuses": statuses,
         "output_dir": str(cli_plan.output_dir),
@@ -468,11 +487,22 @@ def _download_done_payload(
         "resume_required_bytes": cli_plan.resume_required_bytes,
         "download_workers": worker_count,
     }
+    failure_details = _download_failure_details(results)
+    if failure_details:
+        payload["failure_details"] = failure_details
+    return payload
+
+
+def _download_failure_details(results: list[DownloadResultPayload]) -> list[DownloadResultPayload]:
+    return [
+        result
+        for result in results
+        if result["status"] not in _DOWNLOAD_OK_STATUSES
+    ]
 
 
 def _download_exit_code(statuses: list[str]) -> int:
-    ok_statuses = {MD5_VERIFIED, MD5_UNAVAILABLE, DOWNLOAD_COMPLETE}
-    return 0 if statuses and all(status in ok_statuses for status in statuses) else 1
+    return 0 if statuses and all(status in _DOWNLOAD_OK_STATUSES for status in statuses) else 1
 
 
 def _preflight_json(
