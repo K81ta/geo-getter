@@ -290,6 +290,61 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(payload["command"], "selected-download-json")
 
+    def test_download_payload_schema_errors_are_invalid_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            list_payload = root / "list-payload.json"
+            list_payload.write_text(json.dumps([]), encoding="utf-8")
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(list_payload),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "invalid_input",
+            )
+            self.assertIn("download payload must be an object", payload["detail"])
+
+            missing_fastq_field = root / "missing-fastq-field.json"
+            missing_fastq_field.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE",
+                        "primary_accession": "GSE",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE",
+                                "query_accession": "SRP",
+                                "run_accession": "SRR",
+                                "file_index": 1,
+                                "file_name": "fixture.fastq.gz",
+                                "url": "file:///fixture.fastq.gz",
+                                "expected_md5": "",
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(missing_fastq_field),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "invalid_input",
+            )
+            self.assertIn("FASTQ item is missing required field(s): size_bytes", payload["detail"])
+
     def test_preflight_json_rejects_blank_output_dir(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

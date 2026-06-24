@@ -2482,7 +2482,7 @@ function Start-ResolveProcess {
         throw (T "resolveAlreadyRunning")
     }
     $script:LastInputText = $InputText
-    Clear-ResolveRunState
+    Clear-ResolvedState -DeleteResolvedJson
     $script:LastOperationError = $null
     $script:ResolveInputPath = New-ResolveInputFile $InputText
     (Get-OperationState "resolve").LastArguments = Get-ResolvePythonArguments $script:ResolveInputPath
@@ -2542,6 +2542,9 @@ function Start-ManifestVerificationProcess {
 }
 
 function Start-DownloadProcess {
+    if (Test-OperationRunning "download") {
+        throw (T "downloadAlreadyRunning")
+    }
     Clear-DownloadRunState
     Clear-VerificationRunState
     $script:LastOperationError = $null
@@ -2822,13 +2825,13 @@ function Invoke-PythonProcessStartInfo {
     try {
         $process.StartInfo = $StartInfo
         [void]$process.Start()
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
-            Stdout = $stdout
-            Stderr = $stderr
+            Stdout = $stdoutTask.GetAwaiter().GetResult()
+            Stderr = $stderrTask.GetAwaiter().GetResult()
         }
     }
     finally {
@@ -3583,7 +3586,6 @@ function New-MainForm {
 
     $fetchButton.Add_Click({
         try {
-            Clear-ResolvedState -DeleteResolvedJson
             Set-Busy $true
             $statusLabel.Text = T "fetching"
             $progressBar.Style = "Marquee"
@@ -4011,6 +4013,10 @@ if ($SelfTest) {
     $script:HelperBridge = $null
     Dispose-ProcessQuietly $helperProcess
     Update-CancelButton
+    $largeStderrResult = Invoke-PythonCli -Arguments @("-c", 'import sys; sys.stderr.write("e" * 200000); sys.stderr.flush(); print("stdout-after-stderr")')
+    Assert-Equal $largeStderrResult.ExitCode 0 "sync Python helper handles large stderr"
+    Assert-Contains $largeStderrResult.Stdout "stdout-after-stderr" "sync Python helper preserves stdout after large stderr"
+    Assert-Equal ($largeStderrResult.Stderr.Length -ge 200000) $true "sync Python helper captures large stderr"
     $encodingResult = Invoke-PythonCli -Arguments @("-m", "geo_getter.cli", "resolve-json", "")
     Assert-Equal $encodingResult.ExitCode 1 "empty input error exit code"
     Assert-Contains $encodingResult.Stderr "input_text or --input-file" "CLI stderr stays English"
@@ -4853,7 +4859,33 @@ if ($SelfTest) {
     Assert-Equal (Get-OperationState "download").Process $null "download start validation does not create process"
     Assert-Equal $script:LastOperationError.phase "download_preflight" "download start validation records phase"
     Assert-Equal $script:LastOperationError.code "resolved_state_invalid" "download start validation records code"
+    $runningDownloadProbe = New-Object System.Diagnostics.Process
+    $runningDownloadProbe.StartInfo = New-PythonProcessStartInfo -Arguments @("-c", "import time; time.sleep(30)")
+    $downloadAlreadyRunningMessage = ""
+    try {
+        [void]$runningDownloadProbe.Start()
+        (Get-OperationState "download").Process = $runningDownloadProbe
+        try {
+            Start-DownloadProcess
+        }
+        catch {
+            $downloadAlreadyRunningMessage = $_.Exception.Message
+        }
+        Assert-Equal $downloadAlreadyRunningMessage (T "downloadAlreadyRunning") "download start rejects running download"
+        Assert-Equal (Get-OperationState "download").Process $runningDownloadProbe "download running guard preserves existing process"
+    }
+    finally {
+        if (Test-ProcessRunning $runningDownloadProbe) {
+            try { $runningDownloadProbe.Kill() } catch { }
+            try { [void]$runningDownloadProbe.WaitForExit(5000) } catch { }
+        }
+        Dispose-ProcessQuietly $runningDownloadProbe
+        (Get-OperationState "download").Process = $null
+    }
     $inputBox.Text = "SELFTEST"
+    $script:Resolved = $resolvedFixture
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($script:Resolved | ConvertTo-Json -Depth 10), $utf8NoBom)
+    $script:LastResolvedInputText = Normalize-InputText ([string]$script:Resolved.input_text)
 
     $originalPythonExe = $PythonExe
     $PythonExe = Join-Path $selfTestRoot "missing-python.exe"
@@ -4886,6 +4918,8 @@ if ($SelfTest) {
         }
     )
     Assert-Equal $leakedResolveInputs.Count 0 "resolve start failure removes temp input file"
+    Assert-Equal $script:Resolved $null "resolve start clears stale resolved state"
+    Assert-Equal (Test-Path -LiteralPath $script:ResolvedJsonPath) $false "resolve start clears stale resolved json"
     Assert-Equal $script:LastOperationError.phase "resolve_process_start" "resolve start failure records phase"
     Assert-Equal $script:LastOperationError.code "process_start_failed" "resolve start failure records code"
 
@@ -4906,6 +4940,8 @@ if ($SelfTest) {
     Assert-Equal $script:LastOperationError.phase "verification_process_start" "manifest verification start failure records phase"
     Assert-Equal $script:LastOperationError.code "process_start_failed" "manifest verification start failure records code"
 
+    Apply-ResolvedResult $resolvedFixture
+    [System.IO.File]::WriteAllText($script:ResolvedJsonPath, ($script:Resolved | ConvertTo-Json -Depth 10), $utf8NoBom)
     $outputBox.Text = Join-Path $selfTestRoot "download start failure output"
     $fastqGrid.Rows[0].Cells["selected"].Value = $true
     $suppGrid.Rows[0].Cells["supp_selected"].Value = $false
