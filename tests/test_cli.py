@@ -290,6 +290,61 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(payload["command"], "selected-download-json")
 
+    def test_download_payload_schema_errors_are_invalid_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            list_payload = root / "list-payload.json"
+            list_payload.write_text(json.dumps([]), encoding="utf-8")
+            payload = self.assert_cli_error(
+                [
+                    "preflight-json",
+                    "--input-json",
+                    str(list_payload),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "invalid_input",
+            )
+            self.assertIn("download payload must be an object", payload["detail"])
+
+            missing_fastq_field = root / "missing-fastq-field.json"
+            missing_fastq_field.write_text(
+                json.dumps(
+                    {
+                        "input_text": "GSE",
+                        "primary_accession": "GSE",
+                        "fastq_files": [
+                            {
+                                "source_accession": "GSE",
+                                "query_accession": "SRP",
+                                "run_accession": "SRR",
+                                "file_index": 1,
+                                "file_name": "fixture.fastq.gz",
+                                "url": "file:///fixture.fastq.gz",
+                                "expected_md5": "",
+                            }
+                        ],
+                        "supplementary_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self.assert_cli_error(
+                [
+                    "selected-download-json",
+                    "--input-json",
+                    str(missing_fastq_field),
+                    "--fastq-indices",
+                    "0",
+                    "--out",
+                    str(root / "out"),
+                ],
+                "invalid_input",
+            )
+            self.assertIn("FASTQ item is missing required field(s): size_bytes", payload["detail"])
+
     def test_preflight_json_rejects_blank_output_dir(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1971,6 +2026,44 @@ class CliTest(unittest.TestCase):
                 rows = list(csv.DictReader(handle, delimiter="\t"))
             self.assertEqual(rows[-1]["status"], "local_io_failed")
             self.assertIn("Could not move partial download into place", rows[-1]["message"])
+
+    def test_selected_download_reports_log_write_failure_detail_in_done_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.fastq.gz"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source.write_bytes(data)
+            payload = {
+                "input_text": "GSE000005",
+                "primary_accession": "GSE000005",
+                "fastq_files": [
+                    {
+                        "source_accession": "GSE000005",
+                        "query_accession": "SRP000005",
+                        "run_accession": "SRR000005",
+                        "file_index": 1,
+                        "file_name": "source.fastq.gz",
+                        "url": source.as_uri(),
+                        "expected_md5": hashlib.md5(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                ],
+                "supplementary_files": [],
+            }
+            input_json = root / "payload.json"
+            input_json.write_text(json.dumps(payload), encoding="utf-8")
+
+            with mock.patch("geo_getter.downloader.append_download_log", side_effect=OSError("log locked")):
+                exit_code, stdout = self.run_selected_download_json(input_json, "0", "", root / "out")
+
+            self.assertEqual(exit_code, 1)
+            done = json.loads(stdout.splitlines()[-1])
+            self.assertEqual(done["statuses"], ["local_io_failed"])
+            self.assertEqual(done["failure_details"][0]["kind"], "fastq")
+            self.assertEqual(done["failure_details"][0]["file_name"], "source.fastq.gz")
+            self.assertEqual(done["failure_details"][0]["status"], "local_io_failed")
+            self.assertIn("Could not append download log", done["failure_details"][0]["message"])
+            self.assertIn("log locked", done["failure_details"][0]["message"])
 
     def test_internal_manifest_verification_bridge_writes_json_event(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -381,17 +381,24 @@ def _record_download_outcome(
     results: list[tuple[_PlannedDownload, str, str]],
     message_callback: MessageCallback | None,
 ) -> None:
-    append_download_log(
-        output_dir,
-        item.run_accession,
-        item.file_name,
-        outcome.status,
-        item.expected_md5,
-        outcome.actual_md5,
-        item.expected_bytes,
-        outcome.bytes_downloaded,
-        outcome.message,
-    )
+    try:
+        append_download_log(
+            output_dir,
+            item.run_accession,
+            item.file_name,
+            outcome.status,
+            item.expected_md5,
+            outcome.actual_md5,
+            item.expected_bytes,
+            outcome.bytes_downloaded,
+            outcome.message,
+        )
+    except OSError as exc:
+        outcome = download_error_outcome(
+            item.local_path,
+            DownloadLocalIoError(f"Could not append download log in {output_dir}: {exc}"),
+            bytes_downloaded=outcome.bytes_downloaded,
+        )
     _emit(message_callback, f"{outcome.status}: {item.file_name}")
     result_message = outcome.result_message if outcome.result_message is not None else outcome.message
     results.append((item, outcome.status, result_message))

@@ -282,6 +282,25 @@ GUI は検証済みインストーラーを起動し、GEOGetter を終了する
 
 終了コード `0` は、選択ファイルの status がすべて `md5_verified`、`md5_unavailable`、または `download_complete` の場合に返る。`md5_unavailable` は警告付き完了として扱い、GUI では「完了（MD5未検証あり）」と表示する。
 
+ファイル単位の失敗がある場合、`done` には `failure_details` が追加される。GUI はこの内容をログに表示する。
+
+```json
+{
+  "event": "done",
+  "statuses": ["local_io_failed"],
+  "output_dir": "C:\\path\\GSE52778",
+  "download_log": "C:\\path\\GSE52778\\GSE52778_download_log.tsv",
+  "failure_details": [
+    {
+      "kind": "fastq",
+      "file_name": "SRR000001_1.fastq.gz",
+      "status": "local_io_failed",
+      "message": "Could not append download log in C:\\path\\GSE52778: access denied"
+    }
+  ]
+}
+```
+
 プロセス全体の失敗では、CLI は stderr に 1 行の error JSON を出す。stdout の `progress` / `message` / `done` 契約には混ぜない。
 
 ```json
@@ -294,7 +313,7 @@ GUI は検証済みインストーラーを起動し、GEOGetter を終了する
 }
 ```
 
-ファイル単位の保存失敗は `event: error` ではなく、従来どおり `done.statuses` と download log に残す。
+ファイル単位の保存失敗は `event: error` ではなく、`done.statuses`、`done.failure_details`、download log に残す。
 
 キャンセル時は、GUI が実行中の Python subprocess を停止する。`.part` は残る。同じ実保存フォルダと同じ local path を使う場合は、downloader 側で `.part` を再利用できる。
 
@@ -640,7 +659,7 @@ Python 側の status / error code は英語で統一する。GUI の主要ラベ
 
 保存済み FASTQ manifest 再確認では、すべての FASTQ が `md5_verified` の場合だけ終了コード `0` を返す。`md5_unavailable`, `missing`, `size_mismatch`, `md5_mismatch` がある場合は、`verification_report.tsv` を作成したうえで終了コード `1` を返す。
 
-ファイル単位の失敗は download log に残し、次のファイル処理へ進む。metadata 解決時に情報が不足した場合は `warnings` に記録し、該当する項目は空欄のまま返す。
+ファイル単位の失敗は `done.failure_details` と download log に残し、次のファイル処理へ進む。metadata 解決時に情報が不足した場合は `warnings` に記録し、該当する項目は空欄のまま返す。
 
 主な update error code:
 

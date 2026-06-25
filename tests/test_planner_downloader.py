@@ -241,6 +241,32 @@ class PlannerDownloaderTest(unittest.TestCase):
             self.assertEqual((output_dir / "fixture1.fastq.gz").read_bytes(), data_by_name["fixture1.fastq.gz"])
             self.assertEqual((output_dir / "fixture2.fastq.gz").read_bytes(), data_by_name["fixture2.fastq.gz"])
 
+    def test_download_plan_reports_log_write_failure_as_local_io_failed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output_dir = root / "out"
+            data = b"@r1\nACGT\n+\n!!!!\n"
+            source = root / "fixture.fastq.gz"
+            source.write_bytes(data)
+            fastq = FastqFile(
+                source_accession="FIXTURE",
+                query_accession="FIXTURE",
+                run_accession="FIXTURE_RUN",
+                file_index=1,
+                file_name="fixture.fastq.gz",
+                url=source.as_uri(),
+                expected_md5=hashlib.md5(data).hexdigest(),
+                size_bytes=len(data),
+            )
+            plan = build_download_plan("FIXTURE", "FIXTURE", [fastq], output_dir)
+
+            with mock.patch("geo_getter.downloader.append_download_log", side_effect=OSError("log locked")):
+                results = download_plan(plan)
+
+            self.assertEqual(results[0][1], "local_io_failed")
+            self.assertIn("Could not append download log", results[0][2])
+            self.assertTrue((output_dir / "fixture.fastq.gz").exists())
+
     def test_parallel_download_logs_geogetter_error_and_continues(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

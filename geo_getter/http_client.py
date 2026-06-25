@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -20,7 +21,7 @@ def fetch_text(url: str, timeout: int = 60, headers: dict[str, str] | None = Non
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = response.read()
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError) as exc:
         raise GeoGetterError("network_failed", str(exc)) from exc
     return data.decode("utf-8", "replace")
 

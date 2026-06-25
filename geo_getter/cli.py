@@ -79,8 +79,22 @@ class CliDownloadPlan:
         return self.resume_artifacts.required_bytes
 
 
+_FASTQ_PAYLOAD_FIELDS = {field.name for field in fields(FastqFile)}
+_FASTQ_REQUIRED_FIELDS = (
+    "source_accession",
+    "query_accession",
+    "run_accession",
+    "file_index",
+    "file_name",
+    "url",
+    "expected_md5",
+    "size_bytes",
+)
 _SUPPLEMENTARY_PAYLOAD_FIELDS = {field.name for field in fields(SupplementaryFile)}
 _SUPPLEMENTARY_REQUIRED_FIELDS = ("source_accession", "scope", "name", "url")
+_DOWNLOAD_PAYLOAD_REQUIRED_FIELDS = ("input_text", "primary_accession")
+_DOWNLOAD_OK_STATUSES = {MD5_VERIFIED, MD5_UNAVAILABLE, DOWNLOAD_COMPLETE}
+DownloadResultPayload = dict[str, str]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -303,7 +317,7 @@ def _build_cli_download_plan(
     require_resume_for_nonempty: bool = False,
     create_output_dir: bool = True,
 ) -> CliDownloadPlan:
-    payload = _load_json(input_json)
+    payload = _load_download_payload(input_json)
     selected_fastq = _selected_fastq_from_payload(payload, fastq_indices) if fastq_indices.strip() else []
     selected_supp = _selected_supplementary_from_payload(payload, supp_indices) if supp_indices.strip() else []
     _ensure_any_selected(selected_fastq, selected_supp)
@@ -375,77 +389,120 @@ def _selected_download_json(
         resume_existing=resume_existing,
         require_resume_for_nonempty=True,
     )
-    statuses: list[str] = []
     worker_count = normalize_download_workers(download_workers)
-    if cli_plan.fastq_plan:
-        plan = cli_plan.fastq_plan
-        progress_lock = threading.Lock()
-        progress_by_path: dict[str, tuple[int, int]] = {}
+    results: list[DownloadResultPayload] = []
+    results.extend(_download_fastq_selection(cli_plan, worker_count))
+    results.extend(_download_supplementary_selection(cli_plan))
+    statuses = [result["status"] for result in results]
+    _print_json_event(_download_done_payload(cli_plan, statuses, worker_count, results))
+    return _download_exit_code(statuses)
 
-        def progress(planned, downloaded: int, total: int) -> None:
-            with progress_lock:
-                progress_by_path[str(planned.local_path)] = (downloaded, total)
-                aggregate_downloaded = sum(current for current, _total in progress_by_path.values())
-                aggregate_total = plan.total_bytes or sum(item_total for _current, item_total in progress_by_path.values())
-                _print_download_progress(
-                    "fastq",
-                    planned.fastq.file_name,
-                    downloaded,
-                    total,
-                    aggregate_downloaded=aggregate_downloaded,
-                    aggregate_total=aggregate_total,
-                    download_workers=worker_count,
-                )
 
-        def message(text: str) -> None:
-            with progress_lock:
-                _print_download_message(text)
-
-        results = download_plan(
-            plan,
-            progress_callback=progress,
-            message_callback=message,
-            resume_artifacts=cli_plan.resume_artifacts,
-            download_workers=worker_count,
-        )
-        statuses.extend(status for _planned, status, _message in results)
-    else:
+def _download_fastq_selection(cli_plan: CliDownloadPlan, worker_count: int) -> list[DownloadResultPayload]:
+    if not cli_plan.fastq_plan:
         initialize_log(cli_plan.output_dir)
+        return []
 
-    if cli_plan.planned_supplementary:
-        write_supplementary_manifest(cli_plan.output_dir, cli_plan.planned_supplementary)
-        supp_results = download_supplementary_files(
-            cli_plan.output_dir,
-            cli_plan.planned_supplementary,
-            progress_callback=lambda item, current, total: _print_download_progress(
-                item.kind,
-                item.file_name,
-                current,
+    plan = cli_plan.fastq_plan
+    progress_lock = threading.Lock()
+    progress_by_path: dict[str, tuple[int, int]] = {}
+
+    def progress(planned, downloaded: int, total: int) -> None:
+        with progress_lock:
+            progress_by_path[str(planned.local_path)] = (downloaded, total)
+            aggregate_downloaded = sum(current for current, _total in progress_by_path.values())
+            aggregate_total = plan.total_bytes or sum(item_total for _current, item_total in progress_by_path.values())
+            _print_download_progress(
+                "fastq",
+                planned.fastq.file_name,
+                downloaded,
                 total,
-            ),
-            message_callback=_print_download_message,
-        )
-        statuses.extend(status for _item, status, _message in supp_results)
+                aggregate_downloaded=aggregate_downloaded,
+                aggregate_total=aggregate_total,
+                download_workers=worker_count,
+            )
 
-    print(
-        json.dumps(
-            {
-                "event": "done",
-                "statuses": statuses,
-                "output_dir": str(cli_plan.output_dir),
-                "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.fastq_plan else "",
-                "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.planned_supplementary else "",
-                "download_log": str(download_log_path(cli_plan.output_dir)),
-                "resume_existing": cli_plan.resume_active,
-                "resume_required_bytes": cli_plan.resume_required_bytes,
-                "download_workers": worker_count,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
+    def message(text: str) -> None:
+        with progress_lock:
+            _print_download_message(text)
+
+    results = download_plan(
+        plan,
+        progress_callback=progress,
+        message_callback=message,
+        resume_artifacts=cli_plan.resume_artifacts,
+        download_workers=worker_count,
     )
-    ok_statuses = {MD5_VERIFIED, MD5_UNAVAILABLE, DOWNLOAD_COMPLETE}
-    return 0 if statuses and all(status in ok_statuses for status in statuses) else 1
+    return [
+        _download_result_payload("fastq", planned.fastq.file_name, status, message)
+        for planned, status, message in results
+    ]
+
+
+def _download_supplementary_selection(cli_plan: CliDownloadPlan) -> list[DownloadResultPayload]:
+    if not cli_plan.planned_supplementary:
+        return []
+
+    write_supplementary_manifest(cli_plan.output_dir, cli_plan.planned_supplementary)
+    results = download_supplementary_files(
+        cli_plan.output_dir,
+        cli_plan.planned_supplementary,
+        progress_callback=lambda item, current, total: _print_download_progress(
+            item.kind,
+            item.file_name,
+            current,
+            total,
+        ),
+        message_callback=_print_download_message,
+    )
+    return [
+        _download_result_payload(item.kind, item.file_name, status, message)
+        for item, status, message in results
+    ]
+
+
+def _download_result_payload(kind: str, file_name: str, status: str, message: str) -> DownloadResultPayload:
+    return {
+        "kind": kind,
+        "file_name": file_name,
+        "status": status,
+        "message": message,
+    }
+
+
+def _download_done_payload(
+    cli_plan: CliDownloadPlan,
+    statuses: list[str],
+    worker_count: int,
+    results: list[DownloadResultPayload],
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": "done",
+        "statuses": statuses,
+        "output_dir": str(cli_plan.output_dir),
+        "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.fastq_plan else "",
+        "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.planned_supplementary else "",
+        "download_log": str(download_log_path(cli_plan.output_dir)),
+        "resume_existing": cli_plan.resume_active,
+        "resume_required_bytes": cli_plan.resume_required_bytes,
+        "download_workers": worker_count,
+    }
+    failure_details = _download_failure_details(results)
+    if failure_details:
+        payload["failure_details"] = failure_details
+    return payload
+
+
+def _download_failure_details(results: list[DownloadResultPayload]) -> list[DownloadResultPayload]:
+    return [
+        result
+        for result in results
+        if result["status"] not in _DOWNLOAD_OK_STATUSES
+    ]
+
+
+def _download_exit_code(statuses: list[str]) -> int:
+    return 0 if statuses and all(status in _DOWNLOAD_OK_STATUSES for status in statuses) else 1
 
 
 def _preflight_json(
@@ -463,88 +520,107 @@ def _preflight_json(
         resume_existing=resume_existing,
         create_output_dir=False,
     )
+    _print_json_event(_preflight_payload(cli_plan, resume_existing))
+    return 0
 
+
+def _preflight_payload(cli_plan: CliDownloadPlan, resume_existing_requested: bool) -> dict[str, object]:
     free_bytes = _free_bytes_for_output(cli_plan.output_dir)
-    fastq_required_bytes = 0
-    supplementary_required_bytes = 0
-    supplementary_size_unknown_count = 0
-    capacity_checked = not cli_plan.existing_output_nonempty or resume_existing
-    capacity_ok = True
-    capacity_error_code: str | None = None
-    planned_paths = _preflight_planned_paths(cli_plan)
-    planned_fastq: list[dict[str, object]] = []
-    planned_supp: list[dict[str, object]] = []
-
-    if cli_plan.fastq_plan:
-        plan = cli_plan.fastq_plan
-        fastq_required_bytes = plan.total_bytes
-        free_bytes = plan.available_bytes
-        if cli_plan.resume_required_bytes is not None:
-            fastq_required_bytes = cli_plan.resume_required_bytes
-        planned_fastq = [
-            {
-                "file_name": planned.fastq.file_name,
-                "run_accession": planned.fastq.run_accession,
-                "size_bytes": planned.fastq.size_bytes,
-                "local_path": str(planned.local_path),
-            }
-            for planned in plan.files
-        ]
-
-    if cli_plan.planned_supplementary:
-        for planned in cli_plan.planned_supplementary:
-            size_bytes, size_status = _estimate_supplementary_size(planned.supplementary.url)
-            if size_status == "known":
-                supplementary_required_bytes += size_bytes
-            else:
-                supplementary_size_unknown_count += 1
-            planned_supp.append(
-                {
-                "name": planned.supplementary.name,
-                "source_accession": planned.supplementary.source_accession,
-                "scope": planned.supplementary.scope,
-                "url": planned.supplementary.url,
-                "local_path": str(planned.local_path),
-                    "size_bytes": size_bytes,
-                    "size_status": size_status,
-                }
-            )
+    fastq_required_bytes, free_bytes, planned_fastq = _preflight_fastq_summary(cli_plan, free_bytes)
+    supplementary_required_bytes, supplementary_size_unknown_count, planned_supp = _preflight_supplementary_summary(cli_plan)
 
     required_bytes = fastq_required_bytes + supplementary_required_bytes
-    if capacity_checked and required_bytes > free_bytes:
-        capacity_ok = False
-        capacity_error_code = INSUFFICIENT_SPACE
+    capacity_checked = not cli_plan.existing_output_nonempty or resume_existing_requested
+    capacity_ok, capacity_error_code = _preflight_capacity_result(capacity_checked, required_bytes, free_bytes)
 
-    print(
-        json.dumps(
-            {
-                "event": "done",
-                "kind": "download_preflight",
-                "output_dir": str(cli_plan.output_dir),
-                "existing_output_nonempty": cli_plan.existing_output_nonempty,
-                "required_bytes": required_bytes,
-                "fastq_required_bytes": fastq_required_bytes,
-                "supplementary_required_bytes": supplementary_required_bytes,
-                "supplementary_size_unknown_count": supplementary_size_unknown_count,
-                "capacity_unknown": supplementary_size_unknown_count > 0,
-                "free_bytes": free_bytes,
-                "capacity_checked": capacity_checked,
-                "capacity_ok": capacity_ok,
-                "capacity_error_code": capacity_error_code,
-                "resume_existing": cli_plan.resume_active,
-                "resume_required_bytes": cli_plan.resume_required_bytes,
-                "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.fastq_plan else "",
-                "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.planned_supplementary else "",
-                "download_log": str(download_log_path(cli_plan.output_dir)),
-                "planned_paths": [str(path) for path in planned_paths],
-                "fastq_files": planned_fastq,
-                "supplementary_files": planned_supp,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
-    return 0
+    return {
+        "event": "done",
+        "kind": "download_preflight",
+        "output_dir": str(cli_plan.output_dir),
+        "existing_output_nonempty": cli_plan.existing_output_nonempty,
+        "required_bytes": required_bytes,
+        "fastq_required_bytes": fastq_required_bytes,
+        "supplementary_required_bytes": supplementary_required_bytes,
+        "supplementary_size_unknown_count": supplementary_size_unknown_count,
+        "capacity_unknown": supplementary_size_unknown_count > 0,
+        "free_bytes": free_bytes,
+        "capacity_checked": capacity_checked,
+        "capacity_ok": capacity_ok,
+        "capacity_error_code": capacity_error_code,
+        "resume_existing": cli_plan.resume_active,
+        "resume_required_bytes": cli_plan.resume_required_bytes,
+        "fastq_manifest": str(fastq_manifest_path(cli_plan.output_dir)) if cli_plan.fastq_plan else "",
+        "supplementary_manifest": str(supplementary_manifest_path(cli_plan.output_dir)) if cli_plan.planned_supplementary else "",
+        "download_log": str(download_log_path(cli_plan.output_dir)),
+        "planned_paths": [str(path) for path in _preflight_planned_paths(cli_plan)],
+        "fastq_files": planned_fastq,
+        "supplementary_files": planned_supp,
+    }
+
+
+def _preflight_fastq_summary(
+    cli_plan: CliDownloadPlan,
+    default_free_bytes: int,
+) -> tuple[int, int, list[dict[str, object]]]:
+    if not cli_plan.fastq_plan:
+        return 0, default_free_bytes, []
+
+    plan = cli_plan.fastq_plan
+    required_bytes = plan.total_bytes
+    if cli_plan.resume_required_bytes is not None:
+        required_bytes = cli_plan.resume_required_bytes
+    planned_files = [
+        {
+            "file_name": planned.fastq.file_name,
+            "run_accession": planned.fastq.run_accession,
+            "size_bytes": planned.fastq.size_bytes,
+            "local_path": str(planned.local_path),
+        }
+        for planned in plan.files
+    ]
+    return required_bytes, plan.available_bytes, planned_files
+
+
+def _preflight_supplementary_summary(
+    cli_plan: CliDownloadPlan,
+) -> tuple[int, int, list[dict[str, object]]]:
+    required_bytes = 0
+    unknown_size_count = 0
+    planned_files: list[dict[str, object]] = []
+    for planned in cli_plan.planned_supplementary:
+        size_bytes, size_status = _estimate_supplementary_size(planned.supplementary.url)
+        if size_status == "known":
+            required_bytes += size_bytes
+        else:
+            unknown_size_count += 1
+        planned_files.append(_preflight_supplementary_payload(planned, size_bytes, size_status))
+    return required_bytes, unknown_size_count, planned_files
+
+
+def _preflight_supplementary_payload(
+    planned: PlannedSupplementaryFile,
+    size_bytes: int,
+    size_status: str,
+) -> dict[str, object]:
+    return {
+        "name": planned.supplementary.name,
+        "source_accession": planned.supplementary.source_accession,
+        "scope": planned.supplementary.scope,
+        "url": planned.supplementary.url,
+        "local_path": str(planned.local_path),
+        "size_bytes": size_bytes,
+        "size_status": size_status,
+    }
+
+
+def _preflight_capacity_result(
+    capacity_checked: bool,
+    required_bytes: int,
+    free_bytes: int,
+) -> tuple[bool, str | None]:
+    if capacity_checked and required_bytes > free_bytes:
+        return False, INSUFFICIENT_SPACE
+    return True, None
 
 
 def _verify_manifest_json(manifest_path: Path) -> int:
@@ -627,8 +703,19 @@ def _print_download_progress(
     _print_json_event(payload)
 
 
-def _load_json(path: Path) -> dict:
+def _load_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _load_download_payload(path: Path) -> dict[str, object]:
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError("download payload must be an object")
+    _ensure_payload_fields(payload, _DOWNLOAD_PAYLOAD_REQUIRED_FIELDS, "download payload")
+    for key in ("fastq_files", "supplementary_files"):
+        if not isinstance(payload.get(key, []), list):
+            raise ValueError(f"download payload field must be a list: {key}")
+    return payload
 
 
 def _parse_indices(text: str) -> list[int]:
@@ -641,7 +728,15 @@ def _parse_indices(text: str) -> list[int]:
 
 
 def _selected_fastq_from_payload(payload: dict, indices_text: str) -> list[FastqFile]:
-    return _selected_items_from_payload(payload, "fastq_files", indices_text, "FASTQ", lambda item: FastqFile(**item))
+    return _selected_items_from_payload(payload, "fastq_files", indices_text, "FASTQ", _fastq_file_from_payload)
+
+
+def _fastq_file_from_payload(item: object) -> FastqFile:
+    if not isinstance(item, dict):
+        raise ValueError("FASTQ item must be an object")
+    _ensure_payload_fields(item, _FASTQ_REQUIRED_FIELDS, "FASTQ item")
+    payload = {name: item[name] for name in _FASTQ_PAYLOAD_FIELDS if name in item}
+    return FastqFile(**payload)
 
 
 def _selected_supplementary_from_payload(payload: dict, indices_text: str) -> list[SupplementaryFile]:
@@ -657,13 +752,17 @@ def _selected_supplementary_from_payload(payload: dict, indices_text: str) -> li
 def _supplementary_file_from_payload(item: object) -> SupplementaryFile:
     if not isinstance(item, dict):
         raise ValueError("supplementary item must be an object")
-    missing_fields = [name for name in _SUPPLEMENTARY_REQUIRED_FIELDS if name not in item]
-    if missing_fields:
-        raise ValueError(f"supplementary item is missing required field(s): {', '.join(missing_fields)}")
+    _ensure_payload_fields(item, _SUPPLEMENTARY_REQUIRED_FIELDS, "supplementary item")
 
     # Filter at the bridge boundary so unused JSON fields do not leak into the plan model.
     payload = {name: item[name] for name in _SUPPLEMENTARY_PAYLOAD_FIELDS if name in item}
     return SupplementaryFile(**payload)
+
+
+def _ensure_payload_fields(payload: dict, required_fields: tuple[str, ...], label: str) -> None:
+    missing_fields = [name for name in required_fields if name not in payload]
+    if missing_fields:
+        raise ValueError(f"{label} is missing required field(s): {', '.join(missing_fields)}")
 
 
 def _selected_items_from_payload(payload: dict, key: str, indices_text: str, label: str, build_item) -> list:
