@@ -29,3 +29,13 @@ jobs:
       - name: Run PowerShell GUI self-test
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\GEOGetter.ps1 -SelfTest
+
+      - name: Install Inno Setup for release preflight
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/')
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build release artifacts for release preflight
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/')
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_release.ps1 -BuildInstaller -PythonVersion "3.14.5"
